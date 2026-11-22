@@ -38,3 +38,7 @@ Options -Indexes
 <FilesMatch "\.(pred-[A-Za-z0-9-]+|bak|v1|orig)$">
   Require all denied
 </FilesMatch>
+
+# 22. 11. 2026: besedilne datoteke kot UTF-8 (MODIFICATIONS.txt, LICENSE, ...)
+AddDefaultCharset UTF-8
+AddCharset UTF-8 .txt .md .js .css .svg .json .webmanifest
