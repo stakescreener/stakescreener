@@ -1,0 +1,12 @@
+Options -Indexes
+
+<IfModule mod_mime.c>
+  AddType font/ttf .ttf
+</IfModule>
+
+<IfModule mod_headers.c>
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set Referrer-Policy "strict-origin-when-cross-origin"
+  Header always set Content-Security-Policy "default-src 'self'; base-uri 'none'; object-src 'none'; form-action 'none'; frame-ancestors 'self'; script-src 'self'; script-src-attr 'unsafe-inline'; style-src 'self'; style-src-attr 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self' https://eth.blockscout.com https://api.scan.pulsechain.com https://rpc.pulsechain.com https://pulsechain-rpc.publicnode.com https://rpc-pulsechain.g4mm4.io https://pulsechain.drpc.org https://ethereum-rpc.publicnode.com https://eth.drpc.org https://eth.merkle.io https://0xrpc.io https://eth-mainnet.g.alchemy.com https://endpoints.omniatech.io https://graph.pulsechain.com https://api.coingecko.com https://api.dexscreener.com https://api.coinpaprika.com; worker-src 'none'; frame-src 'none'; media-src 'none'; manifest-src 'self'; upgrade-insecure-requests"
+</IfModule>
+

@@ -1,0 +1,40 @@
+# 22. 11. 2026: en sam naslov — https://stakescreener.com (www in http → 301). .well-known izvzet (AutoSSL).
+RewriteEngine on
+RewriteCond %{HTTP_HOST} !^stakescreener\.com$ [NC,OR]
+RewriteCond %{HTTPS} off
+RewriteCond %{REQUEST_URI} !^/\.well-known/
+RewriteRule ^(.*)$ https://stakescreener.com/$1 [R=301,L]
+
+# PWA (10. 11. 2026)
+AddType application/manifest+json .webmanifest
+Options -Indexes
+
+<IfModule mod_mime.c>
+  AddType font/ttf .ttf
+</IfModule>
+
+<IfModule mod_headers.c>
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set Referrer-Policy "strict-origin-when-cross-origin"
+  Header always unset X-Powered-By
+  Header unset X-Powered-By
+  Header always set Content-Security-Policy "default-src 'self'; base-uri 'none'; object-src 'none'; form-action 'none'; frame-ancestors 'self'; script-src 'self'; script-src-attr 'unsafe-inline'; style-src 'self'; style-src-attr 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self' https://raw.githubusercontent.com https://eth.blockscout.com https://scan.pulsefusion.io https://pulsechain-beacon-api.publicnode.com https://api.scan.pulsechain.com https://rpc.pulsechain.com https://pulsechain-rpc.publicnode.com https://rpc.libertyswap.finance https://pulsechain.drpc.org https://ethereum-rpc.publicnode.com https://eth.drpc.org https://eth.merkle.io https://gateway.tenderly.co https://0xrpc.io https://eth-mainnet.g.alchemy.com https://endpoints.omniatech.io https://graph.pulsechain.com https://api.coingecko.com https://api.dexscreener.com https://api.coinpaprika.com; worker-src 'none'; frame-src 'none'; media-src 'none'; manifest-src 'self'; upgrade-insecure-requests"
+</IfModule>
+
+
+# Cache: index.html mora biti vedno svez, ker nosi stevilko razlicice datotek
+# (denarnica.js?v=…). Ce se predpomni on, brskalnik nikoli ne izve za nov modul
+# in popravek izgleda, kot da ne deluje — 16.8.2026 se je to zgodilo dvakrat.
+<IfModule mod_headers.c>
+  <FilesMatch "\.(html|php)$">
+    Header always set Cache-Control "no-cache, must-revalidate, max-age=0"
+  </FilesMatch>
+  <FilesMatch "\.(js|css|png|jpg|svg|ttf|woff2?)$">
+    Header always set Cache-Control "public, max-age=31536000"
+  </FilesMatch>
+</IfModule>
+
+# 22. 11. 2026: varnostne kopije (*.pred-*, *.bak, *.v1) se ne strezejo, tudi ce kdaj pristanejo tu
+<FilesMatch "\.(pred-[A-Za-z0-9-]+|bak|v1|orig)$">
+  Require all denied
+</FilesMatch>

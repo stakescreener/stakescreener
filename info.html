@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Disclaimer, Privacy, Support & Verify · StakeScreener</title>
+<meta name="description" content="StakeScreener — disclaimer, privacy and voluntary support.">
+<link rel="canonical" href="https://stakescreener.com/info.html">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/gp-info.css?v=20261122b">
+</head>
+<body>
+<main class="ii">
+  <a class="ii-back" href="/">← StakeScreener</a>
+  <nav class="ii-nav"><a href="#disclaimer">Disclaimer</a><a href="#privacy">Privacy</a><a href="#support">Support the project</a><a href="#verify">Verify this site</a></nav>
+
+  <section id="disclaimer" class="ii-card">
+    <h1>Disclaimer</h1>
+    <ul>
+      <li>StakeScreener is an <b>informational, read-only tool</b>. It never connects to your wallet and cannot move funds.</li>
+      <li>Nothing on this site is financial, investment, tax or legal advice.</li>
+      <li>Prices, values and totals come from third-party sources (DexScreener, CoinGecko, PulseX subgraph, FusionScan, public RPC and beacon nodes). They can be <b>wrong, delayed or missing</b>. Tokens whose value exceeds their trading pool are shown as “not counted”, but other errors are possible.</li>
+      <li>Crypto assets and HEX stakes can lose value, including all of it. Ending a stake early carries penalties defined by the HEX contract, not by this site.</li>
+      <li>Some links are <b>referral links</b>: if you sign up or deposit through them, StakeScreener may receive a reward. With <b>Allnodes</b> (hosted validators) this comes at no extra cost to you. With <b>Vouch</b> (liquid staking, vPLS) the referral fee is <b>paid by you</b>: 0.3% of the deposit, at most 5,000 PLS per deposit, goes to StakeScreener. Liquid staking carries smart-contract and operator risk, and vPLS can trade below the value of PLS. This is not an endorsement or financial advice; compare providers and do your own research.</li>
+      <li>Always verify important figures on-chain before acting on them. The site is provided “as is”, without any warranty.</li>
+    </ul>
+  </section>
+
+  <section id="privacy" class="ii-card">
+    <h1>Privacy</h1>
+    <h2>In your browser</h2>
+    <p>The wallet addresses, labels, custom tokens, validator numbers and validator count you enter are stored <b>only in your browser</b> (localStorage). “Clear” removes them. No accounts, no tracking cookies, no analytics.</p>
+    <h2>“Save as code”</h2>
+    <p>Only if you press <b>Save as code</b>, the listed addresses, their labels, the validator count and any validator numbers you added are stored on our server under a random code, so you can open the same set on another device. Nothing else is stored with it (no IP address, no e-mail). A code is deleted automatically <b>180 days</b> after it was last saved. Anyone who knows a code can open that set — treat it like a link you share.</p>
+    <h2>Third-party services</h2>
+    <p>To show balances and prices, your browser contacts public services directly: blockchain explorers and RPC nodes (FusionScan, PulseChain, PublicNode, Liberty Swap RPC and Ethereum RPC providers), CoinGecko, DexScreener, CoinPaprika and the PulseX subgraph. They see your IP address and the addresses you look up, under their own privacy policies. Wallet addresses and transactions are public on the blockchain by nature.</p>
+    <h2>Contact</h2>
+    <p>Questions about privacy or a request to delete a saved code: <a href="mailto:info@stakescreener.com">info@stakescreener.com</a>.</p>
+  </section>
+
+  <section id="support" class="ii-card">
+    <h1>Support StakeScreener</h1>
+    <p>StakeScreener is free. If you want to help cover hosting and development, you can send a voluntary contribution. <b>A contribution is not an investment and not a donation in the tax sense.</b> It does not give ownership, shares, priority access, revenue share or any other right or benefit. Contributions are not refunded.</p>
+    <p>The project may change, be paused or end. Contributions may be used at our discretion for development, hosting and operating costs, or sold. Send only from a wallet you control, not from an exchange. <b>Contributions are final.</b></p>
+    <div class="ii-addr">
+      <div class="ii-addr-lbl">PulseChain · Ethereum <span>PLS / ETH</span></div>
+      <code id="ii-naslov">0x0D6A5f27CBb65f5452676e94c92E3823BBDb6338</code>
+      <button type="button" id="ii-kopiraj">Copy</button>
+    </div>
+    <p class="ii-small">Always check the address after pasting it in your wallet.</p>
+  </section>
+
+  <section id="verify" class="ii-card">
+    <h1>Verify this site</h1>
+    <p>StakeScreener never asks you to connect a wallet or sign anything. The real risk for a site like this is a compromised server: someone could swap the support address, change a link or add a tracking script. So the exact files of this site are <b>published on GitHub with their SHA-256 fingerprints</b> &mdash; a record that does not live on our server.</p>
+    <p><b>Verify now</b> downloads each file of this site as your browser receives it, computes its SHA-256 fingerprint and compares it with the published record. If all match, the site is exactly the published source, including the support address above.</p>
+    <div class="ii-ver">
+      <button type="button" id="ii-preveri">Verify now</button>
+      <a href="https://github.com/stakescreener/stakescreener" target="_blank" rel="noopener">Source on GitHub</a>
+    </div>
+    <div id="ii-izid" class="ii-izid" aria-live="polite"></div>
+    <p class="ii-small">A check that runs on the page can be faked together with the page, so the independent record is GitHub itself: you can compare the fingerprints there (SHA256SUMS.txt) with <code>curl -s https://stakescreener.com/info.html | sha256sum</code>. Server-side files (.htaccess, koda.php) are published for transparency but cannot be checked from the browser.</p>
+  </section>
+
+  <p class="ii-foot">StakeScreener — based on HEX Stake Analyzer (GPL-3.0, see <a href="/MODIFICATIONS.txt">MODIFICATIONS.txt</a>).</p>
+</main>
+<script src="/gp-info.js?v=20261122b"></script>
+</body>
+</html>

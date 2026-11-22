@@ -1,0 +1,59 @@
+HEX Stake Analyzer — zunanji naslovi in CSP
+===========================================
+
+Lokalni viri
+-------------
+Chart.js, Inter in Space Mono so vključeni lokalno. Za delovanje zato niso
+potrebni cdnjs.cloudflare.com, fonts.googleapis.com ali fonts.gstatic.com.
+
+connect-src
+-----------
+'self'
+  - ./app.js: preverjanje različice aplikacije
+
+Raziskovalnika dogodkov:
+https://eth.blockscout.com
+https://api.scan.pulsechain.com
+
+PulseChain JSON-RPC:
+https://rpc.pulsechain.com
+https://pulsechain-rpc.publicnode.com
+https://rpc-pulsechain.g4mm4.io
+https://pulsechain.drpc.org
+
+Ethereum JSON-RPC:
+https://ethereum-rpc.publicnode.com
+https://eth.drpc.org
+https://eth.merkle.io
+https://0xrpc.io
+https://eth-mainnet.g.alchemy.com
+https://endpoints.omniatech.io
+
+Tržni podatki in HTT:
+https://graph.pulsechain.com
+https://api.coingecko.com
+https://api.dexscreener.com
+https://api.coinpaprika.com
+
+Pripravljena vrednost direktive:
+connect-src 'self' https://eth.blockscout.com https://api.scan.pulsechain.com https://rpc.pulsechain.com https://pulsechain-rpc.publicnode.com https://rpc-pulsechain.g4mm4.io https://pulsechain.drpc.org https://ethereum-rpc.publicnode.com https://eth.drpc.org https://eth.merkle.io https://0xrpc.io https://eth-mainnet.g.alchemy.com https://endpoints.omniatech.io https://graph.pulsechain.com https://api.coingecko.com https://api.dexscreener.com https://api.coinpaprika.com;
+
+Druge direktive
+---------------
+script-src 'self';
+script-src-attr 'unsafe-inline';
+style-src 'self';
+style-src-attr 'unsafe-inline';
+font-src 'self';
+img-src 'self' data:;
+
+Pojasnila
+---------
+- 'unsafe-inline' je pri atributih potreben zaradi izvornih onclick in style
+  atributov aplikacije. Glavna koda in slog sta sicer v lokalnih datotekah.
+- GitHub je samo povezava do izvora v nogi; ni connect-src omrežni klic.
+- V aplikaciji ni klicev do ChatGPT Sites, prijave, analitike, telemetrije,
+  WebSocketov, servisnih delavcev ali zunanjih pisav/CDN knjižnic.
+- CSP ne nadomesti dovoljenja CORS na posameznem RPC/API strežniku.
+
+https://scan.pulsefusion.io  — glavni raziskovalec PulseChain (gp-vir.js, 5.11.2026)

@@ -1,0 +1,5697 @@
+/*
+ * HEX Stake Analyzer v38
+ * Dual-chain: PulseChain (pHEX) + Ethereum (eHEX)
+ * Smart chain detection · Progressive rendering (PLS first, ETH in background)
+ * Big Pay Day column · Parallelized RPC fetching · Static price + daily-payout cache
+ * CoinGecko runtime price fallback · Skeleton dashboard · Multi-wallet paste
+ * © 2026 HexStakeAnalyzer. All rights reserved.
+ * Licensed under GPL-3.0
+ * https://github.com/HexStakeAnalyzer
+ *
+ * Removal or modification of this copyright notice is a violation of the license.
+ */
+const HSA_VERSION='v54';
+
+const K_RC=[0x0000000000000001n,0x0000000000008082n,0x800000000000808An,0x8000000080008000n,0x000000000000808Bn,0x0000000080000001n,0x8000000080008081n,0x8000000000008009n,0x000000000000008An,0x0000000000000088n,0x0000000080008009n,0x000000008000000An,0x000000008000808Bn,0x800000000000008Bn,0x8000000000008089n,0x8000000000008003n,0x8000000000008002n,0x8000000000000080n,0x000000000000800An,0x800000008000000An,0x8000000080008081n,0x8000000000008080n,0x0000000080000001n,0x8000000080008008n];
+const K_ROT=[[0,36,3,41,18],[1,44,10,45,2],[62,6,43,15,61],[28,55,25,21,56],[27,20,39,8,14]];
+const M64=0xFFFFFFFFFFFFFFFFn;
+function rotl64(v,n){if(!n)return v&M64;n=BigInt(n);return((v<<n)|(v>>(64n-n)))&M64;}
+function keccakF(A){for(let r=0;r<24;r++){const C=[A[0]^A[5]^A[10]^A[15]^A[20],A[1]^A[6]^A[11]^A[16]^A[21],A[2]^A[7]^A[12]^A[17]^A[22],A[3]^A[8]^A[13]^A[18]^A[23],A[4]^A[9]^A[14]^A[19]^A[24]];const D=[C[4]^rotl64(C[1],1),C[0]^rotl64(C[2],1),C[1]^rotl64(C[3],1),C[2]^rotl64(C[4],1),C[3]^rotl64(C[0],1)];for(let i=0;i<25;i++)A[i]^=D[i%5];const B=Array(25).fill(0n);for(let x=0;x<5;x++)for(let y=0;y<5;y++){const xp=y,yp=(2*x+3*y)%5;B[xp+5*yp]=rotl64(A[x+5*y],K_ROT[x][y]);}for(let x=0;x<5;x++)for(let y=0;y<5;y++)A[x+5*y]=B[x+5*y]^(~B[(x+1)%5+5*y]&B[(x+2)%5+5*y]);A[0]^=K_RC[r];}}
+function keccak256(str){const msg=new TextEncoder().encode(str),rate=136,len=msg.length,padLen=rate-(len%rate);const padded=new Uint8Array(len+padLen);padded.set(msg);padded[len]=0x01;padded[padded.length-1]|=0x80;const A=Array(25).fill(0n);for(let i=0;i<padded.length;i+=rate){for(let j=0;j<17;j++){let lane=0n;for(let b=0;b<8;b++)lane|=BigInt(padded[i+j*8+b])<<BigInt(8*b);A[j]^=lane;}keccakF(A);}let h='';for(let i=0;i<4;i++){const w=A[i];for(let b=0;b<8;b++)h+=((w>>BigInt(8*b))&0xffn).toString(16).padStart(2,'0');}return h;}
+function sel(sig){return'0x'+keccak256(sig).slice(0,8);}
+
+const SEL={sc:sel('stakeCount(address)'),sl:sel('stakeLists(address,uint256)'),cd:sel('currentDay()'),dr:sel('dailyDataRange(uint256,uint256)'),bal:'0x70a08231',gi:sel('globalInfo()'),
+  // HSI/Actuator discovery selectors
+  hsiCount:sel('hsiCount(address)'),
+  tokByIdx:sel('tokenOfOwnerByIndex(address,uint256)'),
+  hsiToken:sel('hsiToken(uint256)'),
+  // Actuator HTT enumeration — returns (uint72 hexBalance, address tokenAddress) per maturity day
+  maturityToInfo:sel('maturityToInfo(uint16)'),
+  // Actuator shareLists — like stakeLists but returns 8 fields including outstanding HTT (collateralAmount),
+  // redemption-day maturity (0 if never minted), and the HSI address. Used for delegated stakes ONLY.
+  shareLists:sel('shareLists(address,uint256)'),
+  // ERC-20 standard — read HTT token's own symbol/name (canonical "HTT-XXXX" label, no math)
+  symbol:'0x95d89b41',
+  name:'0x06fdde03',
+  // Actuator per-stake — returns stake-value cap; available = cap − collateralAmount.
+  // Reverts if currentDay >= maturity (filter caller-side).
+  getExtractableAmount:sel('getExtractableAmount(address,uint256)')
+};
+const HEX='0x2b591e99afE9f32eAA6214f7B7629768c40Eeb39';
+// ── HSI (Hedron) + Actuator contract addresses ──
+// HSIM manages HSI creation, tokenization (ERC-721 NFTs), and ownership tracking.
+// Actuator wraps HSIs for HEX Time Token (HTT) minting — PulseChain only.
+// Same addresses on both chains except Actuator which is PLS-only.
+const HSIM='0x8BD3d1472A656e312E94fB1BbdD599B8C51D18e3';
+const ACTUATOR='0x0d5d61FDDf84feFAB26f98164D8009022d740206';
+
+// ── Block Explorer APIs (Blockscout for ETH, PulseScan for PLS) ──
+// 1-2 API calls replace 200+ chunked RPC calls for ended stake discovery.
+// Explorer APIs have indexed the entire chain — they return filtered event logs instantly.
+// Falls back to RPC chunked scan only if the explorer API itself fails (CORS, rate limit, downtime).
+// NOTE: explorer getLogs caps at ~1000 rows per call and its page= param is broken (every page repeats the
+// first batch). fetchLogsFromExplorer therefore paginates by BLOCK CURSOR (see there) to return COMPLETE
+// results in 1 call for nearly everyone — without depending on the public-RPC getLogs scan, which providers
+// have largely locked down (publicnode 403s, others cap getLogs ranges at 50–1000 blocks or require keys).
+const EXPLORER_API={eth:'https://eth.blockscout.com/api',pls:'https://api.scan.pulsechain.com/api'};
+let explorerKeys={eth:'',pls:''};
+let explorerAvailable={eth:null,pls:null};
+
+async function fetchLogsFromExplorer(contract,topics,chain,fromBlock){
+  if(explorerAvailable[chain]===false)return null;
+  const base=EXPLORER_API[chain];
+  if(!base)return null;
+  // Explorer getLogs returns at most ~1000 rows per call and its page= param is broken (every page repeats the
+  // first batch). So we paginate by BLOCK CURSOR: fetch [cursor, latest]; if we hit the 1000-row cap, advance the
+  // cursor to the last row's block and fetch again, then dedupe the one-block overlap. A per-wallet stake-event
+  // query is tiny, so this is 1 call for nearly everyone and only a few for the heaviest stakers — no RPC needed.
+  const PAGE_CAP=1000;
+  const all=[];
+  let cursor=fromBlock||0;
+  for(let iter=0;iter<300;iter++){
+    let url=`${base}?module=logs&action=getLogs&address=${contract}&fromBlock=${cursor}&toBlock=latest`;
+    if(topics[0])url+=`&topic0=${topics[0]}`;
+    if(topics[1])url+=`&topic1=${topics[1]}&topic0_1_opr=and`;
+    if(topics[2]){
+      url+=`&topic2=${topics[2]}&topic0_2_opr=and`;
+      if(topics[1])url+=`&topic1_2_opr=and`;
+    }
+    const key=explorerKeys[chain];
+    if(key)url+=`&apikey=${key}`;
+    url+=`&page=1&offset=${PAGE_CAP}`;
+    const ac=new AbortController();
+    const t=setTimeout(()=>ac.abort(),15000);
+    let batch;
+    try{
+      const r=await fetch(url,{signal:ac.signal});
+      if(!r.ok)throw new Error('HTTP '+r.status);
+      const j=await r.json();
+      if(j.status==='0'){
+        if(j.message==='No records found'||j.message==='No logs found'){clearTimeout(t);break;}
+        if(j.result&&typeof j.result==='string'&&j.result.includes('rate limit')){
+          clearTimeout(t);
+          console.warn(`[${chain}] Explorer rate limited — will fall back to RPC`);
+          return null;
+        }
+        throw new Error(j.message||'Explorer error');
+      }
+      if(j.status!=='1'||!Array.isArray(j.result))throw new Error(j.message||'Bad explorer response');
+      batch=j.result;
+    }catch(e){
+      clearTimeout(t);
+      if(e.name==='AbortError')console.warn(`[${chain}] Explorer API timed out`);
+      else console.warn(`[${chain}] Explorer API failed:`,e.message);
+      if(explorerAvailable[chain]===null)explorerAvailable[chain]=false;
+      return null;
+    }
+    clearTimeout(t);
+    explorerAvailable[chain]=true;
+    all.push(...batch);
+    if(batch.length<PAGE_CAP)break; // got everything in range → done
+    // hit the row cap → there are more; advance to the last row's block and refetch (re-includes that block; deduped below)
+    const lastBlock=parseInt(batch[batch.length-1].blockNumber,16);
+    if(!Number.isFinite(lastBlock)||lastBlock<=cursor)break; // no forward progress — stop (avoids an infinite loop)
+    cursor=lastBlock;
+  }
+  // Dedupe the block-boundary overlap (blockNumber:logIndex is globally unique)
+  const seen=new Set(),out=[];
+  for(const l of all){
+    const id=(l.blockNumber||'')+':'+(l.logIndex||'');
+    if(seen.has(id))continue;
+    seen.add(id);out.push(l);
+  }
+  return out;
+}
+
+// Fetch ended stakes via explorer: 2 API calls (StakeEnd + StakeStart) instead of 200+ RPC chunks
+async function fetchEndedViaExplorer(addr,chain){
+  const addrTopic='0x'+addr.slice(2).toLowerCase().padStart(64,'0');
+  const fromBlock=chain==='eth'?9000000:0;
+  console.log(`[${chain}] Trying explorer API for ended stakes…`);
+  const endLogs=await fetchLogsFromExplorer(HEX,[TOPIC_STAKE_END,addrTopic],chain,fromBlock);
+  if(endLogs===null){console.warn(`[${chain}] Explorer unavailable — falling back to RPC`);return null;}
+  if(endLogs.length===0){console.log(`[${chain}] Explorer: 0 ended stakes for ${addr.slice(0,10)}…`);return[];}
+  const startLogs=await fetchLogsFromExplorer(HEX,[TOPIC_STAKE_START,addrTopic],chain,fromBlock);
+  if(startLogs===null){console.warn(`[${chain}] Explorer truncated StakeStart — falling back to RPC`);return null;}
+  console.log(`[${chain}] Explorer: ${endLogs.length} StakeEnd + ${startLogs.length} StakeStart events`);
+  return mergeStartEndLogs(endLogs,startLogs,chain);
+}
+
+// Fetch HSI ended events via explorer: 1 API call instead of 160+ RPC chunks
+async function fetchHSIEndedViaExplorer(addr,chain){
+  const walletTopic='0x'+addr.slice(2).toLowerCase().padStart(64,'0');
+  const fromBlock=chain==='pls'?0x10B0760:0xD59F80;
+  console.log(`[${chain}] Trying explorer API for HSI ended stakes…`);
+  let logs=await fetchLogsFromExplorer(HSIM,[TOPIC_HSI_END,null,walletTopic],chain,fromBlock);
+  if(logs===null){
+    console.log(`[${chain}] HSI explorer: retrying after 2s (likely rate-limited)…`);
+    await new Promise(r=>setTimeout(r,2000));
+    logs=await fetchLogsFromExplorer(HSIM,[TOPIC_HSI_END,null,walletTopic],chain,fromBlock);
+  }
+  if(logs===null){console.warn(`[${chain}] Explorer unavailable for HSI — falling back to RPC`);return null;}
+  console.log(`[${chain}] Explorer: ${logs.length} HSIEnd events`);
+  return logs;
+}
+
+function isMobileWidth(){return window.innerWidth<=768;}
+// HEX deployed at the same address on Ethereum mainnet (Dec 2019) and PulseChain (forked May 2023).
+// State is independent per chain from fork day forward. Same ABI, same selectors, same yield math.
+const PLS_RPCS=['https://rpc.pulsechain.com','https://pulsechain-rpc.publicnode.com','https://rpc-pulsechain.g4mm4.io','https://pulsechain.drpc.org'];
+// Primary ETH RPC — only publicnode works from browser/GitHub Pages today.
+// If it fails mid-scan, probeEthFallbacks() tests candidates and adds any that respond.
+const ETH_RPCS=['https://ethereum-rpc.publicnode.com'];
+const ETH_RPC_CANDIDATES=['https://eth.drpc.org','https://eth.merkle.io','https://0xrpc.io/eth','https://eth-mainnet.g.alchemy.com/public','https://endpoints.omniatech.io/v1/eth/mainnet/public'];
+let ethFallbackProbed=false;
+function rpcsFor(chain){return chain==='eth'?ETH_RPCS:PLS_RPCS;}
+const HTS=1575331200,TSC=1e12,M72=(1n<<72n)-1n;
+
+// ── PulseChain launched May 12, 2023 = HEX Day 1256 ──
+// Stakes with lockedDay < PLS_DAY were forked from Ethereum
+// → use CoinGecko coin ID 'hex' (Ethereum HEX) for their start price
+// Stakes with lockedDay >= PLS_DAY were created natively on PulseChain
+// → use CoinGecko coin ID 'hex-pulsechain'
+const PLS_DAY=1256;
+// A "forked copy" is a PLS stake that originated from the Ethereum fork — the user paid
+// nothing for it on PulseChain. Cost basis = $0; current value and yield are still real.
+function isForkedCopy(s){return(s.chain||'pls')==='pls'&&s.lockedDay<PLS_DAY;}
+
+function ud(p){return{pt:p&M72,st:(p>>72n)&M72};}
+function chd(){return Math.floor((Date.now()/1000-HTS)/86400);}
+let cpC=null,cgC=null,cpieC=null,cyieldC=null,cmatC=null,hexDay=0,pbd={},cdTimers=[];
+// HTT Analyzer state — populated by fetchWalletHTTBalances (called from "Analyze HTTs" button, not from go())
+let httBalances=new Map();           // wallet addr → [{day, contract, symbol, balance:BigInt, hexBacking:BigInt}, ...]
+let httContractInfo=new Map();       // raw maturity-day key → {contract, hexBacking, symbol} — for all discovered HTT contracts (held or not)
+let httStakeDetails=new Map();       // stakeId.toString() → {availableToExtract:BigInt, accrued:BigInt, escrow:BigInt} — per-stake Actuator details
+let httStakesSortBy='endday';        // active sort column for HTT Stakes table: redemption|endday|principal|accrued|tshares|available|outstanding|escrow
+let httStakesSortReversed=false;     // false = column's natural direction; true = reversed (click same header twice to toggle)
+let httSeriesSortBy='day';           // active sort column for Per-HTT Breakdown table: day|stakes|principal|extraction|outstanding|mintable|held
+let httSeriesSortReversed=false;     // false = column's natural direction; true = reversed
+let httBalancesScanToken=0;          // incremented in go() reset to invalidate cached HTT balances
+let httPriceByDay=new Map();         // day → USD price per HTT token (PulseX v2 subgraph derivedUSD)
+let httPriceUpdatedAt=0;             // ms timestamp of last successful HTT price fetch
+// Per-chain state: each chain has its own live price, share rate, sharesTotal, daily payout data.
+// The chains have INDEPENDENT contract state since the PulseChain fork (May 2023).
+let livePrice={pls:0,eth:0};         // chain → USD price
+let moonPrice={pls:0,eth:0};         // Moon Math overrides — 0 = use live price
+let lastStakes=[];                    // cached for Moon Math re-render
+let lastLiquid={pls:0n,eth:0n};      // cached for Moon Math re-render
+let priceChange24h={pls:0,eth:0};    // chain → 24h % change
+let shareRateBy={pls:0n,eth:0n};
+let hexPerTShareBy={pls:0,eth:0};
+let tsharePriceBy={pls:0,eth:0};
+let globalSharesTotalBy={pls:0n,eth:0n};
+let gddBy={pls:null,eth:null};       // chain → {data, bd}
+let sparkData=[];
+// Chain mode: 'pls', 'eth', or 'both' — controls what the DISPLAY shows.
+// We always fetch both chains at analyze time, so switching modes is instant re-render.
+let chainMode='both';
+// Chain filter when in 'both' mode: 'all', 'eth', or 'pls'
+let chainFilter='all';
+// Helper: list of active chains based on mode
+function activeChains(){return chainMode==='both'?['pls','eth']:[chainMode];}
+// Helper: get the right price for a stake based on its chain
+function priceFor(chain){return moonPrice[chain]||livePrice[chain]||0;}
+
+function bi(h){if(!h||h==='0x')return 0n;try{return BigInt(h.startsWith('0x')?h:'0x'+h);}catch(e){return 0n;}}
+function sbi(r,i){const c=r.slice(i*64,(i+1)*64);if(!c)return 0n;try{return BigInt('0x'+c);}catch(e){return 0n;}}
+// Parse a dynamic-string return (ERC-20 name/symbol). ABI layout: offset (32 bytes) + length (32 bytes) + UTF-8 bytes (padded).
+function parseStringResult(res){
+  if(!res||res==='0x')return'';
+  const raw=res.startsWith('0x')?res.slice(2):res;
+  if(raw.length<128)return'';
+  const len=parseInt(raw.slice(64,128),16);
+  if(!len||len>1000)return'';
+  const hex=raw.slice(128,128+len*2);
+  let s='';
+  for(let i=0;i<hex.length;i+=2){
+    const c=parseInt(hex.slice(i,i+2),16);
+    if(c>0)s+=String.fromCharCode(c);
+  }
+  return s;
+}
+function p64(n){return BigInt(n).toString(16).padStart(64,'0');}
+function pa(a){return a.replace('0x','').toLowerCase().padStart(64,'0');}
+async function rpc(d,url){
+  const ac=new AbortController();
+  const t=setTimeout(()=>ac.abort(),8000);
+  try{
+    const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'eth_call',params:[{to:HEX,data:d},'latest']}),signal:ac.signal});
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    let j;
+    try{j=await r.json();}catch(e){throw new Error('Non-JSON response from RPC');}
+    if(j.error)throw new Error(j.error.message||JSON.stringify(j.error));
+    return j.result||'0x';
+  }finally{clearTimeout(t);}
+}
+// Generic eth_call targeting any contract address (used for HSIM + Actuator queries)
+async function rpcTo(contract,d,chain){
+  const urls=(chain||'pls')==='eth'?ethUrls():rpcsFor('pls');
+  for(let i=0;i<urls.length;i++){
+    const ac=new AbortController();
+    const t=setTimeout(()=>ac.abort(),8000);
+    try{
+      const r=await fetch(urls[i],{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({jsonrpc:'2.0',id:1,method:'eth_call',params:[{to:contract,data:d},'latest']}),signal:ac.signal});
+      clearTimeout(t);
+      if(!r.ok)continue;
+      let j;try{j=await r.json();}catch(e){continue;}
+      if(j.error)continue;
+      if(j.result&&j.result.length>4)return j.result;
+    }catch(e){clearTimeout(t);}
+  }
+  return'0x';
+}
+// JSON-RPC batching: send multiple eth_call requests in one HTTP round trip
+async function rpcBatch(calls,url){
+  const ac=new AbortController();
+  const t=setTimeout(()=>ac.abort(),12000);
+  try{
+    const body=calls.map((c,i)=>({jsonrpc:'2.0',id:i,method:'eth_call',params:[{to:c.to,data:c.data},'latest']}));
+    const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:ac.signal});
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    const arr=await r.json();
+    if(!Array.isArray(arr))throw new Error('Non-array batch response');
+    const sorted=new Array(calls.length);
+    for(const item of arr)sorted[item.id]=item.result||'0x';
+    return sorted;
+  }finally{clearTimeout(t);}
+}
+// Batched eth_call with RPC failover — tries each URL in order
+async function taBatch(calls,chain){
+  const urls=(chain||'pls')==='eth'?ethUrls():rpcsFor('pls');
+  for(let i=0;i<urls.length;i++){
+    try{const r=await rpcBatch(calls,urls[i]);if(r&&r.length)return r;}catch(e){}
+  }
+  return calls.map(()=>'0x');
+}
+async function ta(d,chain){const urls=(chain||'pls')==='eth'?ethUrls():rpcsFor('pls');for(let i=0;i<urls.length;i++){try{const r=await rpc(d,urls[i]);if(r&&r.length>4)return r;}catch(e){}}throw new Error('All '+(chain||'pls').toUpperCase()+' RPCs failed');}
+async function ghd(chain){try{const r=await ta(SEL.cd,chain);const d=Number(bi(r));if(d>1000&&d<20000)return d;}catch(e){}return chd();}
+async function gsc(a,chain){return Number(bi(await ta(SEL.sc+pa(a.slice(2)),chain)));}
+async function gs(a,i,chain){const res=await ta(SEL.sl+pa(a.slice(2))+p64(i),chain);const raw=(res.startsWith('0x')?res.slice(2):res).padEnd(448,'0');return{stakeId:sbi(raw,0),stakedHearts:sbi(raw,1),stakeShares:sbi(raw,2),lockedDay:Number(sbi(raw,3)),stakedDays:Number(sbi(raw,4)),unlockedDay:Number(sbi(raw,5))};}
+async function gbal(addr,chain){try{const res=await ta(SEL.bal+pa(addr.slice(2)),chain);return bi(res);}catch(e){return 0n;}}
+async function gbalOf(tokenContract,addr,chain){
+  try{
+    const urls=(chain||'pls')==='eth'?ethUrls():rpcsFor('pls');
+    const d=SEL.bal+pa(addr.slice(2));
+    for(const u of urls){
+      try{
+        const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'eth_call',params:[{to:tokenContract,data:d},'latest']})});
+        if(!r.ok)continue;const j=await r.json();if(j.result&&j.result.length>4)return bi(j.result);
+      }catch(e){}
+    }
+    return 0n;
+  }catch(e){return 0n;}
+}
+async function gShareRate(chain){try{const res=await ta(SEL.gi,chain);const raw=res.startsWith('0x')?res.slice(2):res;if(raw.length<192)return{shareRate:0n,sharesTotal:0n};parseSupplyFromGlobalInfo(raw,chain);return{shareRate:sbi(raw,2),sharesTotal:sbi(raw,5)};}catch(e){return{shareRate:0n,sharesTotal:0n};}}
+
+// ══════════════════════════════════════════════════════════════════
+// HSI (Hedron) + Actuator stake discovery
+// Three-layer architecture: HEX → Hedron (HSI) → Actuator (HTT)
+// Each layer wraps the one below. The underlying HEX stake data
+// (stakeId, stakedHearts, stakeShares, lockedDay, stakedDays, unlockedDay)
+// is identical at every layer — same struct, same fields, same meaning.
+//
+// Discovery paths:
+//   Path 2: Untokenized HSI — HSIM.hsiCount(addr) + HSIM.stakeLists(addr,i)
+//   Path 3: Tokenized HSI NFT — HSIM.balanceOf(addr) + tokenOfOwnerByIndex + hsiToken
+//   Path 4: Actuator delegated — Actuator.hsiCount(addr) + Actuator.stakeLists(addr,i)
+//           (PulseChain ONLY — Actuator not deployed on Ethereum)
+// ══════════════════════════════════════════════════════════════════
+
+// Parse a stakeLists() response into the same shape as gs() returns
+function parseStakeResult(res){
+  const raw=(res.startsWith('0x')?res.slice(2):res).padEnd(448,'0');
+  return{
+    stakeId:sbi(raw,0),stakedHearts:sbi(raw,1),stakeShares:sbi(raw,2),
+    lockedDay:Number(sbi(raw,3)),stakedDays:Number(sbi(raw,4)),unlockedDay:Number(sbi(raw,5))
+  };
+}
+
+// Parse an Actuator.shareLists() response — 8 × 32-byte slots.
+// Returns native stake fields PLUS Actuator-specific: collateralAmount (outstanding HTT for this stake),
+// maturity (redemption day chosen at mint; 0 = never collateralized), and hsiAddress.
+// Replaces parseStakeResult() for delegated stakes — strictly more data, same RPC cost.
+function parseShareListsResult(res){
+  const raw=(res.startsWith('0x')?res.slice(2):res).padEnd(512,'0'); // 8 slots × 64 hex
+  const hsiSlot=raw.slice(7*64,8*64);
+  return{
+    stakeId:sbi(raw,0),
+    stakedHearts:sbi(raw,1),
+    stakeShares:sbi(raw,2),
+    lockedDay:Number(sbi(raw,3)),
+    stakedDays:Number(sbi(raw,4)),
+    collateralAmount:sbi(raw,5),               // current outstanding HTT (decrements on retire)
+    maturity:Number(sbi(raw,6)),               // raw storage key (e.g. 5999 = HTT-6000 — labels come from token.symbol())
+    hsiAddress:'0x'+hsiSlot.slice(24),         // address = last 20 bytes of 32-byte slot
+    unlockedDay:0                              // shareLists doesn't track unlocked; default 0 for active stakes
+  };
+}
+
+// Path 2: Untokenized HSI stakes — owned by wallet in HSIM's hsiLists mapping
+async function fetchHSIUntokenized(addr,chain){
+  const stakes=[];
+  try{
+    // Try both hsiCount and stakeCount — HSIM exposes both as wrappers
+    let countRes=await rpcTo(HSIM,SEL.hsiCount+pa(addr.slice(2)),chain);
+    let count=Number(bi(countRes));
+    if(count===0){
+      // Fallback: try stakeCount which wraps hsiCount on HSIM
+      const countRes2=await rpcTo(HSIM,SEL.sc+pa(addr.slice(2)),chain);
+      const count2=Number(bi(countRes2));
+      count=count2;
+    }
+    if(count===0)return stakes;
+    const tasks=[];
+    for(let i=0;i<count;i++){
+      tasks.push(async()=>{
+        const res=await rpcTo(HSIM,SEL.sl+pa(addr.slice(2))+p64(i),chain);
+        const s=parseStakeResult(res);
+        if(s.stakedDays>0){s.owner=addr;s.chain=chain;s.stakeType='HSI-U';stakes.push(s);}
+      });
+    }
+    await runConcurrent(tasks,4);
+  }catch(e){console.warn(`[${chain}] HSI untokenized scan failed:`,e.message);}
+  return stakes;
+}
+
+// Path 3: Tokenized HSI NFT stakes — ERC-721 tokens on HSIM
+// balanceOf → tokenOfOwnerByIndex → hsiToken → stakeLists on the HSI address
+async function fetchHSITokenized(addr,chain){
+  const stakes=[];
+  try{
+    // ERC-721 balanceOf on HSIM
+    const balRes=await rpcTo(HSIM,SEL.bal+pa(addr.slice(2)),chain);
+    const nftCount=Number(bi(balRes));
+    if(nftCount===0)return stakes;
+    const tasks=[];
+    for(let i=0;i<nftCount;i++){
+      tasks.push(async()=>{
+        // Get tokenId at index i
+        const tokRes=await rpcTo(HSIM,SEL.tokByIdx+pa(addr.slice(2))+p64(i),chain);
+        const tokenId=bi(tokRes);
+        if(tokenId===0n)return;
+        // Get HSI contract address from tokenId
+        const hsiRes=await rpcTo(HSIM,SEL.hsiToken+p64(tokenId),chain);
+        const hsiAddr='0x'+hsiRes.slice(-40);
+        if(!hsiAddr||hsiAddr==='0x'+'0'.repeat(40))return;
+        // Read the stake from the HSI contract via HEX.stakeLists(hsiAddr, 0)
+        // HSI contracts hold exactly 1 stake at index 0
+        const stakeRes=await rpcTo(HEX,SEL.sl+pa(hsiAddr.slice(2))+p64(0),chain);
+        const s=parseStakeResult(stakeRes);
+        if(s.stakedDays>0){s.owner=addr;s.chain=chain;s.stakeType='HSI-T';stakes.push(s);}
+      });
+    }
+    await runConcurrent(tasks,4);
+  }catch(e){console.warn(`[${chain}] HSI tokenized scan failed:`,e.message);}
+  return stakes;
+}
+
+// Path 4: Actuator-delegated stakes — PulseChain ONLY.
+// Uses shareLists() instead of stakeLists() — same cost, returns outstanding HTT (collateralAmount),
+// redemption-day maturity, and hsiAddress alongside the native stake fields.
+async function fetchActuatorStakes(addr){
+  const chain='pls'; // Actuator is NOT deployed on Ethereum
+  const stakes=[];
+  try{
+    const countRes=await rpcTo(ACTUATOR,SEL.hsiCount+pa(addr.slice(2)),chain);
+    const count=Number(bi(countRes));
+    if(count===0)return stakes;
+    const tasks=[];
+    for(let i=0;i<count;i++){
+      tasks.push(async()=>{
+        const res=await rpcTo(ACTUATOR,SEL.shareLists+pa(addr.slice(2))+p64(i),chain);
+        const s=parseShareListsResult(res);
+        if(s.stakedDays>0){s.owner=addr;s.chain=chain;s.stakeType='HTT';stakes.push(s);}
+      });
+    }
+    await runConcurrent(tasks,4);
+  }catch(e){console.warn('[pls] Actuator scan failed:',e.message);}
+  return stakes;
+}
+
+// ──────────────────────────────────────────────────────────────────
+// HTT normalizer — pure transform from raw Actuator stake to canonical HTT shape.
+// All HTT UI panels (Wallet Holdings, HTT Stakes table, etc.) consume this object.
+// `extra` provides Actuator-derived per-stake details (extracted/retired/escrow/availableToExtract,
+// accrued yield, optional override redemptionDay for mismatched cases). When extra is absent,
+// the optional fields default to 0n — useful for ended (fromLog:true) stakes or initial render
+// before the secondary detail fetch completes.
+// Reserve formula matches Actuator's HEXTimeTokenManager: reserveDay = endDay - ceil(stakedDays / 10).
+// All yield credited on days [reserveDay, endDay] becomes the end-stake bounty pool.
+// ──────────────────────────────────────────────────────────────────
+function normalizeHTTStake(rawStake,extra){
+  const stakedDays=rawStake.stakedDays;
+  const lockedDay=rawStake.lockedDay;
+  const endDay=lockedDay+stakedDays;
+  // reserveDay marks the start of the escrow window — all yield earned days [reserveDay, endDay]
+  // becomes the end-stake bounty pool. NOT the redemption day.
+  const reserveDays=Math.ceil(stakedDays/10);
+  const reserveDay=endDay-reserveDays;
+  // Redemption day = Actuator-set maturity (chosen by staker at mint time, independent of endDay).
+  // 0 = stake never collateralized (no HTT minted against it yet).
+  const redemptionDay=(extra&&extra.redemptionDay!=null)?extra.redemptionDay:(rawStake.maturity||0);
+  // Outstanding HTT for this stake comes from shareLists.collateralAmount (decrements on retire).
+  // No on-chain getter for lifetime extracted/retired — those default to 0n until log-scan lands.
+  const outstanding=(extra&&extra.outstanding!=null)?extra.outstanding:(rawStake.collateralAmount||0n);
+  const extracted=(extra&&extra.extracted!=null)?extra.extracted:0n;
+  const retired=(extra&&extra.retired!=null)?extra.retired:0n;
+  return{
+    stakeId:rawStake.stakeId,
+    principal:rawStake.stakedHearts,
+    accrued:(extra&&extra.accrued!=null)?extra.accrued:0n,
+    endDay,
+    redemptionDay,
+    reserveDay,
+    extracted,
+    retired,
+    outstanding,
+    availableToExtract:(extra&&extra.availableToExtract!=null)?extra.availableToExtract:0n,
+    escrow:(extra&&extra.escrow!=null)?extra.escrow:0n,
+    hsiAddress:rawStake.hsiAddress||null,
+    walletAddr:rawStake.owner,
+    chain:rawStake.chain,
+    fromLog:!!rawStake.fromLog,
+  };
+}
+
+// Master function: scan all HSI/Actuator paths for one wallet on one chain
+// Returns array of stakes with stakeType set ('HSI-U', 'HSI-T', 'HSI' ended, or 'HTT')
+async function fetchHSIStakes(addr,chain){
+  // Check if probes detected any HSI/Actuator activity for this wallet+chain
+  const probe=walletHSIProbes.get(addr.toLowerCase());
+  const hasActivity=probe?(chain==='pls'?probe.pls:probe.eth):false;
+  // HSI notification now handled by go() phased scan status
+  // Active stake lookups are cheap (single RPC each) — always run
+  const tasks=[
+    fetchHSIUntokenized(addr,chain),
+    fetchHSITokenized(addr,chain),
+  ];
+  // Ended-HSI log scans are expensive (chunked block scanning) — only run if probes detected HSI activity.
+  // ETH exception: always run on ETH because probes check current hsiCount/balanceOf which return 0
+  // when all HSIs are already ended, causing ended HSI stakes to be missed entirely.
+  if(hasActivity || chain==='eth') tasks.push(fetchEndedHSIStakes(addr,chain));
+  // Actuator is PulseChain only
+  if(chain==='pls'){
+    tasks.push(fetchActuatorStakes(addr));
+    if(hasActivity) tasks.push(fetchEndedActuatorStakes(addr));
+  }
+  const results=await Promise.all(tasks);
+  return results.flat();
+}
+
+// Ended Actuator stakes: When Actuator ends an HSI, HSIM emits HSIEnd with
+// the ACTUATOR CONTRACT as the staker (topic[2]), not the wallet.
+// Strategy: scan HSIM HSIEnd where topic[2] = Actuator, get tx receipt,
+// verify tx.from = wallet, then parse StakeEnd from HEX in the same receipt.
+async function fetchEndedActuatorStakes(addr){
+  const chain='pls';
+  const stakes=[];
+  try{
+    const urls=rpcsFor(chain);
+    const actTopic='0x'+pa(ACTUATOR.slice(2)); // Actuator as indexed staker in HSIEnd
+    const startBlock='0x10B0760';
+    let logs=[];
+    for(const u of urls){
+      try{
+        const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({jsonrpc:'2.0',id:1,method:'eth_getLogs',params:[{
+            address:HSIM,fromBlock:startBlock,toBlock:'latest',
+            topics:[TOPIC_HSI_END,null,actTopic]
+          }]})});
+        if(!r.ok)continue;
+        const j=await r.json();
+        if(j.result&&Array.isArray(j.result)){logs=j.result;break;}
+      }catch(e){}
+    }
+    if(logs.length===0)return stakes;
+    // Batch: fetch all receipts AND tx objects in 2 HTTP requests instead of 2N
+    const txHashes=logs.map(l=>l.transactionHash);
+    const allReceipts=await batchGetReceipts(txHashes,chain);
+    const allTxs=await batchGetTxByHash(txHashes,chain);
+
+    for(let i=0;i<logs.length;i++){
+      const hsiEndLog=logs[i];
+      const receipt=allReceipts[i];
+      const tx=allTxs[i];
+      if(!receipt||!receipt.logs||!tx)continue;
+      try{
+        if(tx.from.toLowerCase()!==addr.toLowerCase())continue;
+        const seLog=receipt.logs.find(l=>
+          l.address.toLowerCase()===HEX.toLowerCase()&&
+          l.topics&&l.topics[0]===TOPIC_HEX_STAKE_END
+        );
+        if(!seLog)continue;
+        const d0=BigInt(seLog.data.slice(0,66));
+        const d1=BigInt('0x'+seLog.data.slice(66,130));
+        const stakeId=BigInt(seLog.topics[2]);
+        const stakedHearts=(d0>>40n)&M72;
+        const stakeShares=(d0>>112n)&M72;
+        const payout=(d0>>184n)&M72;
+        const servedDays=Number((d1>>72n)&M16);
+        if(stakeId===0n||stakedHearts===0n)continue;
+        const endTimestamp=Number(BigInt(hsiEndLog.data.slice(0,66)));
+        const endDay=Math.round((endTimestamp-HTS)/86400)+1;
+        const lockedDay=endDay-servedDays;
+        stakes.push({
+          stakeId,stakedHearts,stakeShares,
+          lockedDay,stakedDays:servedDays,unlockedDay:endDay,
+          yh:payout,
+          owner:addr,chain:'pls',stakeType:'HTT',fromLog:true
+        });
+      }catch(e){console.warn('[pls] Failed to parse ended Actuator tx:',e.message);}
+    }
+  }catch(e){console.warn('[pls] Ended Actuator scan failed:',e.message);}
+  return stakes;
+}
+
+// ══════════════════════════════════════════════════════════════════
+// HTT contract discovery + per-wallet balance fetch (PulseChain only).
+// Two phases:
+//   A. Range-probe Actuator.maturityToInfo(day) for [hexDay, hexDay+5555] in chunks of 500
+//      via taBatch. Any non-zero tokenAddress means a live HTT series exists for that day.
+//   B. For each (wallet, htt-contract) pair, batch balanceOf(wallet) calls.
+//      Non-zero balances are recorded.
+// Result populates module global httBalances. Called from the "Analyze HTTs" button handler
+// (NOT from go() — keeps base scan fast). Caller compares httBalancesScanToken against last
+// known token to decide whether to refetch after a fresh go() scan.
+// ══════════════════════════════════════════════════════════════════
+async function fetchWalletHTTBalances(walletAddrs){
+  const chain='pls';
+  const out=new Map();
+  if(!walletAddrs||!walletAddrs.length)return out;
+  if(!hexDay){console.warn('[pls] HTT balance fetch skipped: hexDay not set');return out;}
+  try{
+    // ── Phase A: enumerate HTT contracts via maturityToInfo range probe ──
+    // v54: window widened from +5555 → +10000 so any HTT mint-day inside the maximum
+    // theoretical stake horizon is caught (a stake with 5555 days max started today ends at
+    // hexDay+5555, but Actuator lets stakers choose ANY maturity day). +10000 = ~27 years of
+    // headroom that scales automatically as hexDay advances. Layer 2 (subgraph safety net,
+    // below) catches anything Actuator doesn't list at all.
+    //
+    // Performance (v54): the 20 batches for +10000 days are fired in parallel via Promise.all
+    // instead of sequentially — was the dominant scan cost (~20 round-trips → 1 round-trip time).
+    // Phase A2 subgraph fetch runs concurrently with the probe since they don't depend on each other.
+    const dayStart=hexDay;
+    const dayEnd=hexDay+10000;
+    const chunkSize=500;
+    const contractsByDay=new Map(); // day → {contract:addr, hexBacking:bi, source?}
+    // Build every batch up front so we can fire them all at once
+    const probeBatches=[];
+    for(let d=dayStart;d<=dayEnd;d+=chunkSize){
+      const calls=[];
+      const daysInChunk=[];
+      for(let day=d;day<Math.min(d+chunkSize,dayEnd+1);day++){
+        calls.push({to:ACTUATOR,data:SEL.maturityToInfo+day.toString(16).padStart(64,'0')});
+        daysInChunk.push(day);
+      }
+      probeBatches.push({calls,daysInChunk});
+    }
+    // ── Phase A2 (v54): PulseX v2 subgraph safety net ──
+    // Catches HTTs that exist on-chain but weren't listed via Actuator's maturityToInfo
+    // (e.g. tokens created by an alternate mechanism, forks, or spoofs we want to see).
+    // Spoof guard: name MUST start with the exact case-sensitive string "HEX Time Token "
+    // — the known spoof uses "Hex Time Token" (lowercase 'ex') and would slip through a
+    // symbol-only filter, so we anchor on the name field. Hard cap 200 tokens.
+    // Runs in parallel with the Actuator probe (independent data source) — never blocks Phase A.
+    const subgraphPromise=(async()=>{
+      try{
+        const q='{tokens(where:{symbol_starts_with:"HTT-"},first:200){id symbol name}}';
+        const r=await fetch('https://graph.pulsechain.com/subgraphs/name/pulsechain/pulsexv2',{
+          method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({query:q})
+        });
+        if(!r.ok)return [];
+        const j=await r.json();
+        return j?.data?.tokens||[];
+      }catch(e){console.warn('[pls] HTT subgraph safety-net failed:',e.message);return [];}
+    })();
+    // Fire every probe batch AND the subgraph query concurrently
+    const [batchResponses,subgraphTokens]=await Promise.all([
+      Promise.all(probeBatches.map(b=>taBatch(b.calls,chain))),
+      subgraphPromise
+    ]);
+    // Process probe results in order (indexed by original batch)
+    for(let bi_=0;bi_<batchResponses.length;bi_++){
+      const responses=batchResponses[bi_];
+      const daysInChunk=probeBatches[bi_].daysInChunk;
+      for(let i=0;i<responses.length;i++){
+        const res=responses[i];
+        if(!res||res==='0x'||res.length<130)continue;
+        const raw=res.startsWith('0x')?res.slice(2):res;
+        if(raw.length<128)continue;
+        const hexBacking=BigInt('0x'+raw.slice(0,64));         // slot 0: uint72 hexBalance
+        const tokenAddr='0x'+raw.slice(64+24,128);             // slot 1: address (last 20 bytes of 32-byte slot)
+        if(tokenAddr==='0x0000000000000000000000000000000000000000')continue;
+        contractsByDay.set(daysInChunk[i],{contract:tokenAddr,hexBacking});
+      }
+    }
+    // Merge subgraph safety-net results (skip anything the Actuator probe already found)
+    for(const t of subgraphTokens){
+      if(!t||typeof t.name!=='string'||!t.name.startsWith('HEX Time Token '))continue;
+      const m=(t.symbol||'').match(/^HTT-(\d+)$/);
+      if(!m)continue;
+      // HSA's internal day is 0-indexed; display convention is HTT-(day+1), so subgraph HTT-N → day N-1.
+      const day=parseInt(m[1],10)-1;
+      if(!isFinite(day)||day<=0)continue;
+      const addr=(t.id||'').toLowerCase();
+      if(!/^0x[0-9a-fA-F]{40}$/.test(addr))continue;
+      if(contractsByDay.has(day))continue; // already discovered via Actuator
+      contractsByDay.set(day,{contract:addr,hexBacking:0n,source:'subgraph'});
+    }
+    // No live HTT series? Return empty arrays per wallet.
+    if(contractsByDay.size===0){
+      for(const w of walletAddrs)out.set(w,[]);
+      httBalances=out;httContractInfo=new Map();
+      return out;
+    }
+    // ── Phase B: fetch each contract's symbol() for canonical "HTT-XXXX" label ──
+    // Stored once per session in httContractInfo; survives across wallet re-opens since contracts don't rename.
+    const contractEntries=Array.from(contractsByDay.entries()); // [[day,{contract,hexBacking}], ...]
+    const symbolCalls=contractEntries.map(([_,info])=>({to:info.contract,data:SEL.symbol}));
+    const symbolResults=[];
+    for(let i=0;i<symbolCalls.length;i+=chunkSize){
+      const slice=symbolCalls.slice(i,i+chunkSize);
+      const r=await taBatch(slice,chain);
+      symbolResults.push(...r);
+    }
+    const infoMap=new Map();
+    for(let i=0;i<contractEntries.length;i++){
+      const [day,info]=contractEntries[i];
+      const symbol=parseStringResult(symbolResults[i])||('HTT-'+day); // fallback if symbol() fails
+      // source: 'actuator' (from maturityToInfo probe) or 'subgraph' (Layer 2 safety-net, off-roster)
+      infoMap.set(day,{contract:info.contract,hexBacking:info.hexBacking,symbol,source:info.source||'actuator'});
+    }
+    httContractInfo=infoMap;
+    // ── Phase C: per-wallet balanceOf across all discovered HTT contracts ──
+    for(const wallet of walletAddrs){
+      const calls=contractEntries.map(([_,info])=>({to:info.contract,data:SEL.bal+pa(wallet.slice(2))}));
+      const balances=[];
+      for(let i=0;i<calls.length;i+=chunkSize){
+        const slice=calls.slice(i,i+chunkSize);
+        const res=await taBatch(slice,chain);
+        balances.push(...res);
+      }
+      const holdings=[];
+      for(let i=0;i<balances.length;i++){
+        const b=balances[i];
+        if(!b||b==='0x')continue;
+        const balance=bi(b);
+        if(balance===0n)continue;
+        const [day,info]=contractEntries[i];
+        const meta=infoMap.get(day);
+        holdings.push({day,contract:info.contract,symbol:meta?.symbol||('HTT-'+day),balance,hexBacking:info.hexBacking});
+      }
+      out.set(wallet,holdings);
+    }
+  }catch(e){console.warn('[pls] HTT wallet balance fetch failed:',e.message);}
+  httBalances=out;
+  return out;
+}
+
+// ══════════════════════════════════════════════════════════════════
+// Per-stake Actuator details fetcher.
+//   - availableToExtract: getExtractableAmount(hsi, maturity) − collateralAmount
+//     (only callable for stakes with maturity > 0 AND hexDay < maturity; else reverts)
+//   - accrued: reuse HSA's existing gy(s) which sums dailyDataRange payouts × stake shares
+//   - escrow (projected bounty): linear projection of yield over reserve window.
+//     Bounty = yield earned days [reserveDay, endDay]. Until reserveDay, realized = 0.
+//     We display a forward projection: accrued × reserveDays / elapsedDays (constant-rate assumption).
+//
+// Output: Map<stakeId.toString(), {availableToExtract, accrued, escrow}>.
+// Triggered from openHTTAnalyzer in parallel with fetchWalletHTTBalances.
+// ══════════════════════════════════════════════════════════════════
+async function fetchActuatorStakeDetails(httStakes){
+  const chain='pls';
+  const out=new Map();
+  if(!httStakes||!httStakes.length)return out;
+  // Filter to active delegated stakes only — log-parsed ended stakes lack hsiAddress/collateralAmount
+  const live=httStakes.filter(s=>!s.fromLog&&s.hsiAddress);
+  // Effective maturity: stored s.maturity if user chose a maturity at first extraction,
+  // otherwise the stake's endDay as the natural/implied maturity (delegated but not yet minted).
+  // Actuator UI labels unminted stakes by endDay-derived HTT, and getExtractableAmount accepts
+  // any valid day — we use the most likely choice (the stake's own redemption day).
+  const effMat=s=>s.maturity>0?s.maturity:((s.lockedDay||0)+(s.stakedDays||0));
+  // Callable: has implied maturity > 0 AND not past it (else getExtractableAmount reverts)
+  const callable=live.filter(s=>{const m=effMat(s);return m>0&&hexDay&&hexDay<m;});
+  // Batch the getExtractableAmount calls
+  const extractableById=new Map();
+  if(callable.length>0){
+    try{
+      // getExtractableAmount day = the stake's STORED maturity, used as-is. This map is consumed ONLY by the
+      // mismatch/borrowed branch (minted stakes, maturity > 0); native/unminted stakes use (principal+accrued)
+      // instead and ignore it. Verified on-chain for #945007 (HTT-6000, stored maturity 5999):
+      // getExtractableAmount(hsi, 5999) → cap 2034.01 / avail 10.40 — exactly the Actuator (5998 gave 18.38).
+      const calls=callable.map(s=>({
+        to:ACTUATOR,
+        data:SEL.getExtractableAmount+pa(s.hsiAddress.slice(2))+p64(BigInt(effMat(s)))
+      }));
+      const chunkSize=200;
+      const results=[];
+      for(let i=0;i<calls.length;i+=chunkSize){
+        const slice=calls.slice(i,i+chunkSize);
+        const r=await taBatch(slice,chain);
+        results.push(...r);
+      }
+      for(let i=0;i<callable.length;i++){
+        const r=results[i];
+        if(!r||r==='0x'||r.length<4)continue;
+        const cap=bi(r);
+        const collateral=callable[i].collateralAmount||0n;
+        const avail=cap>collateral?cap-collateral:0n;
+        extractableById.set(callable[i].stakeId.toString(),avail);
+      }
+    }catch(e){console.warn('[pls] getExtractableAmount batch failed:',e.message);}
+  }
+  // Compute accrued + projected escrow per stake (no RPC — uses cached gddBy + math)
+  for(const s of live){
+    const accrued=gy(s); // existing helper — sums dailyDataRange payouts × shares
+    const stakedDays=s.stakedDays||0;
+    const reserveDays=Math.ceil(stakedDays/10);
+    const lockedDay=s.lockedDay||0;
+    const endDay=lockedDay+stakedDays;
+    const elapsedDays=Math.max(1,Math.min(hexDay||0,endDay)-lockedDay);
+    // Projection assumes constant yield rate (good enough for display; HEX yield isn't linear but close enough)
+    const projectedEscrow=elapsedDays>0?(accrued*BigInt(reserveDays)/BigInt(elapsedDays)):0n;
+    // Available to extract = how much MORE of the stake's LOCKED HTT series can be pulled right now.
+    //   Native / not-yet-extracted (locked to the stake's own end-day series): the cap is the stake's full
+    //   current value (principal + accrued); you can pull whatever of that hasn't already been extracted.
+    //   So accrued and extractable are DIFFERENT numbers — extractable is the leftover headroom, NOT the yield.
+    //   (e.g. principal 729,194 + accrued 1,861 − extracted 730,979 = 76 extractable, while accrued is still 1,861.)
+    //   Borrowed / EES (locked to an earlier, different series): the accrued is frozen, so use the contract's
+    //   reported cap minus what's already extracted — no accrued added.
+    const isMismatch=(s.maturity>0&&Number(s.maturity)!==endDay);
+    const principalH=s.stakedHearts||0n;
+    const collateralH=s.collateralAmount||0n;
+    let availableToExtract;
+    if(isMismatch){
+      availableToExtract=extractableById.get(s.stakeId.toString())||0n;
+    }else{
+      const cap=principalH+accrued;
+      availableToExtract=cap>collateralH?cap-collateralH:0n;
+    }
+    out.set(s.stakeId.toString(),{
+      availableToExtract,
+      accrued,
+      escrow:projectedEscrow
+    });
+  }
+  httStakeDetails=out;
+  return out;
+}
+
+// ══════════════════════════════════════════════════════════════════
+// Ended HSI/Actuator stake discovery via HSIM HSIEnd event logs
+//
+// When an HSI (or Actuator-wrapped HSI) stake ends, HSIM emits:
+//   HSIEnd(uint256 timestamp, address indexed hsiAddress, address indexed staker)
+// The HSI clone contract is then destroyed and removed from hsiLists.
+// The HEX contract also emits StakeEnd in the same transaction.
+//
+// Strategy:
+//   1. Scan HSIM logs for HSIEnd where topic[2] = wallet address
+//   2. For each log, get the tx receipt
+//   3. Find the StakeEnd event from HEX in that receipt
+//   4. Parse stake data from StakeEnd's packed data fields
+// ══════════════════════════════════════════════════════════════════
+
+const TOPIC_HSI_END='0x14d0fe09f225917f351bd3b122714cfcc1c45015a67232167d4b561e186b26de';
+const TOPIC_HEX_STAKE_END='0x72d9c5a7ab13846e08d9c838f9e866a1bb4a66a2fd3ba3c9e7da3cf9e394dfd7';
+
+// Get transaction receipt with RPC failover
+async function getTxReceipt(txHash,chain){
+  const urls=chain==='eth'?ethUrls():rpcsFor(chain);
+  for(let i=0;i<urls.length;i++){
+    try{
+      const r=await fetch(urls[i],{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({jsonrpc:'2.0',id:1,method:'eth_getTransactionReceipt',params:[txHash]})});
+      if(!r.ok)continue;
+      const j=await r.json();
+      if(j.result)return j.result;
+    }catch(e){}
+  }
+  return null;
+}
+
+async function batchGetReceipts(txHashes,chain){
+  const urls=chain==='eth'?ethUrls():rpcsFor(chain);
+  const results=new Array(txHashes.length).fill(null);
+  const BATCH=15;
+  for(let i=0;i<txHashes.length;i+=BATCH){
+    const slice=txHashes.slice(i,i+BATCH);
+    const body=slice.map((h,idx)=>({jsonrpc:'2.0',id:idx,method:'eth_getTransactionReceipt',params:[h]}));
+    for(const url of urls){
+      try{
+        const ac=new AbortController();
+        const t=setTimeout(()=>ac.abort(),15000);
+        try{
+          const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:ac.signal});
+          if(!r.ok)continue;
+          const arr=await r.json();
+          if(!Array.isArray(arr))continue;
+          for(const item of arr){if(item&&item.result)results[i+item.id]=item.result;}
+          break;
+        }finally{clearTimeout(t);}
+      }catch(e){}
+    }
+  }
+  console.log(`[${chain}] Batch receipts: ${txHashes.length} tx in ${Math.ceil(txHashes.length/BATCH)} batch(es)`);
+  return results;
+}
+
+async function batchGetTxByHash(txHashes,chain){
+  const urls=chain==='eth'?ethUrls():rpcsFor(chain);
+  const results=new Array(txHashes.length).fill(null);
+  const BATCH=15;
+  for(let i=0;i<txHashes.length;i+=BATCH){
+    const slice=txHashes.slice(i,i+BATCH);
+    const body=slice.map((h,idx)=>({jsonrpc:'2.0',id:idx,method:'eth_getTransactionByHash',params:[h]}));
+    for(const url of urls){
+      try{
+        const ac=new AbortController();
+        const t=setTimeout(()=>ac.abort(),15000);
+        try{
+          const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:ac.signal});
+          if(!r.ok)continue;
+          const arr=await r.json();
+          if(!Array.isArray(arr))continue;
+          for(const item of arr){if(item&&item.result)results[i+item.id]=item.result;}
+          break;
+        }finally{clearTimeout(t);}
+      }catch(e){}
+    }
+  }
+  return results;
+}
+
+// Scan ended HSI/Actuator stakes via HSIEnd events on HSIM
+// For each HSIEnd event, fetch the tx receipt and parse the HEX StakeEnd event
+// using the same bit packing as mergeStartEndLogs (proven correct).
+//
+// v45: tries explorer API first (1 call), falls back to chunked RPC scan.
+async function fetchEndedHSIStakes(addr,chain){
+  const stakes=[];
+  try{
+    const urls=chain==='eth'?ethUrls():rpcsFor(chain);
+    const walletTopic='0x'+pa(addr.slice(2));
+    const fromHex=chain==='pls'?0x10B0760:0xD59F80;
+    let logs=[];
+
+    // ── Primary: Explorer API (1 call instead of 160 chunks) ──
+    const explorerLogs=await fetchHSIEndedViaExplorer(addr,chain);
+    if(explorerLogs!==null){
+      logs=explorerLogs;
+    }else{
+      // ── Fallback: RPC scan ──
+      console.log(`[${chain}] HSI: falling back to RPC scan`);
+      if(chain==='eth'){
+        // HSIM has far fewer events than HEX — try full-range first
+        const fullParams={address:HSIM,fromBlock:'0x'+fromHex.toString(16),toBlock:'latest',topics:[TOPIC_HSI_END,null,walletTopic]};
+        let fullOk=false;
+        for(const url of urls){
+          try{
+            const r=await rpcLogs(fullParams,url);
+            if(r&&Array.isArray(r)){logs=r;fullOk=true;console.log(`[eth] HSI full-range query OK: ${r.length} events`);break;}
+          }catch(e){}
+        }
+        if(!fullOk){
+          console.log(`[eth] HSI full-range rejected — chunking`);
+          const toBlock=await getBlockNumber(chain);
+          if(!toBlock){return stakes;}
+          const CHUNK=49999;
+          const ranges=[];
+          for(let b=fromHex;b<=toBlock;b+=CHUNK)ranges.push([b,Math.min(b+CHUNK-1,toBlock)]);
+          const chunkTasks=ranges.map(([rb,re])=>async()=>{
+            for(const url of urls){
+              try{
+                const r=await rpcLogs({
+                  address:HSIM,
+                  fromBlock:'0x'+rb.toString(16),toBlock:'0x'+re.toString(16),
+                  topics:[TOPIC_HSI_END,null,walletTopic]
+                },url);
+                return r;
+              }catch(e){}
+            }
+            return[];
+          });
+          const chunkResults=await runConcurrent(chunkTasks,6);
+          for(const cr of chunkResults){if(cr&&!cr.error)logs.push(...cr);}
+        }
+      }else{
+        for(const u of urls){
+          try{
+            const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},
+              body:JSON.stringify({jsonrpc:'2.0',id:1,method:'eth_getLogs',params:[{
+                address:HSIM,fromBlock:'0x'+fromHex.toString(16),toBlock:'latest',
+                topics:[TOPIC_HSI_END,null,walletTopic]
+              }]})});
+            if(!r.ok)continue;
+            const j=await r.json();
+            if(j.result&&Array.isArray(j.result)){logs=j.result;break;}
+          }catch(e){}
+        }
+      }
+    }
+
+    if(logs.length===0)return stakes;
+
+    // Batch receipt lookups: 1 HTTP request instead of N individual getTxReceipt() calls
+    const txHashes=logs.map(l=>l.transactionHash);
+    const allReceipts=await batchGetReceipts(txHashes,chain);
+
+    for(let i=0;i<logs.length;i++){
+      const hsiEndLog=logs[i];
+      const receipt=allReceipts[i];
+      if(!receipt||!receipt.logs)continue;
+      try{
+        const seLog=receipt.logs.find(l=>
+          l.address.toLowerCase()===HEX.toLowerCase()&&
+          l.topics&&l.topics[0]===TOPIC_HEX_STAKE_END
+        );
+        if(!seLog)continue;
+        const d0=BigInt(seLog.data.slice(0,66));
+        const d1=BigInt('0x'+seLog.data.slice(66,130));
+        const stakeId=BigInt(seLog.topics[2]);
+        const stakedHearts=(d0>>40n)&M72;
+        const stakeShares=(d0>>112n)&M72;
+        const payout=(d0>>184n)&M72;
+        const servedDays=Number((d1>>72n)&M16);
+        if(stakeId===0n||stakedHearts===0n)continue;
+        const endTimestamp=Number(BigInt(hsiEndLog.data.slice(0,66)));
+        const endDay=Math.round((endTimestamp-HTS)/86400)+1;
+        const lockedDay=endDay-servedDays;
+        let sType='HSI';
+        if(chain==='pls'){
+          const actLog=receipt.logs.find(l=>l.address.toLowerCase()===ACTUATOR.toLowerCase());
+          if(actLog)sType='HTT';
+        }
+        stakes.push({
+          stakeId,stakedHearts,stakeShares,
+          lockedDay,stakedDays:servedDays,unlockedDay:endDay,
+          yh:payout,
+          owner:addr,chain,stakeType:sType,fromLog:true
+        });
+      }catch(e){}
+    }
+  }catch(e){}
+  return stakes;
+}
+async function fdr(b,e,chain){
+  if(b>=e)return[];
+  // Public Ethereum RPCs cap large eth_call response sizes / timeouts more aggressively than PulseChain.
+  // Splitting dailyDataRange into chunks of 500 days makes the calls reliable across every endpoint.
+  // Chunks are independent (different time windows), so we fetch them in parallel with bounded concurrency
+  // and concatenate in original order. ta() handles per-chunk RPC failover.
+  const CHUNK=500;
+  // Build a task per chunk
+  const ranges=[];
+  for(let cb=b;cb<e;cb+=CHUNK)ranges.push([cb,Math.min(cb+CHUNK,e)]);
+  const tasks=ranges.map(([cb,ce])=>async()=>{
+    const d=SEL.dr+p64(cb)+p64(ce);
+    try{
+      const res=await ta(d,chain);
+      const h=res.startsWith('0x')?res.slice(2):res;
+      if(!h||h.length<128){console.warn(`[${chain}] dailyDataRange(${cb},${ce}) empty response`);return null;}
+      const al=Number(BigInt('0x'+h.slice(64,128)));
+      const items=[];
+      for(let i=0;i<al;i++){
+        const s=128+i*64;
+        if(s+64<=h.length)items.push(BigInt('0x'+h.slice(s,s+64)));
+      }
+      return items;
+    }catch(er){console.warn(`[${chain}] dailyDataRange(${cb},${ce}) failed:`,er.message);return null;}
+  });
+  // Concurrency 4: chunks are large responses, don't want to hammer one RPC
+  const results=await runConcurrent(tasks,4);
+  // Concatenate in original order (runConcurrent preserves indices)
+  const out=[];
+  let failed=0;
+  for(const r of results){
+    if(r==null||r.error){failed++;continue;}
+    out.push(...r);
+  }
+  if(failed>0)console.warn(`[${chain}] fdr(${b},${e}) had ${failed} failed chunk(s) of ${ranges.length} total`);
+  return out;
+}
+function cy(sh,data){let t=0n;for(const p of data){const{pt,st}=ud(p);if(st>0n)t+=sh*pt/st;}return t;}
+// Load daily-payout data into gddBy[chain]. Uses static cache as primary source — only fetches
+// the tail (days past what's cached) via RPC. When cache is empty, falls back to full RPC fetch.
+// Output shape unchanged: gddBy[chain] = {data: bigint[], bd: number} where data[i] = day bd+i.
+async function lgdd(minD,chain){
+  const cacheRaw=staticDailyData(chain);
+  const cache=cacheRaw.map(v=>typeof v==='string'?BigInt(v):v);
+  const cachedThrough=cache.length;  // cache covers days 0..cachedThrough-1
+  if(cachedThrough>=hexDay){
+    // Static cache covers everything we need. Zero RPC.
+    gddBy[chain]={data:cache,bd:0};
+    return;
+  }
+  if(cachedThrough===0){
+    // No static cache available — fall back to full fetch starting from minD.
+    const data=await fdr(Math.min(minD,hexDay),hexDay,chain);
+    gddBy[chain]={data,bd:Math.min(minD,hexDay)};
+    return;
+  }
+  // Cache covers days 0..cachedThrough-1; fetch the tail cachedThrough..hexDay-1.
+  const tail=await fdr(cachedThrough,hexDay,chain);
+  // Concatenate. data[i] = day i because bd=0 and cache starts at day 0.
+  gddBy[chain]={data:cache.concat(tail),bd:0};
+}
+function gy(s){const chain=s.chain||'pls';const gdd=gddBy[chain];if(s.lockedDay>hexDay||!gdd?.data.length)return 0n;const{data,bd}=gdd;const end=s.unlockedDay>0?Math.min(s.unlockedDay,s.lockedDay+s.stakedDays):Math.min(hexDay,s.lockedDay+s.stakedDays);if(end<=s.lockedDay)return 0n;const si=Math.max(0,s.lockedDay-bd),ei=Math.min(data.length,end-bd);if(si>=ei)return 0n;return cy(s.stakeShares,data.slice(si,ei));}
+
+// ── Complete daily price tables (Day 1 → present) ──
+// Price source: CoinGecko market_chart/range (coin ids: hex = eHEX, hex-pulsechain = pHEX) — USD per HEX day.
+//   eHEX tracks Uniswap-based USD; pHEX tracks PulseX-based USD. Format: [hexDay, priceUSD].
+// eHEX: Day 1–present. pHEX: Day 1261–present (PulseChain launched Day 1256).
+// Last updated: through Day 2398 (Jun 27, 2026), both chains.
+// NOTE: CoinGecko's free API serves only ~the last 365 days, so updates APPEND recent days to the existing
+// table rather than regenerating full history. Any day still missing falls back to CoinGecko at runtime.
+const PRICE_TABLE_EHEX=[[1,0.00313887],[2,0.00177064],[3,0.00071482],[4,0.00056323],[5,0.00038236],[6,0.00033072],[7,0.00038998],[8,0.00029263],[9,0.00024831],[10,0.00026909],[11,0.00028184],[12,0.0002558],[13,0.0002214],[14,0.00021832],[15,0.00018871272922555863],[16,0.0001516822723570844],[17,0.00016020611125587772],[18,0.00011182052339809643],[19,0.00012516111772719961],[20,0.00009062602318624961],[21,0.0001285032489671382],[22,0.00011548000360356247],[23,0.00012378819940954023],[24,0.000115697235215119],[25,0.00010117603727969362],[26,0.00010135435948184923],[27,0.000141176259270217],[28,0.00008583506067911087],[29,0.00007422006341526489],[30,0.000084227812302325],[31,0.00007531716678589056],[32,0.00006980989129380589],[33,0.00006952152853168291],[34,0.00006000808109799524],[35,0.000060401503827926],[36,0.00007402357716909],[37,0.00008530464859117078],[38,0.00008718838406515107],[39,0.0000863438668696108],[40,0.00009885280798691962],[41,0.00009886026704447009],[42,0.00009818165211603141],[43,0.00009682937479834572],[44,0.0001071172316685102],[45,0.00010316514682918499],[46,0.000099342747513488],[47,0.00010153985247665125],[48,0.000102677545906735],[49,0.00009904584019163775],[50,0.000112300432083059],[51,0.00011303496177866354],[52,0.000113196750002401],[53,0.000108758533663418],[54,0.0001221200901179884],[55,0.000123465658931114],[56,0.000136098494700673],[57,0.000137710370810325],[58,0.00015640615809499857],[59,0.000159506006539269],[60,0.000172832951528241],[61,0.00018586799748739738],[62,0.000240911127478856],[63,0.000298606528898439],[64,0.00037396699337060045],[65,0.0003985222108178638],[66,0.0004572750578814491],[67,0.000451573452719904],[68,0.0004436382652389259],[69,0.000403646476904807],[70,0.0003961532057472843],[71,0.0003624112186031913],[72,0.000357544058310523],[73,0.00037198821030604565],[74,0.00034914628480855434],[75,0.0003534703105792739],[76,0.00030989694619435067],[77,0.000269822728990996],[78,0.0002643062090018852],[79,0.00029897811019046676],[80,0.00029335302968308097],[81,0.000290098388906838],[82,0.0002996900954531047],[83,0.00031740111445974846],[84,0.000323074198590642],[85,0.000311655638098878],[86,0.00029222936604292456],[87,0.000255618753591531],[88,0.00026304557840132445],[89,0.0002568226505806995],[90,0.00024318303522109365],[91,0.00024213081142540144],[92,0.00025953996608162],[93,0.00024998582604820785],[94,0.00024829567013262],[95,0.00025290679022504876],[96,0.0002628367380627499],[97,0.0002596546169296971],[98,0.000224952102233647],[99,0.00022597470279145997],[100,0.0002476859728496099],[101,0.000253025470938608],[102,0.00017187894938190467],[103,0.000279332120127036],[104,0.0002454742681143724],[105,0.0003040501857725651],[106,0.0003108029537734074],[107,0.0003825142758095359],[108,0.0003797945678612532],[109,0.0004278024961413837],[110,0.00045604940521924166],[111,0.0004914397085819155],[112,0.0004538237513200809],[113,0.0005049090089308031],[114,0.0005062499749348097],[115,0.000479276415338149],[116,0.0004850629558766162],[117,0.0004484277611386112],[118,0.0004551751357583308],[119,0.00043233190879384654],[120,0.00046201364357364413],[121,0.0004621038415034455],[122,0.00047692536753949223],[123,0.000497798393739333],[124,0.000492317385158572],[125,0.000500594331074825],[126,0.0004975713413958287],[127,0.0005868519869710217],[128,0.0005767585870043074],[129,0.000589315761468261],[130,0.000586827593246407],[131,0.0005689241202849473],[132,0.000569644023521259],[133,0.000568098385255135],[134,0.000550282004191813],[135,0.0005922066025529487],[136,0.0005697133191364678],[137,0.0006862416885081107],[138,0.000727505070205657],[139,0.0014156883358042752],[140,0.001604691821288228],[141,0.0018926752572069958],[142,0.002472464269331633],[143,0.002822519142635692],[144,0.0024958926435985043],[145,0.001932212312207453],[146,0.00273830690270665],[147,0.002800485708975874],[148,0.002683750388101019],[149,0.003108935044815777],[150,0.003457700772890506],[151,0.004195119894471623],[152,0.004615723759855183],[153,0.004822686848802124],[154,0.004407267734843051],[155,0.005256306409480826],[156,0.005513182198174444],[157,0.005626209016156691],[158,0.005509354045148727],[159,0.004917224747688285],[160,0.005809288646706308],[161,0.005661053665242634],[162,0.005597276180158203],[163,0.005738037177899942],[164,0.006189863813669373],[165,0.005825021296090512],[166,0.005727272950771399],[167,0.004972089494150302],[168,0.00464882],[169,0.00346828],[170,0.00398169],[171,0.00356802],[172,0.00368315],[173,0.00385128],[174,0.00387578],[175,0.00411636],[176,0.00453366],[177,0.00470763],[178,0.00484531],[179,0.00486855],[180,0.00504386],[181,0.0045468],[182,0.0047833],[183,0.00362588],[184,0.00414487],[185,0.00413916],[186,0.00387275],[187,0.00338655],[188,0.00341025],[189,0.00303906],[190,0.0038387],[191,0.00395608],[192,0.00381457],[193,0.0037644],[194,0.00357239],[195,0.00330413],[196,0.00318527],[197,0.00320674],[198,0.00329053],[199,0.00323785],[200,0.00318838],[201,0.00325732],[202,0.00313377],[203,0.00325214],[204,0.00321511],[205,0.00307825],[206,0.00300629],[207,0.00286865],[208,0.00281965],[209,0.00289553],[210,0.00302053],[211,0.00314367],[212,0.00351004],[213,0.00333311],[214,0.00326538],[215,0.0033757],[216,0.00324913],[217,0.00349288],[218,0.00343028],[219,0.0036456],[220,0.00367626],[221,0.00361901],[222,0.00350672],[223,0.00370092],[224,0.0036867],[225,0.00365665],[226,0.00354014],[227,0.00352062],[228,0.00352172],[229,0.00371157],[230,0.00385223],[231,0.00372905],[232,0.00385553],[233,0.00439],[234,0.0044468],[235,0.00430362],[236,0.00468122],[237,0.00466611],[238,0.00583308],[239,0.00571289],[240,0.00574587],[241,0.00580622],[242,0.00414867],[243,0.00481691],[244,0.00427684],[245,0.00428895],[246,0.00398116],[247,0.00405299],[248,0.00421781],[249,0.00387744],[250,0.00394588],[251,0.00372241],[252,0.00339448],[253,0.00317574],[254,0.00299199],[255,0.00282066],[256,0.00266755],[257,0.00265932],[258,0.00306238],[259,0.00282944],[260,0.00287518],[261,0.00269064],[262,0.00301436],[263,0.0028072],[264,0.00290218],[265,0.00298925],[266,0.0035541],[267,0.00319817],[268,0.00309099],[269,0.00300134],[270,0.00323169],[271,0.00294788],[272,0.00295836],[273,0.00276165],[274,0.00289465],[275,0.00258468],[276,0.00234784],[277,0.0023988],[278,0.00225756],[279,0.00244476],[280,0.00232019],[281,0.00240997],[282,0.00285965],[283,0.00278887],[284,0.00277144],[285,0.002877],[286,0.00259944],[287,0.00224572],[288,0.00236432],[289,0.00243989],[290,0.00308771],[291,0.00305892],[292,0.00369428],[293,0.00389604],[294,0.00390539],[295,0.00381405],[296,0.00320455],[297,0.00360726],[298,0.00379363],[299,0.00400548],[300,0.00442744],[301,0.00407072],[302,0.00405209],[303,0.00403024],[304,0.00380188],[305,0.00381678],[306,0.00396405],[307,0.00406538],[308,0.00396372],[309,0.00364177],[310,0.00407863],[311,0.00419613],[312,0.00423451],[313,0.00445553],[314,0.00406717],[315,0.00407526],[316,0.00412516],[317,0.00399609],[318,0.00420413],[319,0.00416894],[320,0.00425663],[321,0.00440857],[322,0.00465538],[323,0.00522179],[324,0.00517995],[325,0.00565813],[326,0.00653788],[327,0.00718507],[328,0.00855232],[329,0.00808602],[330,0.00820615],[331,0.00951578],[332,0.00942901],[333,0.01135784],[334,0.01369774],[335,0.01486905],[336,0.01350282],[337,0.01183936],[338,0.01188928],[339,0.00931878],[340,0.00924996],[341,0.00811225],[342,0.0073316],[343,0.00936085],[344,0.00806823],[345,0.00905821],[346,0.00900293],[347,0.00940844],[348,0.00873417],[349,0.00866277],[350,0.00897222],[351,0.00692137],[352,0.00676894],[353,0.00504833],[354,0.00354216],[355,0.00443095],[356,0.00412982],[357,0.00417703],[358,0.00345263],[359,0.00321926],[360,0.00325175],[361,0.00325662],[362,0.00426089],[363,0.00430027],[364,0.00464992],[365,0.00446883],[366,0.00432536],[367,0.0042042],[368,0.00353671],[369,0.00363456],[370,0.00347993],[371,0.003589],[372,0.00334093],[373,0.00377843],[374,0.00400434],[375,0.00397477],[376,0.00464812],[377,0.00487903],[378,0.00454807],[379,0.00459983],[380,0.00499812],[381,0.00591947],[382,0.00552267],[383,0.00550232],[384,0.00541599],[385,0.00546838],[386,0.0054866],[387,0.0052156],[388,0.00581875],[389,0.00668104],[390,0.00647238],[391,0.00677561],[392,0.00859985],[393,0.00895756],[394,0.00927557],[395,0.01743107],[396,0.0132651],[397,0.01193885],[398,0.01204085],[399,0.01278794],[400,0.01268669],[401,0.01261023],[402,0.01301472],[403,0.01241634],[404,0.01238582],[405,0.01142971],[406,0.0101369],[407,0.01005798],[408,0.01031542],[409,0.01069291],[410,0.01010857],[411,0.00895527],[412,0.00823936],[413,0.00873763],[414,0.00856821],[415,0.00902455],[416,0.00750943],[417,0.00765236],[418,0.00784805],[419,0.00831539],[420,0.00771134],[421,0.00784447],[422,0.00779828],[423,0.00788008],[424,0.00793262],[425,0.00784996],[426,0.00740679],[427,0.00689502],[428,0.00789966],[429,0.0099011],[430,0.00895556],[431,0.00967331],[432,0.00987762],[433,0.01022309],[434,0.01058293],[435,0.0121599],[436,0.01316848],[437,0.01256027],[438,0.0125012],[439,0.01153921],[440,0.01074089],[441,0.0098943],[442,0.01054384],[443,0.01060771],[444,0.00991092],[445,0.00917145],[446,0.00928917],[447,0.00921395],[448,0.00831021],[449,0.00808427],[450,0.00840111],[451,0.00838272],[452,0.00798914],[453,0.00936398],[454,0.00829706],[455,0.00871325],[456,0.00855457],[457,0.0091876],[458,0.00903564],[459,0.00877832],[460,0.00848432],[461,0.00887623],[462,0.00857366],[463,0.00876704],[464,0.00841625],[465,0.00881625],[466,0.0090625],[467,0.0100461],[468,0.009455],[469,0.01100311],[470,0.01151703],[471,0.01233433],[472,0.01276724],[473,0.01135644],[474,0.01192507],[475,0.01150771],[476,0.01178396],[477,0.01205698],[478,0.01356572],[479,0.01383733],[480,0.0148715],[481,0.01645952],[482,0.01639107],[483,0.01556676],[484,0.01717534],[485,0.01789453],[486,0.01757247],[487,0.01694585],[488,0.01733304],[489,0.01932404],[490,0.01921616],[491,0.02048242],[492,0.02030888],[493,0.02142062],[494,0.02103187],[495,0.01897743],[496,0.01975145],[497,0.01920116],[498,0.01876547],[499,0.01825204],[500,0.0188398],[501,0.01875184],[502,0.01765756],[503,0.01709079],[504,0.01638237],[505,0.01698298],[506,0.01680673],[507,0.01765479],[508,0.01691065],[509,0.01592556],[510,0.01553485],[511,0.0156436],[512,0.0143565],[513,0.01574094],[514,0.01640228],[515,0.01754174],[516,0.02024404],[517,0.02015936],[518,0.02141878],[519,0.02394118],[520,0.02925949],[521,0.02581688],[522,0.031765249999999995],[523,0.033551029999999996],[524,0.03889726],[525,0.044862139999999995],[526,0.05017825],[527,0.056642745],[528,0.06429112000000001],[529,0.06252159],[530,0.053134404999999996],[531,0.053449029999999995],[532,0.049269165000000004],[533,0.0540682],[534,0.042955215000000005],[535,0.048316405],[536,0.049145335],[537,0.046875665],[538,0.039723115],[539,0.045736435],[540,0.04948695],[541,0.057469685],[542,0.062459299999999995],[543,0.05943342],[544,0.053726855000000004],[545,0.053089955],[546,0.052705395],[547,0.054488375],[548,0.055553895000000006],[549,0.05484886],[550,0.060249385],[551,0.057809755000000004],[552,0.059559715],[553,0.056825075],[554,0.0599881],[555,0.065899495],[556,0.071956645],[557,0.07929454],[558,0.08170232999999999],[559,0.084599975],[560,0.09385349500000001],[561,0.09080074],[562,0.08410994],[563,0.09111189],[564,0.09710633499999999],[565,0.09489193],[566,0.092517925],[567,0.078677],[568,0.079007575],[569,0.080406645],[570,0.078147735],[571,0.07471352],[572,0.06921483],[573,0.07496625500000001],[574,0.08050463],[575,0.083413735],[576,0.08396765],[577,0.075317085],[578,0.07969701],[579,0.08536789],[580,0.087560365],[581,0.08681701],[582,0.08541528000000001],[583,0.085024595],[584,0.08230668499999999],[585,0.08488773499999999],[586,0.08433761000000001],[587,0.08657013999999999],[588,0.085705405],[589,0.115478395],[590,0.122322865],[591,0.169556915],[592,0.15760695000000002],[593,0.165971565],[594,0.148672575],[595,0.157992225],[596,0.13349107],[597,0.14811613],[598,0.13603417],[599,0.14262734],[600,0.1444637],[601,0.13439095],[602,0.12222324],[603,0.13537363],[604,0.13190839],[605,0.12874988],[606,0.11653311],[607,0.12565779],[608,0.12279963],[609,0.11758321],[610,0.14175485],[611,0.14617139],[612,0.14523668],[613,0.11601146],[614,0.1280866],[615,0.12993091],[616,0.12844199],[617,0.12066095],[618,0.13130307],[619,0.13809812],[620,0.14937404],[621,0.15572959],[622,0.16125502],[623,0.162631115],[624,0.17346135],[625,0.1825918],[626,0.17713615],[627,0.1736322],[628,0.18847242],[629,0.18093913],[630,0.17876128],[631,0.1818997],[632,0.18458594],[633,0.19909286],[634,0.22897465],[635,0.23621296],[636,0.22209042],[637,0.24352338],[638,0.25523182],[639,0.26033445],[640,0.28288679],[641,0.28577212],[642,0.35509885],[643,0.35089677],[644,0.39289446],[645,0.39812595],[646,0.4378179],[647,0.45467601],[648,0.45493528],[649,0.45073011],[650,0.40149451],[651,0.36211789],[652,0.38037876],[653,0.38949108],[654,0.38581653],[655,0.42037854],[656,0.48314584],[657,0.46064187],[658,0.42774204],[659,0.40963427],[660,0.42048861],[661,0.47292081],[662,0.47290124],[663,0.4631246],[664,0.4468366],[665,0.43274623],[666,0.39245109],[667,0.40736325],[668,0.39534276],[669,0.45858667],[670,0.41167517],[671,0.4177455],[672,0.41276489],[673,0.3868797],[674,0.37889995],[675,0.38341364],[676,0.40708986],[677,0.42903316],[678,0.4206689],[679,0.40260818],[680,0.38316427],[681,0.36462801],[682,0.36899249],[683,0.32848836],[684,0.29455315],[685,0.28259496],[686,0.26903962],[687,0.32090498],[688,0.29938708],[689,0.28219769],[690,0.30710519],[691,0.32938907],[692,0.31348234],[693,0.30104186],[694,0.27907697],[695,0.25343173],[696,0.25412171],[697,0.22678106],[698,0.2186528],[699,0.22928873],[700,0.2183493],[701,0.22854595],[702,0.2231806],[703,0.20578798],[704,0.20966578],[705,0.18799999],[706,0.17770954],[707,0.16826576],[708,0.18557898],[709,0.1831248],[710,0.24097041],[711,0.27466276],[712,0.26854724],[713,0.24441104],[714,0.23357172],[715,0.20651389],[716,0.20628156],[717,0.21740653],[718,0.2034081],[719,0.21112071],[720,0.19255202],[721,0.18721785],[722,0.18273942],[723,0.17542244],[724,0.20626713],[725,0.19051473],[726,0.17964145],[727,0.17072788],[728,0.18297059],[729,0.1711098],[730,0.17808764],[731,0.18006634],[732,0.17244433],[733,0.16631549],[734,0.15402913],[735,0.14284335],[736,0.135388],[737,0.13256726],[738,0.14035388],[739,0.13467585],[740,0.15974968],[741,0.15398393],[742,0.16243498],[743,0.19325059],[744,0.2204433],[745,0.23183883],[746,0.19559904],[747,0.22227181],[748,0.24612239],[749,0.27636246],[750,0.29919193],[751,0.2761448],[752,0.29632313],[753,0.31499014],[754,0.30207026],[755,0.28833095],[756,0.30131546],[757,0.29133272],[758,0.33492024],[759,0.31642419],[760,0.28463477],[761,0.23913384],[762,0.21553063],[763,0.24497478],[764,0.24180345],[765,0.1979101],[766,0.21350701],[767,0.22260363],[768,0.25376839],[769,0.23912688],[770,0.23247593],[771,0.22971075],[772,0.22817071],[773,0.24336119],[774,0.24727778],[775,0.24933575],[776,0.2370035],[777,0.21069788],[778,0.20491443],[779,0.21052981],[780,0.21207584],[781,0.17742979],[782,0.17663868],[783,0.1928483],[784,0.18373115],[785,0.19289727],[786,0.18442243],[787,0.18664072],[788,0.18396236],[789,0.1790394],[790,0.18804749],[791,0.17955594],[792,0.18150024],[793,0.18074764],[794,0.18617584],[795,0.19591837],[796,0.20755294],[797,0.20811589],[798,0.21772397],[799,0.20614493],[800,0.2032783],[801,0.20796382],[802,0.20665533],[803,0.20746722],[804,0.20167948],[805,0.19960779],[806,0.20444887],[807,0.19489391],[808,0.18784856],[809,0.17370156],[810,0.1780691],[811,0.15756461],[812,0.15992084],[813,0.14715224],[814,0.14950841],[815,0.13611835],[816,0.15644061],[817,0.15689502],[818,0.13975048],[819,0.14517916],[820,0.14083183],[821,0.12653427],[822,0.12519868],[823,0.11648621],[824,0.11350873],[825,0.11630786],[826,0.11170228],[827,0.10860409],[828,0.13607183],[829,0.13948239],[830,0.12250196],[831,0.12823342],[832,0.119255],[833,0.11003925],[834,0.10559901],[835,0.11546396],[836,0.11757116],[837,0.11771807],[838,0.12099742],[839,0.11629006],[840,0.11690367],[841,0.11463371],[842,0.12067693],[843,0.13603925],[844,0.13892275],[845,0.14745573],[846,0.15764889],[847,0.1585882],[848,0.1473309],[849,0.15803493],[850,0.15611132],[851,0.15513885],[852,0.15508658],[853,0.15796295],[854,0.14813133],[855,0.14527493],[856,0.12972218],[857,0.13479824],[858,0.12976915],[859,0.136656],[860,0.13142296],[861,0.11923945],[862,0.11770836],[863,0.12020315],[864,0.1208558],[865,0.13390904],[866,0.1365805],[867,0.12867994],[868,0.12099575],[869,0.12258916],[870,0.13056337],[871,0.12994465],[872,0.12659849],[873,0.13046392],[874,0.13043058],[875,0.12676082],[876,0.13137117],[877,0.14413479],[878,0.15005818],[879,0.175063],[880,0.17212622],[881,0.16236906],[882,0.17593342],[883,0.17987055],[884,0.1993598],[885,0.17755636],[886,0.18472834],[887,0.1835374],[888,0.17312237],[889,0.14674788],[890,0.15878393],[891,0.13551322],[892,0.12973207],[893,0.12933164],[894,0.13102668],[895,0.14567021],[896,0.11587274],[897,0.12223508],[898,0.10953908],[899,0.10908544],[900,0.10902942],[901,0.11120212],[902,0.09931972],[903,0.08280173],[904,0.08268948],[905,0.07824805],[906,0.0663997],[907,0.06303451],[908,0.08082632],[909,0.07061183],[910,0.08308545],[911,0.08088992],[912,0.06704387],[913,0.06761016],[914,0.0570512],[915,0.0563266],[916,0.04968185],[917,0.05431813],[918,0.06011302],[919,0.05465627],[920,0.0522132],[921,0.04849912],[922,0.04128729],[923,0.0373195],[924,0.0315952],[925,0.03435598],[926,0.03842041],[927,0.03254752],[928,0.03260016],[929,0.03161088],[930,0.03439496],[931,0.03859872],[932,0.0414674],[933,0.03975451],[934,0.0445079],[935,0.04888071],[936,0.05592787],[937,0.04549156],[938,0.04240625],[939,0.03738069],[940,0.03761535],[941,0.03668028],[942,0.03885942],[943,0.03694617],[944,0.03420296],[945,0.03813378],[946,0.03488641],[947,0.03786664],[948,0.03903952],[949,0.03682516],[950,0.03869473],[951,0.03695415],[952,0.03531618],[953,0.03452714],[954,0.0367186],[955,0.03751005],[956,0.03789005],[957,0.04018478],[958,0.03802831],[959,0.04053841],[960,0.04479601],[961,0.04144868],[962,0.04185571],[963,0.04178318],[964,0.04132108],[965,0.04153981],[966,0.04240119],[967,0.04499675],[968,0.0478203],[969,0.04773336],[970,0.04943678],[971,0.05263359],[972,0.04920112],[973,0.04815916],[974,0.04521709],[975,0.04757801],[976,0.0472654],[977,0.05002228],[978,0.05136395],[979,0.05116734],[980,0.05288179],[981,0.05483505],[982,0.05954372],[983,0.05952801],[984,0.06282983],[985,0.06737105],[986,0.0682894],[987,0.06404079],[988,0.05921628],[989,0.0586138],[990,0.05216325],[991,0.03894687],[992,0.04266664],[993,0.04911769],[994,0.04865159],[995,0.04943639],[996,0.05096253],[997,0.0508203],[998,0.0457714],[999,0.04189784],[1000,0.04000482],[1001,0.04184375],[1002,0.04076919],[1003,0.0401225],[1004,0.04018299],[1005,0.04214439],[1006,0.04261986],[1007,0.04266982],[1008,0.04198739],[1009,0.04010315],[1010,0.04071998],[1011,0.03930062],[1012,0.03999273],[1013,0.03967509],[1014,0.039419],[1015,0.04004066],[1016,0.03701219],[1017,0.03671226],[1018,0.03442389],[1019,0.03353726],[1020,0.03501053],[1021,0.03271069],[1022,0.03175387],[1023,0.03070205],[1024,0.03084048],[1025,0.03183812],[1026,0.03164474],[1027,0.03279475],[1028,0.03357054],[1029,0.03297116],[1030,0.03293863],[1031,0.03390539],[1032,0.03360834],[1033,0.0343964],[1034,0.03303375],[1035,0.0323073],[1036,0.03367662],[1037,0.03442047],[1038,0.03304785],[1039,0.03318518],[1040,0.03318705],[1041,0.03262582],[1042,0.03322524],[1043,0.03259275],[1044,0.03212033],[1045,0.03215551],[1046,0.03235185],[1047,0.03158729],[1048,0.03104223],[1049,0.0316717],[1050,0.03240825],[1051,0.03254585],[1052,0.03198832],[1053,0.0319623],[1054,0.03181741],[1055,0.0336775],[1056,0.0359074],[1057,0.04003401],[1058,0.04191618],[1059,0.04719743],[1060,0.04261247],[1061,0.04441967],[1062,0.04567417],[1063,0.04365985],[1064,0.04237867],[1065,0.04382515],[1066,0.03991354],[1067,0.03863567],[1068,0.04208173],[1069,0.03894131],[1070,0.03655117],[1071,0.03274815],[1072,0.03135699],[1073,0.03086541],[1074,0.034326],[1075,0.03443041],[1076,0.03374885],[1077,0.03258865],[1078,0.03271024],[1079,0.03290268],[1080,0.03217053],[1081,0.03078465],[1082,0.03107884],[1083,0.03099016],[1084,0.02906204],[1085,0.02648219],[1086,0.02748639],[1087,0.02759028],[1088,0.02833081],[1089,0.02760422],[1090,0.02704362],[1091,0.02655642],[1092,0.02496894],[1093,0.02688806],[1094,0.02915031],[1095,0.03052292],[1096,0.03131039],[1097,0.02971955],[1098,0.02981126],[1099,0.02855238],[1100,0.02866339],[1101,0.02813287],[1102,0.02960427],[1103,0.02859131],[1104,0.02874706],[1105,0.02796655],[1106,0.02711297],[1107,0.02835979],[1108,0.02794314],[1109,0.02649279],[1110,0.02495169],[1111,0.0252548],[1112,0.02589571],[1113,0.02438858],[1114,0.02461926],[1115,0.0244635],[1116,0.02389442],[1117,0.02251263],[1118,0.02238437],[1119,0.02210312],[1120,0.02211413],[1121,0.0201868],[1122,0.01906954],[1123,0.01818347],[1124,0.01879694],[1125,0.01873665],[1126,0.01918087],[1127,0.01830041],[1128,0.01790877],[1129,0.0191593],[1130,0.02170666],[1131,0.02468897],[1132,0.02359386],[1133,0.02293198],[1134,0.02467374],[1135,0.02165499],[1136,0.0214509],[1137,0.0245129],[1138,0.02627242],[1139,0.02586302],[1140,0.02655699],[1141,0.02773097],[1142,0.02691403],[1143,0.02409924],[1144,0.02384347],[1145,0.02461141],[1146,0.02493873],[1147,0.02299056],[1148,0.02445036],[1149,0.02441026],[1150,0.02640548],[1151,0.02641694],[1152,0.02742102],[1153,0.02597233],[1154,0.02772702],[1155,0.02525479],[1156,0.02711811],[1157,0.03168345],[1158,0.03153003],[1159,0.04074841],[1160,0.04000667],[1161,0.03849166],[1162,0.04067001],[1163,0.04476026],[1164,0.0536171],[1165,0.04210736],[1166,0.04668254],[1167,0.04971566],[1168,0.04662971],[1169,0.04717968],[1170,0.04940236],[1171,0.05402324],[1172,0.05142227],[1173,0.05496802],[1174,0.05396561],[1175,0.06163782],[1176,0.06719564],[1177,0.05995032],[1178,0.06316945],[1179,0.06294107],[1180,0.06001916],[1181,0.05923228],[1182,0.05928163],[1183,0.06263382],[1184,0.06696796],[1185,0.07696548],[1186,0.07504404],[1187,0.06985455],[1188,0.06534679],[1189,0.06835235],[1190,0.0696148],[1191,0.06486792],[1192,0.05885982],[1193,0.05652473],[1194,0.05667396],[1195,0.06884455],[1196,0.07914416],[1197,0.08264628],[1198,0.08369012],[1199,0.07967716],[1200,0.08127752],[1201,0.08999542],[1202,0.08456533],[1203,0.08703362],[1204,0.08515706],[1205,0.09833373],[1206,0.11784072],[1207,0.10641179],[1208,0.09221774],[1209,0.08334111],[1210,0.09316552],[1211,0.07819726],[1212,0.07655658],[1213,0.08588806],[1214,0.09087336],[1215,0.08758996],[1216,0.07866958],[1217,0.08134068],[1218,0.07769063],[1219,0.07792271],[1220,0.08112431],[1221,0.06891963],[1222,0.07092064],[1223,0.06832016],[1224,0.07301784],[1225,0.07764203],[1226,0.07167953],[1227,0.07275778],[1228,0.0749299],[1229,0.0735313],[1230,0.07869318],[1231,0.07646882],[1232,0.06953245],[1233,0.06745765],[1234,0.06861601],[1235,0.06333592],[1236,0.06015174],[1237,0.06140392],[1238,0.06446285],[1239,0.05847854],[1240,0.06102922],[1241,0.05722705],[1242,0.05364676],[1243,0.0579105],[1244,0.0508172],[1245,0.05139745],[1246,0.05020454],[1247,0.05680639],[1248,0.06234615],[1249,0.06365078],[1250,0.0657321],[1251,0.05821142],[1252,0.06501906],[1253,0.05983448],[1254,0.05824226],[1255,0.06692739],[1256,0.05849428],[1257,0.05419178],[1258,0.0329729],[1259,0.02840903],[1260,0.03076524],[1261,0.03176009],[1262,0.02862576],[1263,0.03035669],[1264,0.03485487],[1265,0.03505749],[1266,0.02770718],[1267,0.02304266],[1268,0.02181869],[1269,0.01879159],[1270,0.01543102],[1271,0.01602858],[1272,0.01378601],[1273,0.01355916],[1274,0.01539864],[1275,0.01215724],[1276,0.01202954],[1277,0.01271187],[1278,0.01411151],[1279,0.01335158],[1280,0.01330376],[1281,0.01193329],[1282,0.01180645],[1283,0.01069866],[1284,0.00843174],[1285,0.00789558],[1286,0.00803994],[1287,0.0084421],[1288,0.00779524],[1289,0.00755705],[1290,0.00687675],[1291,0.00765607],[1292,0.00905693],[1293,0.00979199],[1294,0.00950254],[1295,0.00858767],[1296,0.00927538],[1297,0.00933794],[1298,0.00878242],[1299,0.0087737],[1300,0.00862089],[1301,0.00826967],[1302,0.00805902],[1303,0.0077097],[1304,0.00769149],[1305,0.0079817],[1306,0.00900072],[1307,0.00812109],[1308,0.00766272],[1309,0.00789316],[1310,0.00773245],[1311,0.00759605],[1312,0.00764667],[1313,0.00783657],[1314,0.00865838],[1315,0.00807253],[1316,0.00907888],[1317,0.00893542],[1318,0.00939452],[1319,0.01161624],[1320,0.01062826],[1321,0.01008714],[1322,0.01059186],[1323,0.00975546],[1324,0.00910934],[1325,0.00945739],[1326,0.00986166],[1327,0.00980653],[1328,0.00973517],[1329,0.00941441],[1330,0.0090024],[1331,0.00906781],[1332,0.00875677],[1333,0.00899931],[1334,0.00979715],[1335,0.00934054],[1336,0.00872213],[1337,0.00621774],[1338,0.00512913],[1339,0.00551438],[1340,0.00639931],[1341,0.00546939],[1342,0.00604057],[1343,0.00499043],[1344,0.00527762],[1345,0.00514431],[1346,0.00516303],[1347,0.00506513],[1348,0.00477105],[1349,0.00445418],[1350,0.00503436],[1351,0.00526952],[1352,0.00473807],[1353,0.0044698],[1354,0.00323561],[1355,0.00429215],[1356,0.00403774],[1357,0.00403774],[1358,0.00430146],[1359,0.00393036],[1360,0.00363061],[1361,0.00348044],[1362,0.00307669],[1363,0.00349324],[1364,0.00352629],[1365,0.00370911],[1366,0.00445646],[1367,0.00392112],[1368,0.00380174],[1369,0.00384803],[1370,0.00372722],[1371,0.00374517],[1372,0.00380386],[1373,0.00384535],[1374,0.00390741],[1375,0.00398284],[1376,0.0037269],[1377,0.00367426],[1378,0.00352744],[1379,0.00332796],[1380,0.00334022],[1381,0.00319359],[1382,0.0035026],[1383,0.00367834],[1384,0.00362491],[1385,0.00339628],[1386,0.00353732],[1387,0.0036623],[1388,0.00359678],[1389,0.0034372],[1390,0.0033915],[1391,0.00335522],[1392,0.00337237],[1393,0.00331229],[1394,0.00340044],[1395,0.0031882],[1396,0.00343028],[1397,0.00349773],[1398,0.00351322],[1399,0.00344504],[1400,0.00325062],[1401,0.00316293],[1402,0.00337163],[1403,0.0033574],[1404,0.00330125],[1405,0.003252],[1406,0.0031801],[1407,0.00310712],[1408,0.00306407],[1409,0.00305002],[1410,0.0029027],[1411,0.00295619],[1412,0.00296802],[1413,0.00295015],[1414,0.00297408],[1415,0.00346235],[1416,0.00413879],[1417,0.00450645],[1418,0.00592832],[1419,0.00840571],[1420,0.00917782],[1421,0.0099189],[1422,0.00931573],[1423,0.01072611],[1424,0.01035796],[1425,0.0081943],[1426,0.00791793],[1427,0.00815209],[1428,0.00899657],[1429,0.00879005],[1430,0.01001071],[1431,0.00999129],[1432,0.00867457],[1433,0.00898873],[1434,0.0085233],[1435,0.00813923],[1436,0.00816525],[1437,0.00799117],[1438,0.00862386],[1439,0.00807963],[1440,0.00781705],[1441,0.00675813],[1442,0.0071272],[1443,0.0070015],[1444,0.00749199],[1445,0.00677757],[1446,0.00648766],[1447,0.00640007],[1448,0.00604507],[1449,0.00555978],[1450,0.0052018],[1451,0.00609939],[1452,0.0063497],[1453,0.00653025],[1454,0.00665948],[1455,0.00614407],[1456,0.00569584],[1457,0.00623132],[1458,0.00616523],[1459,0.00609589],[1460,0.00640387],[1461,0.00625779],[1462,0.00578333],[1463,0.00527624],[1464,0.00513078],[1465,0.00470398],[1466,0.0046659],[1467,0.0058023],[1468,0.0051998],[1469,0.00523096],[1470,0.00480976],[1471,0.00498106],[1472,0.00498936],[1473,0.00516741],[1474,0.00496377],[1475,0.00466127],[1476,0.00488604],[1477,0.00537939],[1478,0.00513961],[1479,0.00524515],[1480,0.00519566],[1481,0.00517236],[1482,0.00531541],[1483,0.00502166],[1484,0.00521594],[1485,0.00512848],[1486,0.00515155],[1488,0.00553108],[1489,0.00589912],[1490,0.00538391],[1492,0.00501407],[1493,0.00456312],[1494,0.00455933],[1495,0.0046449],[1496,0.00362086],[1497,0.00448143],[1498,0.00492788],[1499,0.00640733],[1500,0.00844658],[1501,0.00953732],[1502,0.00860548],[1503,0.00974134],[1504,0.01009112],[1505,0.01014466],[1506,0.0104501],[1507,0.00959756],[1508,0.01038724],[1509,0.00975893],[1510,0.0087479],[1511,0.01002859],[1512,0.00866427],[1513,0.00845968],[1514,0.00837674],[1515,0.00800467],[1516,0.00864811],[1517,0.00848237],[1518,0.00857324],[1519,0.00873858],[1520,0.00946237],[1521,0.00884488],[1522,0.00902201],[1523,0.00849487],[1524,0.00802015],[1525,0.0077162],[1526,0.00776193],[1527,0.00812461],[1528,0.00767876],[1529,0.00746119],[1530,0.00868824],[1531,0.00969],[1532,0.00980996],[1533,0.01064283],[1534,0.01005021],[1535,0.01024053],[1536,0.00981089],[1537,0.00999085],[1538,0.00978086],[1539,0.0099347],[1540,0.00929531],[1541,0.00964323],[1542,0.00937322],[1543,0.00906269],[1544,0.00822528],[1545,0.00856234],[1546,0.00858449],[1547,0.00869206],[1548,0.00869294],[1549,0.00869837],[1550,0.01032152],[1551,0.01032495],[1552,0.01024488],[1553,0.01010884],[1554,0.00973913],[1555,0.00941059],[1556,0.0097365],[1557,0.01008566],[1558,0.01111535],[1559,0.01071499],[1560,0.00457604],[1561,0.00404508],[1562,0.00485109],[1563,0.00203602],[1564,0.00289968],[1565,0.00397343],[1566,0.00340164],[1567,0.00379366],[1568,0.00283874],[1569,0.00329764],[1570,0.00329764],[1571,0.00256415],[1572,0.00328286],[1573,0.00316779],[1574,0.00316779],[1575,0.0018755],[1576,0.00244486],[1577,0.00244486],[1578,0.00290286],[1579,0.00290286],[1580,0.00290286],[1581,0.00298426],[1582,0.00194296],[1583,0.00191856],[1584,0.00191856],[1585,0.00179472],[1586,0.00179472],[1587,0.00176443],[1588,0.00156128],[1589,0.00156128],[1590,0.00201821],[1591,0.00201821],[1592,0.00201821],[1593,0.00201821],[1594,0.00201821],[1595,0.00164398],[1596,0.00164398],[1597,0.00164398],[1599,0.00235319],[1600,0.00235319],[1601,0.00178206],[1603,0.00262837],[1604,0.00145582],[1605,0.00119438],[1606,0.00238746],[1607,0.00238746],[1608,0.00214411],[1609,0.00268822],[1610,0.00194713],[1611,0.00194713],[1612,0.00194713],[1613,0.00208212],[1614,0.00205275],[1615,0.00192209],[1616,0.00205426],[1617,0.00184979],[1618,0.00183035],[1620,0.00187558],[1621,0.00205565],[1622,0.00198218],[1624,0.00176346],[1625,0.00177179],[1626,0.0018296],[1627,0.0018296],[1628,0.00205359],[1629,0.00205359],[1630,0.00205359],[1631,0.00205359],[1632,0.00205359],[1633,0.00205351],[1634,0.00205351],[1635,0.00205351],[1636,0.00205351],[1637,0.0018495],[1638,0.0018495],[1639,0.0018495],[1640,0.0018495],[1642,0.0018495],[1643,0.0018495],[1644,0.00158917],[1645,0.00158917],[1646,0.00158917],[1647,0.00152275],[1648,0.00205394],[1649,0.00205394],[1650,0.00150697],[1651,0.00151936],[1652,0.00151936],[1653,0.00151936],[1654,0.00151936],[1655,0.00147749],[1657,0.00115876],[1658,0.0013301],[1659,0.0013301],[1663,0.00122536],[1664,0.00122536],[1665,0.0012748],[1666,0.00159589],[1667,0.00129567],[1668,0.00142727],[1669,0.00193754],[1670,0.00193754],[1671,0.00180859],[1672,0.0017647],[1673,0.0017647],[1674,0.00146847],[1675,0.00139482],[1676,0.00131059],[1677,0.00130416],[1678,0.00133226],[1679,0.00130222],[1680,0.00125976],[1681,0.00134323],[1682,0.00125548],[1683,0.00134703],[1684,0.00133437],[1685,0.00142109],[1686,0.00144324],[1687,0.00157555],[1688,0.00153531],[1689,0.00155825],[1690,0.0016082],[1691,0.00162125],[1692,0.00162819],[1693,0.00147352],[1694,0.00139906],[1695,0.00135864],[1696,0.00130199],[1697,0.00124671],[1698,0.00132562],[1699,0.00129945],[1700,0.00126766],[1701,0.00132418],[1702,0.00127419],[1703,0.00123068],[1704,0.00122899],[1705,0.00113378],[1706,0.00108598],[1707,0.00107942],[1708,0.0010232],[1709,0.0010482],[1710,0.00101616],[1711,0.00114824],[1712,0.00107922],[1713,0.00113672],[1714,0.00108889],[1715,0.00113942],[1716,0.0012161],[1717,0.00119548],[1718,0.00114054],[1719,0.00124426],[1720,0.00130167],[1721,0.00128533],[1722,0.00126819],[1723,0.00127789],[1724,0.00119861],[1725,0.00118863],[1726,0.00126179],[1727,0.00130688],[1728,0.00125349],[1729,0.00121456],[1730,0.00114285],[1731,0.00111578],[1732,0.001128],[1733,0.00113124],[1734,0.00115957],[1735,0.00110633],[1736,0.00107254],[1737,0.00105174],[1738,0.00109596],[1739,0.00110596],[1740,0.00103726],[1741,0.00110217],[1742,0.00107391],[1743,0.00112837],[1744,0.0011761],[1745,0.00113566],[1746,0.00144572],[1747,0.00194415],[1748,0.00220613],[1749,0.00195167],[1750,0.00182442],[1751,0.00202527],[1752,0.00225673],[1753,0.0024459],[1754,0.00250531],[1755,0.00239719],[1756,0.00242707],[1757,0.00229702],[1758,0.00223961],[1759,0.00213623],[1760,0.002414],[1761,0.00239303],[1762,0.00269601],[1763,0.00321351],[1764,0.00304444],[1765,0.00330823],[1766,0.00290412],[1767,0.00395829],[1768,0.00417426],[1769,0.00424816],[1770,0.00412876],[1771,0.00405394],[1772,0.0039334],[1773,0.00388194],[1774,0.00380765],[1775,0.00399895],[1776,0.00391409],[1777,0.0038088],[1778,0.00378027],[1779,0.00379375],[1780,0.00389963],[1781,0.00381246],[1782,0.00373587],[1783,0.00367289],[1784,0.00373526],[1785,0.00353978],[1786,0.00349268],[1787,0.00341067],[1788,0.00347271],[1789,0.00334647],[1790,0.00335323],[1791,0.00338971],[1792,0.00353043],[1793,0.00352652],[1794,0.00345262],[1795,0.00347403],[1796,0.00341857],[1797,0.00337279],[1798,0.00334211],[1799,0.00328514],[1800,0.0033148],[1801,0.00352342],[1802,0.00354665],[1803,0.00355211],[1804,0.00360439],[1805,0.00373216],[1806,0.00366055],[1807,0.00355604],[1808,0.00350263],[1809,0.00352047],[1810,0.00348759],[1811,0.00363614],[1812,0.00386967],[1813,0.00383544],[1814,0.00396985],[1815,0.00392256],[1816,0.00401973],[1817,0.00400711],[1818,0.00392803],[1819,0.00390526],[1820,0.00397377],[1821,0.00390275],[1822,0.00409074],[1823,0.0043289],[1824,0.00522781],[1825,0.00500381],[1826,0.00487017],[1827,0.00478335],[1828,0.00492899],[1829,0.00495842],[1830,0.00482522],[1831,0.00500589],[1832,0.00515402],[1833,0.00597084],[1834,0.00582114],[1835,0.00581636],[1836,0.0057139],[1837,0.00564641],[1838,0.00505414],[1839,0.00534906],[1840,0.00559882],[1841,0.00540874],[1842,0.00515914],[1843,0.00511101],[1844,0.00503096],[1845,0.00492325],[1846,0.00403716],[1847,0.00456127],[1848,0.00461009],[1849,0.00462351],[1850,0.00464604],[1851,0.00427278],[1852,0.00426073],[1853,0.00416233],[1854,0.00404646],[1855,0.00397914],[1856,0.00393992],[1857,0.0037821],[1858,0.00379718],[1859,0.00372858],[1860,0.00373522],[1861,0.00369023],[1862,0.00367241],[1863,0.00354825],[1864,0.00355415],[1865,0.00349213],[1866,0.00355998],[1867,0.00359686],[1868,0.00361072],[1869,0.00354427],[1870,0.00372164],[1871,0.00400201],[1872,0.00407354],[1873,0.00395468],[1874,0.0036812],[1875,0.00356789],[1876,0.00381724],[1877,0.00389881],[1878,0.003829],[1879,0.00387718],[1880,0.00387831],[1881,0.00390754],[1882,0.00389278],[1883,0.00380734],[1884,0.0038262],[1885,0.00380908],[1886,0.00378352],[1887,0.00378633],[1888,0.00365393],[1889,0.00346624],[1890,0.00344494],[1891,0.00333001],[1892,0.00307172],[1893,0.00230872],[1894,0.00366409],[1895,0.00380283],[1896,0.0038609],[1897,0.00380694],[1898,0.00385429],[1899,0.00402145],[1900,0.0040038],[1901,0.00329913],[1902,0.00311143],[1903,0.0032651],[1904,0.00377712],[1905,0.00361483],[1906,0.00410252],[1907,0.00395553],[1908,0.00394411],[1909,0.00411904],[1910,0.00399759],[1911,0.00371979],[1912,0.00378541],[1913,0.00368878],[1914,0.00357956],[1915,0.00355843],[1916,0.00403601],[1917,0.00356714],[1918,0.00297414],[1919,0.0038089],[1920,0.00370838],[1921,0.00374931],[1922,0.00343186],[1923,0.0034185],[1924,0.00292268],[1925,0.00286767],[1926,0.0028513],[1927,0.00270334],[1928,0.00239051],[1929,0.0034959],[1930,0.00359088],[1931,0.00357041],[1932,0.00355477],[1933,0.00355176],[1934,0.00342198],[1935,0.00185797],[1936,0.00202253],[1937,0.00185436],[1938,0.00172428],[1939,0.00175858],[1940,0.00167309],[1941,0.0015759],[1942,0.00140763],[1943,0.00134868],[1944,0.00144132],[1945,0.00136055],[1946,0.00155795],[1947,0.00161757],[1948,0.00150796],[1949,0.00153832],[1950,0.00155903],[1951,0.00155012],[1952,0.00127172],[1953,0.00134137],[1954,0.00128704],[1955,0.0015092],[1956,0.00139667],[1957,0.00147101],[1958,0.00160398],[1959,0.00161368],[1960,0.0016998],[1961,0.0031803],[1962,0.0031479],[1963,0.00316079],[1964,0.00316292],[1965,0.00325859],[1966,0.00324743],[1967,0.00331037],[1968,0.00339],[1969,0.00266637],[1970,0.00239381],[1971,0.00257765],[1972,0.002476],[1973,0.00226268],[1974,0.00210677],[1975,0.00201679],[1976,0.00206537],[1977,0.00219884],[1978,0.00205428],[1979,0.00202506],[1980,0.00187997],[1981,0.00191786],[1982,0.00204258],[1983,0.00222673],[1984,0.00243252],[1985,0.00287376],[1986,0.00294258],[1987,0.00268969],[1988,0.00256173],[1989,0.0030257],[1990,0.00278633],[1991,0.00274645],[1992,0.00281238],[1993,0.00268962],[1994,0.00280579],[1995,0.00272331],[1996,0.00275195],[1997,0.00271099],[1998,0.00260361],[1999,0.00242955],[2000,0.00243832],[2001,0.00239305],[2002,0.00236758],[2003,0.00239727],[2004,0.00226193],[2005,0.00348933],[2006,0.00348462],[2007,0.00344872],[2008,0.00346536],[2009,0.00344881],[2010,0.00344724],[2011,0.0034478],[2012,0.00335659],[2013,0.00343656],[2014,0.00341118],[2015,0.0019255],[2016,0.00206663],[2017,0.00213331],[2018,0.00222828],[2019,0.00211546],[2020,0.00210046],[2021,0.00181991],[2022,0.00180493],[2023,0.00178891],[2024,0.00175104],[2025,0.00171463],[2026,0.0015921],[2027,0.00161201],[2028,0.00157992],[2029,0.00143854],[2030,0.00148321],[2031,0.00161847],[2032,0.00162659],[2033,0.00160552],[2034,0.00163324],[2035,0.00172501],[2036,0.0016431],[2037,0.00163405],[2038,0.00159502],[2039,0.00164065],[2040,0.00164582],[2041,0.00166849],[2042,0.00171198],[2043,0.00198029],[2044,0.00181117],[2045,0.00179832],[2046,0.00190274],[2047,0.00191528],[2048,0.00186262],[2049,0.00179867],[2050,0.00168596],[2051,0.00161159],[2052,0.00158492],[2053,0.00159644],[2054,0.00133596],[2055,0.00176897],[2056,0.0018626],[2057,0.00206482],[2058,0.00198801],[2059,0.00204665],[2060,0.00200593],[2061,0.00219369],[2062,0.00218816],[2063,0.0023468],[2064,0.00261602],[2065,0.0023627],[2066,0.0024419],[2067,0.00248758],[2068,0.00235937],[2069,0.00204816],[2070,0.0018685],[2071,0.00203367],[2072,0.00199532],[2073,0.00192169],[2074,0.00197251],[2075,0.00207946],[2076,0.00195095],[2077,0.00198789],[2078,0.00188315],[2079,0.00192559],[2080,0.00212702],[2081,0.00215017],[2082,0.00198941],[2083,0.00186375],[2084,0.00192603],[2085,0.00236732],[2086,0.0021756],[2087,0.00201122],[2088,0.00209477],[2089,0.00194613],[2090,0.00210489],[2091,0.00203196],[2092,0.00198535],[2093,0.00189365],[2094,0.00177036],[2095,0.00164862],[2096,0.00173955],[2097,0.00168946],[2098,0.00172986],[2099,0.00172569],[2100,0.00169948],[2101,0.00164455],[2102,0.00158855],[2103,0.00151539],[2104,0.00157152],[2105,0.00147563],[2106,0.001508],[2107,0.00167666],[2108,0.00168285],[2109,0.00176162],[2110,0.00200976],[2111,0.00245614],[2112,0.00226935],[2113,0.00284205],[2114,0.00245549],[2115,0.00286596],[2116,0.00304346],[2117,0.00305392],[2118,0.002682],[2119,0.00254676],[2120,0.0024123],[2121,0.00246796],[2122,0.00251428],[2123,0.00232276],[2124,0.00225117],[2125,0.00232703],[2126,0.00228128],[2127,0.00221901],[2128,0.00275371],[2129,0.00274502],[2130,0.00288156],[2131,0.00283708],[2132,0.00283607],[2133,0.0027289],[2134,0.00280744],[2135,0.00296184],[2136,0.00278229],[2137,0.00289083],[2138,0.00261035],[2139,0.00253201],[2140,0.00231121],[2141,0.00267483],[2142,0.0028691],[2143,0.00272273],[2144,0.00220811],[2145,0.00223362],[2146,0.00200744],[2147,0.0020359],[2148,0.00233768],[2149,0.00228294],[2150,0.00221776],[2151,0.00207524],[2152,0.00222543],[2153,0.00226243],[2154,0.00209171],[2155,0.00232283],[2156,0.00218118],[2157,0.00202567],[2158,0.00186818],[2159,0.00180017],[2160,0.00181046],[2161,0.00178077],[2162,0.00172145],[2163,0.00160012],[2164,0.00153088],[2165,0.00181776],[2166,0.0017472],[2167,0.00174877],[2168,0.0016504],[2169,0.00166476],[2170,0.00165759],[2171,0.0014738],[2172,0.00139202],[2173,0.00131548],[2174,0.00134846],[2175,0.00127959],[2176,0.00124091],[2177,0.00115499],[2178,0.00119113],[2179,0.00115405],[2180,0.00111618],[2181,0.00112429],[2182,0.0011123],[2183,0.00130673],[2184,0.00125117],[2185,0.0012222],[2186,0.00127983],[2187,0.00125683],[2188,0.0011632],[2189,0.00110885],[2190,0.00114559],[2191,0.0009943],[2192,0.00100858],[2193,0.00091077],[2194,0.00100185],[2195,0.00103536],[2196,0.00099659],[2197,0.0010675],[2198,0.00109811],[2199,0.00113188],[2200,0.00113658],[2201,0.00117497],[2202,0.00113565],[2203,0.00112083],[2204,0.00102857],[2205,0.00097121],[2208,0.00089852],[2209,0.0009842],[2210,0.00098971],[2211,0.00093836],[2212,0.00094818],[2213,0.00084881],[2214,0.00091143],[2215,0.00093878],[2216,0.00092837],[2217,0.0009353],[2218,0.00087111],[2219,0.00084588],[2220,0.00082222],[2221,0.00078795],[2222,0.00087771],[2223,0.00096744],[2224,0.00096713],[2225,0.00093377],[2226,0.0009483],[2227,0.00096603],[2228,0.00091135],[2229,0.00095278],[2230,0.00097109],[2231,0.00099371],[2232,0.00098397],[2233,0.00095091],[2234,0.00099863],[2235,0.00091587],[2236,0.00089885],[2237,0.00089342],[2238,0.00088784],[2239,0.00085424],[2240,0.00080417],[2241,0.00078354],[2242,0.00082976],[2243,0.00077179],[2244,0.00087221],[2245,0.00082761],[2246,0.00077915],[2247,0.00080279],[2248,0.00078467],[2249,0.00077009],[2250,0.00072848],[2251,0.00073792],[2252,0.00072297],[2253,0.00064162],[2254,0.00068351],[2255,0.00067033],[2256,0.00070865],[2257,0.00063313],[2258,0.00073828],[2259,0.00074916],[2260,0.00075635],[2261,0.0007198],[2262,0.00071633],[2263,0.00068585],[2264,0.00066902],[2265,0.00073067],[2266,0.00070053],[2267,0.00068369],[2268,0.00068691],[2269,0.00069568],[2270,0.00064133],[2271,0.00062693],[2272,0.00066899],[2273,0.00071237],[2274,0.00066544],[2275,0.00063455],[2276,0.00064188],[2277,0.00066968],[2278,0.00066825],[2279,0.00064515],[2280,0.00061788],[2281,0.00060979],[2282,0.000655],[2283,0.00066423],[2284,0.00073431],[2285,0.00077948],[2286,0.00066464],[2287,0.00069328],[2288,0.00068965],[2289,0.00069996],[2290,0.00070102],[2291,0.00066915],[2292,0.00068115],[2293,0.00072211],[2294,0.00071723],[2295,0.00063929],[2296,0.00063499],[2297,0.00063174],[2298,0.00059487],[2299,0.00058893],[2300,0.00058832],[2301,0.00060466],[2302,0.00059698],[2303,0.00058305],[2304,0.00057058],[2305,0.00055439],[2306,0.00051928],[2307,0.00051622],[2308,0.00053005],[2309,0.00065053],[2310,0.00067171],[2311,0.00067421],[2312,0.00070516],[2313,0.0006399],[2314,0.00064707],[2315,0.00065732],[2316,0.00064037],[2317,0.00061468],[2318,0.00061889],[2319,0.00061774],[2320,0.00063325],[2321,0.00062081],[2322,0.0006405],[2323,0.00060028],[2324,0.00063744],[2325,0.00065587],[2326,0.00074938],[2327,0.00077744],[2328,0.00080072],[2329,0.00071096],[2330,0.00067596],[2331,0.0006811],[2332,0.00067589],[2333,0.00070825],[2334,0.00067554],[2335,0.00062678],[2336,0.0006181327652011826],[2337,0.0006007908273128388],[2338,0.0005962451866597057],[2339,0.0005867235414432676],[2340,0.0005897969706192946],[2341,0.000590409189552087],[2342,0.0005958086295776226],[2343,0.0005963954377320354],[2344,0.0005855427285599361],[2345,0.0005967112206281286],[2346,0.000603873892130791],[2347,0.0005941986416738386],[2348,0.0006019954396372096],[2349,0.0006074360445230642],[2350,0.0006321874579626838],[2351,0.0006353543101834869],[2352,0.0006129936590295528],[2353,0.0006179659561247112],[2354,0.0006326663574453953],[2355,0.0006230469923584026],[2356,0.0006116072476412274],[2357,0.0005952654901017507],[2358,0.0005626673848676407],[2359,0.0005615948176243369],[2360,0.0005692671258965938],[2361,0.0005605017411566783],[2362,0.0005504407536605205],[2363,0.0005481896144526476],[2364,0.00055313779446446946],[2365,0.00055714550526317233],[2366,0.00052507328542930945],[2367,0.00051783318197696289],[2368,0.00053127159757549792],[2369,0.00053301753545244551],[2370,0.00056847208718965013],[2371,0.00057684138418697718],[2372,0.000541267269431676],[2373,0.00054849965574896],[2374,0.00056301158734895526],[2375,0.00053992215216747586],[2376,0.0005253553096816676],[2377,0.00048967098801866861],[2378,0.00047924894892918771],[2379,0.00043177868712970536],[2380,0.00044160072214453905],[2381,0.00042886656674077673],[2382,0.00043967665409492971],[2383,0.00044679404718145962],[2384,0.00044903197308127649],[2385,0.00046727575650399613],[2386,0.00051449355843651674],[2387,0.00052107844923905656],[2388,0.0004967703509669969],[2389,0.00048181720697949859],[2390,0.00047809926476318734],[2391,0.00047480620459440347],[2392,0.0004904070528787012],[2393,0.00050460702866238813],[2394,0.0004843213884561633],[2395,0.00046022228208324889],[2396,0.00048169357176334121],[2397,0.00046545307000586949],[2398,0.00044629426835911213],[2399,0.000438274440661733],[2400,0.000434427450226011],[2401,0.000424784853699815],[2402,0.000435861074521175],[2403,0.000440715567865442],[2404,0.000462217415687511],[2405,0.000496145592465714],[2406,0.000492188673701237],[2407,0.000503012507292802],[2408,0.000476950671220867],[2409,0.000451216935480555],[2410,0.000468189191832251],[2411,0.000448346619496933],[2412,0.000448282812315772],[2413,0.000425051226079086],[2414,0.000388031575986545],[2415,0.0004024557252182],[2416,0.000465929771492909],[2417,0.000484609509590027],[2418,0.000490216093363813],[2419,0.000464838653003025],[2420,0.000457831017238575],[2421,0.000454424163406524],[2422,0.000478301388700108],[2423,0.000475518793161318],[2424,0.00046670029851534],[2425,0.000458537723911201],[2426,0.000470307211183829],[2427,0.000510772991060749]];
+const PRICE_TABLE_PHEX=[[1261,0.01958399],[1262,0.00627765],[1263,0.01509189],[1264,0.02079125],[1265,0.02967487],[1266,0.02770885],[1267,0.02462584],[1268,0.02486155],[1269,0.02185344],[1270,0.02039684],[1271,0.01888372],[1272,0.01800475],[1273,0.01616274],[1274,0.01935932],[1275,0.01547303],[1276,0.01381375],[1277,0.01551774],[1278,0.0184601],[1279,0.0186087],[1280,0.01830264],[1281,0.01610009],[1282,0.0153986],[1283,0.01426692],[1284,0.01406445],[1285,0.01280921],[1286,0.01202808],[1287,0.01262658],[1288,0.01101752],[1289,0.01100038],[1290,0.01043307],[1291,0.01160104],[1292,0.01397323],[1293,0.01359415],[1294,0.01319402],[1295,0.01249364],[1296,0.01358853],[1297,0.01413748],[1298,0.01332843],[1299,0.01367577],[1300,0.01294135],[1301,0.01315278],[1302,0.01261447],[1303,0.01240452],[1304,0.01198986],[1305,0.01202092],[1306,0.01434626],[1307,0.01336063],[1308,0.01315974],[1309,0.01516706],[1310,0.01436886],[1311,0.01427455],[1312,0.01590129],[1313,0.01760475],[1314,0.02131196],[1315,0.01982124],[1316,0.02268545],[1317,0.02375148],[1318,0.02252018],[1319,0.02539169],[1320,0.02269818],[1321,0.02189983],[1322,0.0217661],[1323,0.0207798],[1324,0.02004086],[1325,0.02097451],[1326,0.02178604],[1327,0.01976267],[1328,0.01962221],[1329,0.0193088],[1330,0.01834555],[1331,0.01888847],[1332,0.01934538],[1333,0.01918136],[1334,0.02078291],[1335,0.02007341],[1336,0.0197375],[1337,0.01309307],[1338,0.00963262],[1339,0.00728523],[1340,0.01426167],[1341,0.01150995],[1342,0.01355794],[1343,0.01066624],[1344,0.01067129],[1345,0.01094213],[1346,0.01040215],[1347,0.01030396],[1348,0.00941833],[1349,0.00813455],[1350,0.01024395],[1351,0.00982546],[1352,0.00885958],[1353,0.00807047],[1354,0.00837329],[1355,0.00804159],[1356,0.00794418],[1357,0.00777405],[1358,0.0072967],[1359,0.00630208],[1360,0.00646394],[1361,0.00597954],[1362,0.00583996],[1363,0.00640016],[1364,0.00703312],[1365,0.00842912],[1366,0.00912874],[1367,0.00890713],[1368,0.00830129],[1369,0.00826444],[1370,0.00822178],[1371,0.00841365],[1372,0.00776464],[1373,0.00794912],[1374,0.00827674],[1375,0.00807881],[1376,0.00765274],[1377,0.00760432],[1378,0.00727183],[1379,0.00668602],[1380,0.00702527],[1381,0.00664912],[1382,0.00775407],[1383,0.00884829],[1384,0.00803883],[1385,0.00789025],[1386,0.00790934],[1387,0.00870335],[1388,0.00852406],[1389,0.0080937],[1390,0.00817779],[1391,0.00806911],[1392,0.00795665],[1393,0.00770827],[1394,0.0080427],[1395,0.00799973],[1396,0.00834347],[1397,0.00818046],[1398,0.00871583],[1399,0.00887937],[1400,0.0082828],[1401,0.00790263],[1402,0.00825277],[1403,0.00834894],[1404,0.00839491],[1405,0.00808001],[1406,0.00788198],[1407,0.00762872],[1408,0.00731906],[1409,0.00738026],[1410,0.00719433],[1411,0.00725849],[1412,0.00723147],[1413,0.0069279],[1414,0.00750378],[1415,0.00763651],[1416,0.00818469],[1417,0.00868981],[1418,0.00971586],[1419,0.01067592],[1420,0.01233656],[1421,0.01593183],[1422,0.01644574],[1423,0.01650256],[1424,0.01536364],[1425,0.01364172],[1426,0.0126322],[1427,0.01227783],[1428,0.01404549],[1429,0.01421625],[1430,0.01532006],[1431,0.01517898],[1432,0.01452906],[1433,0.01488809],[1434,0.01524384],[1435,0.01504555],[1436,0.01465645],[1437,0.01441204],[1438,0.0155401],[1439,0.01466436],[1440,0.01424258],[1441,0.01358085],[1442,0.01325219],[1443,0.01281034],[1444,0.01394558],[1445,0.01286118],[1446,0.01275313],[1447,0.01261724],[1448,0.01062569],[1449,0.0100183],[1450,0.00943109],[1451,0.01063053],[1452,0.01097755],[1453,0.01091032],[1454,0.01075399],[1455,0.01050266],[1456,0.01004704],[1457,0.01034946],[1458,0.01025749],[1459,0.01042149],[1460,0.01205492],[1461,0.01118544],[1462,0.01095534],[1463,0.00965087],[1464,0.00921233],[1465,0.00818313],[1466,0.00856993],[1467,0.00961402],[1468,0.00912306],[1469,0.00876118],[1470,0.00812505],[1471,0.00826224],[1472,0.00842709],[1473,0.00887038],[1474,0.00863441],[1475,0.00849281],[1476,0.00863635],[1477,0.00953992],[1478,0.00984559],[1479,0.01001595],[1480,0.00963564],[1481,0.00978256],[1482,0.01024427],[1483,0.01024502],[1484,0.01034709],[1485,0.00994479],[1486,0.01015317],[1487,0.0099055],[1488,0.01020018],[1489,0.01002818],[1490,0.00956107],[1491,0.00955878],[1492,0.009042],[1493,0.00858415],[1494,0.00837456],[1495,0.00838641],[1496,0.00742184],[1497,0.00825196],[1498,0.00988143],[1499,0.01276353],[1500,0.01568265],[1501,0.01514123],[1502,0.01420683],[1503,0.015345],[1504,0.01820097],[1505,0.01925901],[1506,0.01823998],[1507,0.01822899],[1508,0.02037409],[1509,0.01730492],[1510,0.01648775],[1511,0.01848207],[1512,0.01575115],[1513,0.01648727],[1514,0.01549407],[1515,0.0151338],[1516,0.01614526],[1517,0.01609714],[1518,0.01615754],[1519,0.01614793],[1520,0.01792799],[1521,0.01666812],[1522,0.01732465],[1523,0.0163953],[1524,0.01557528],[1525,0.01484041],[1526,0.0150484],[1527,0.01558588],[1528,0.01534492],[1529,0.01538155],[1530,0.01659162],[1531,0.01783895],[1532,0.01778746],[1533,0.01815909],[1534,0.01758828],[1535,0.0173838],[1536,0.01731951],[1537,0.01777799],[1538,0.01754327],[1539,0.01737192],[1540,0.01599904],[1541,0.01644452],[1542,0.01593262],[1543,0.01562082],[1544,0.01398438],[1545,0.0142287],[1546,0.01507709],[1547,0.01575071],[1548,0.01525772],[1549,0.01477774],[1550,0.0187274],[1551,0.0187594],[1552,0.01833127],[1553,0.01857183],[1554,0.01714883],[1555,0.01607726],[1556,0.01770585],[1557,0.01788987],[1558,0.01919802],[1559,0.01937982],[1560,0.02340366],[1561,0.0206028],[1562,0.01825919],[1563,0.01697744],[1564,0.01625339],[1565,0.01817241],[1566,0.01434865],[1567,0.01581181],[1568,0.01415684],[1569,0.01246556],[1570,0.01317878],[1571,0.01236634],[1572,0.01192242],[1573,0.01099613],[1574,0.0119408],[1575,0.0118834],[1576,0.01170518],[1577,0.01127469],[1578,0.01146359],[1579,0.01082353],[1580,0.01063239],[1581,0.00980215],[1582,0.0106537],[1583,0.00986314],[1584,0.01012418],[1585,0.00980849],[1586,0.00960869],[1587,0.01000993],[1588,0.00986687],[1589,0.01089203],[1590,0.00996238],[1591,0.00936129],[1592,0.00854505],[1593,0.00780079],[1594,0.00741796],[1595,0.00822125],[1596,0.0079263],[1597,0.00795757],[1598,0.00793026],[1599,0.00926831],[1600,0.01046339],[1601,0.00964515],[1602,0.0089233],[1603,0.00985228],[1604,0.00887157],[1605,0.00831592],[1606,0.00847691],[1607,0.00838589],[1608,0.00913487],[1609,0.00887059],[1610,0.0086439],[1611,0.00792123],[1612,0.00885085],[1613,0.00875709],[1614,0.00864489],[1615,0.00887541],[1616,0.00920728],[1617,0.00881085],[1618,0.00822977],[1619,0.0087548],[1620,0.00986804],[1621,0.00961076],[1622,0.00919156],[1623,0.00918933],[1624,0.00886731],[1625,0.00848999],[1626,0.00905345],[1627,0.00816148],[1628,0.00831342],[1629,0.00806291],[1630,0.00760586],[1631,0.00795494],[1632,0.00758012],[1633,0.00717815],[1634,0.00752732],[1635,0.00722679],[1636,0.00719454],[1637,0.00697938],[1638,0.00671266],[1639,0.00689492],[1640,0.0067013],[1641,0.00656102],[1642,0.00651677],[1643,0.00631429],[1644,0.00626772],[1645,0.00644923],[1646,0.00646345],[1647,0.00765157],[1648,0.00719808],[1649,0.00668349],[1650,0.00662843],[1651,0.00646984],[1652,0.00616684],[1653,0.00610023],[1654,0.00646449],[1655,0.0061433],[1656,0.00592339],[1657,0.00579895],[1658,0.00575683],[1659,0.00554036],[1660,0.005446],[1661,0.00553135],[1662,0.00571661],[1663,0.00549534],[1664,0.00537839],[1665,0.00531596],[1666,0.00524006],[1667,0.00548345],[1668,0.00528021],[1669,0.00557985],[1670,0.00569093],[1671,0.00560243],[1672,0.00555561],[1673,0.00557799],[1674,0.00541138],[1675,0.0051963],[1676,0.00483734],[1677,0.0048365],[1678,0.0048696],[1679,0.00470029],[1680,0.00451798],[1681,0.00454585],[1682,0.00445655],[1683,0.00487066],[1684,0.00504334],[1685,0.00522891],[1686,0.00525752],[1687,0.00553142],[1688,0.00556513],[1689,0.00578677],[1690,0.00608965],[1691,0.00692203],[1692,0.00673609],[1693,0.00653207],[1694,0.00641602],[1695,0.00630223],[1696,0.00636818],[1697,0.00609314],[1698,0.0062228],[1699,0.00606852],[1700,0.00581976],[1701,0.00583485],[1702,0.0056679],[1703,0.00549847],[1704,0.00554887],[1705,0.0051469],[1706,0.0050177],[1707,0.00487583],[1708,0.00461517],[1709,0.00492013],[1710,0.00439168],[1711,0.00482474],[1712,0.00442325],[1713,0.00461996],[1714,0.00440178],[1715,0.00455493],[1716,0.00481707],[1717,0.00473329],[1718,0.00462435],[1719,0.00475327],[1720,0.00475433],[1721,0.00472778],[1722,0.00470184],[1723,0.0046694],[1724,0.00463885],[1725,0.00462845],[1726,0.00477676],[1727,0.00484816],[1728,0.00468291],[1729,0.00454954],[1730,0.00438154],[1731,0.0042816],[1732,0.00419566],[1733,0.00417352],[1734,0.00424973],[1735,0.00404659],[1736,0.00397526],[1737,0.00384484],[1738,0.00393697],[1739,0.00387265],[1740,0.00375614],[1741,0.00370575],[1742,0.00370414],[1743,0.00390131],[1744,0.00420284],[1745,0.00411144],[1746,0.00512639],[1747,0.00555435],[1748,0.00596496],[1749,0.00557509],[1750,0.00512594],[1751,0.00585616],[1752,0.00709088],[1753,0.00723703],[1754,0.00801279],[1755,0.00823925],[1756,0.00869394],[1757,0.00941763],[1758,0.00855952],[1759,0.00854925],[1760,0.01063048],[1761,0.01136818],[1762,0.01430346],[1763,0.01346725],[1764,0.01326189],[1765,0.01307747],[1766,0.01415722],[1767,0.01459468],[1768,0.01716257],[1769,0.01839836],[1770,0.01707669],[1771,0.01622513],[1772,0.0157431],[1773,0.0142445],[1774,0.01428339],[1775,0.01615645],[1776,0.01607077],[1777,0.01423643],[1778,0.01432567],[1779,0.01396629],[1780,0.01583534],[1781,0.01450327],[1782,0.01420918],[1783,0.01347888],[1784,0.01383639],[1785,0.01207965],[1786,0.01166658],[1787,0.01202661],[1788,0.01194651],[1789,0.01040063],[1790,0.01035856],[1791,0.01089004],[1792,0.01300166],[1793,0.01343485],[1794,0.01396159],[1795,0.01397751],[1796,0.01309057],[1797,0.01308771],[1798,0.01254474],[1799,0.01140971],[1800,0.01216286],[1801,0.01552102],[1802,0.01554817],[1803,0.01495849],[1804,0.01594958],[1805,0.01789611],[1806,0.01866914],[1807,0.018349],[1808,0.01888569],[1809,0.01913839],[1810,0.01951529],[1811,0.02296053],[1812,0.02160445],[1813,0.02106028],[1814,0.02195907],[1815,0.02208009],[1816,0.02293935],[1817,0.0217459],[1818,0.02137282],[1819,0.021863],[1820,0.02021093],[1821,0.02100216],[1822,0.02552878],[1823,0.02450166],[1824,0.02443038],[1825,0.02533692],[1826,0.02414327],[1827,0.02339294],[1828,0.02502685],[1829,0.02795026],[1830,0.02610761],[1831,0.02839042],[1832,0.02828865],[1833,0.03094172],[1834,0.02831019],[1835,0.02717172],[1836,0.02803893],[1837,0.02770748],[1838,0.02886926],[1839,0.02818912],[1840,0.02756513],[1841,0.02633247],[1842,0.02425873],[1843,0.02375108],[1844,0.02362081],[1845,0.0222696],[1846,0.01509895],[1847,0.01802436],[1848,0.01776218],[1849,0.01939296],[1850,0.01981733],[1851,0.01689281],[1852,0.01738929],[1853,0.01641586],[1854,0.01493163],[1855,0.0157003],[1856,0.01561994],[1857,0.0140021],[1858,0.01413605],[1859,0.01416442],[1860,0.01388064],[1861,0.01390866],[1862,0.01387193],[1863,0.01286665],[1864,0.01319624],[1865,0.012595],[1866,0.01231686],[1867,0.01267432],[1868,0.01320978],[1869,0.0124998],[1870,0.01405558],[1871,0.01607524],[1872,0.01644803],[1873,0.01565501],[1874,0.01354856],[1875,0.01226542],[1876,0.01331485],[1877,0.01404498],[1878,0.01374577],[1879,0.01436703],[1880,0.01473067],[1881,0.01529189],[1882,0.01474776],[1883,0.01353629],[1884,0.01364969],[1885,0.01397507],[1886,0.01367028],[1887,0.01366945],[1888,0.01281938],[1889,0.01142574],[1890,0.01245591],[1891,0.01133497],[1892,0.01291319],[1893,0.01338309],[1894,0.01376331],[1895,0.01556666],[1896,0.01504143],[1897,0.01935614],[1898,0.01911438],[1899,0.02018655],[1900,0.01936806],[1901,0.01426578],[1902,0.01308951],[1903,0.01336973],[1904,0.01376227],[1905,0.01307501],[1906,0.01310112],[1907,0.01187377],[1908,0.01205462],[1909,0.01382902],[1910,0.01303423],[1911,0.01111681],[1912,0.01154875],[1913,0.01107962],[1914,0.01070392],[1915,0.01020973],[1916,0.01301631],[1917,0.01395163],[1918,0.01185953],[1919,0.01136978],[1920,0.01067284],[1921,0.01134295],[1922,0.01000321],[1923,0.01002741],[1924,0.00899904],[1925,0.0091913],[1926,0.00912114],[1927,0.00887015],[1928,0.0080106],[1929,0.0072629],[1930,0.00830401],[1931,0.00808166],[1932,0.00773058],[1933,0.00753784],[1934,0.00754619],[1935,0.00667958],[1936,0.0073924],[1937,0.00712819],[1938,0.00645965],[1939,0.00657895],[1940,0.00655861],[1941,0.00624822],[1942,0.0052843],[1943,0.0051274],[1944,0.00478164],[1945,0.00437825],[1946,0.005094],[1947,0.00546264],[1948,0.00506637],[1949,0.00517436],[1950,0.00551206],[1951,0.00547066],[1952,0.0044555],[1953,0.00489124],[1954,0.00467831],[1955,0.00560484],[1956,0.00537108],[1957,0.0058077],[1958,0.00637009],[1959,0.00644347],[1960,0.00662763],[1961,0.00619877],[1962,0.0059993],[1963,0.00612671],[1964,0.00606456],[1965,0.00721916],[1966,0.00676496],[1967,0.00751062],[1968,0.0073384],[1969,0.00747881],[1970,0.00708615],[1971,0.0074091],[1972,0.00716764],[1973,0.00666569],[1974,0.00618322],[1975,0.00578146],[1976,0.00573416],[1977,0.00611601],[1978,0.00573918],[1979,0.00562888],[1980,0.00510876],[1981,0.00526462],[1982,0.00600319],[1983,0.00627605],[1984,0.00674248],[1985,0.00840813],[1986,0.00916354],[1987,0.00842839],[1988,0.00817923],[1989,0.00960488],[1990,0.00878613],[1991,0.0086234],[1992,0.00896088],[1993,0.00870311],[1994,0.00927359],[1995,0.00885588],[1996,0.00901417],[1997,0.0091742],[1998,0.00878528],[1999,0.00829422],[2000,0.00845391],[2001,0.00828029],[2002,0.00839733],[2003,0.00832569],[2004,0.00751992],[2005,0.00707609],[2006,0.00691507],[2007,0.006679],[2008,0.00685332],[2009,0.0064482],[2010,0.00660015],[2011,0.00653009],[2012,0.00596705],[2013,0.00626903],[2015,0.00595387],[2016,0.00614396],[2017,0.00693113],[2018,0.00711785],[2019,0.00632905],[2020,0.00617936],[2021,0.00614309],[2022,0.00608591],[2023,0.00581751],[2024,0.00562978],[2025,0.00539545],[2026,0.00501575],[2027,0.00493657],[2028,0.00462408],[2029,0.00491808],[2030,0.00518698],[2031,0.00501794],[2032,0.00508498],[2033,0.00481478],[2034,0.00513966],[2035,0.00528401],[2036,0.00518515],[2037,0.00524369],[2038,0.00494971],[2039,0.00519985],[2040,0.00515421],[2041,0.00534117],[2042,0.00549848],[2043,0.00676843],[2044,0.00598466],[2045,0.00556618],[2046,0.00589415],[2047,0.00583873],[2048,0.005735],[2049,0.00540559],[2050,0.00506062],[2051,0.0051277],[2052,0.00486129],[2053,0.00493931],[2054,0.00543201],[2055,0.00605171],[2056,0.006227],[2057,0.0075175],[2058,0.00687389],[2059,0.00700584],[2060,0.00707477],[2061,0.00743131],[2062,0.00765923],[2063,0.00868983],[2064,0.01122151],[2065,0.01077621],[2066,0.01354628],[2067,0.0134631],[2068,0.01277698],[2069,0.01119308],[2070,0.01050523],[2071,0.01180486],[2072,0.012334],[2073,0.01133941],[2074,0.01133906],[2075,0.01280702],[2076,0.01247523],[2077,0.01303585],[2078,0.01203188],[2079,0.0122021],[2080,0.01267897],[2081,0.01249084],[2082,0.01160116],[2083,0.0110578],[2084,0.01109767],[2085,0.01297635],[2086,0.01169454],[2087,0.01092622],[2088,0.0109879],[2089,0.01039541],[2090,0.010987],[2091,0.01069248],[2092,0.01007355],[2093,0.00969582],[2094,0.00884045],[2095,0.00888288],[2096,0.0090673],[2097,0.00860621],[2098,0.0087187],[2099,0.00962314],[2100,0.00907079],[2101,0.00867098],[2102,0.00861024],[2103,0.00804553],[2104,0.00799728],[2105,0.00809533],[2106,0.00838906],[2107,0.00974767],[2108,0.00970891],[2109,0.01025309],[2110,0.01050019],[2111,0.01142349],[2112,0.01107013],[2113,0.01068224],[2114,0.00993565],[2115,0.00969451],[2116,0.00949723],[2117,0.00968977],[2118,0.00874899],[2119,0.00861356],[2120,0.00846137],[2121,0.00804266],[2122,0.00831367],[2123,0.00771541],[2124,0.00752719],[2125,0.0080867],[2126,0.00788122],[2127,0.00775019],[2128,0.00843387],[2129,0.00834921],[2130,0.00843043],[2131,0.00818225],[2132,0.00840961],[2133,0.00800453],[2134,0.00788731],[2135,0.0075169],[2136,0.00711937],[2137,0.00696762],[2138,0.00651167],[2139,0.00659846],[2140,0.00615226],[2141,0.00697571],[2142,0.00699417],[2143,0.00689511],[2144,0.00675947],[2145,0.00682214],[2146,0.00601027],[2147,0.00627524],[2148,0.00688735],[2149,0.00678339],[2150,0.00663112],[2151,0.0062842],[2152,0.00678023],[2153,0.00697928],[2154,0.00661048],[2155,0.00752049],[2156,0.00830162],[2157,0.00786188],[2158,0.00756962],[2159,0.00719766],[2160,0.0070547],[2161,0.00689683],[2162,0.00664259],[2163,0.00608143],[2164,0.00619182],[2165,0.00678303],[2166,0.00671202],[2167,0.00668218],[2168,0.00666023],[2169,0.0067177],[2170,0.00686024],[2171,0.00608847],[2172,0.00564902],[2173,0.00510036],[2174,0.00485874],[2175,0.00466708],[2176,0.00455917],[2177,0.00438094],[2178,0.00458764],[2179,0.00422332],[2180,0.00388433],[2181,0.0038817],[2182,0.00378656],[2183,0.00395956],[2184,0.00386636],[2185,0.00383735],[2186,0.00411513],[2187,0.00398085],[2188,0.00379065],[2189,0.00356021],[2190,0.0037254],[2191,0.00310299],[2192,0.00310495],[2193,0.00268748],[2194,0.00299914],[2195,0.00319799],[2196,0.00308572],[2197,0.00330921],[2198,0.00342569],[2199,0.00355442],[2200,0.00362274],[2201,0.00371983],[2202,0.00353147],[2203,0.00351195],[2204,0.00324216],[2205,0.00308892],[2206,0.00299208],[2207,0.00275261],[2208,0.00277906],[2209,0.00293524],[2210,0.0030194],[2211,0.00287358],[2212,0.00297159],[2213,0.00270359],[2214,0.00277165],[2215,0.00271436],[2216,0.00276996],[2217,0.00283169],[2218,0.00261056],[2219,0.00237438],[2220,0.00228807],[2221,0.00217571],[2222,0.0024286],[2223,0.00263346],[2224,0.00264415],[2225,0.00273732],[2226,0.00281938],[2227,0.00292225],[2228,0.0027259],[2229,0.00282536],[2230,0.00302371],[2231,0.00309631],[2232,0.0029934],[2233,0.00289531],[2234,0.00303634],[2235,0.00274848],[2236,0.0027974],[2237,0.00279614],[2238,0.00270599],[2239,0.00263246],[2240,0.0024292],[2241,0.00225283],[2242,0.00249306],[2243,0.00233884],[2244,0.00248094],[2245,0.00242504],[2246,0.00221079],[2247,0.00227443],[2248,0.0023141],[2249,0.00229146],[2250,0.00205446],[2251,0.00204225],[2252,0.00195671],[2253,0.00167417],[2254,0.00183867],[2255,0.0017892],[2256,0.00172765],[2257,0.00158764],[2258,0.00174067],[2259,0.00182393],[2260,0.00185211],[2261,0.00174523],[2262,0.00179068],[2263,0.00173287],[2264,0.00168192],[2265,0.00172897],[2266,0.00176132],[2267,0.00174623],[2268,0.00172902],[2269,0.00163428],[2270,0.00154191],[2271,0.00145417],[2272,0.00165332],[2273,0.00163659],[2274,0.00150295],[2275,0.00165732],[2276,0.00155222],[2277,0.00166373],[2278,0.00161914],[2279,0.00157814],[2280,0.00152866],[2281,0.00148362],[2282,0.00164369],[2283,0.00173423],[2284,0.00195748],[2285,0.00210031],[2286,0.00180646],[2287,0.00197679],[2288,0.00198791],[2289,0.00210321],[2290,0.0020785],[2291,0.00188769],[2292,0.00189686],[2293,0.00214187],[2294,0.00214574],[2295,0.00182223],[2296,0.00182868],[2297,0.0017738],[2298,0.00161842],[2299,0.00163721],[2300,0.00161573],[2301,0.00154833],[2302,0.0014843],[2303,0.00150291],[2304,0.00146019],[2305,0.00150358],[2306,0.00135949],[2307,0.00134261],[2308,0.00135622],[2309,0.00131945],[2310,0.00132984],[2311,0.00139182],[2312,0.00142121],[2313,0.00132009],[2314,0.00133932],[2315,0.00131504],[2316,0.00131122],[2317,0.00127901],[2318,0.00129602],[2319,0.00136939],[2320,0.0013864],[2321,0.00134192],[2322,0.00141601],[2323,0.00132508],[2324,0.00138413],[2325,0.00144346],[2326,0.00160864],[2327,0.00161067],[2328,0.00169499],[2329,0.00149774],[2330,0.00141115],[2331,0.00141693],[2332,0.001450076995817915],[2333,0.0013946538039647251],[2334,0.0013932087934253948],[2335,0.0013607734992616913],[2336,0.0013925481751404414],[2337,0.0013514148836881964],[2338,0.001336275228726889],[2339,0.0013213249690152715],[2340,0.0013224954177555343],[2341,0.0013670423965375141],[2342,0.001333962708756465],[2343,0.0013152271465980852],[2344,0.0013248943433158671],[2345,0.001360098374099337],[2346,0.0013499913770444606],[2347,0.001277068705836222],[2348,0.001327319713313291],[2349,0.0013207863465778706],[2350,0.0013565907748949702],[2351,0.0013504384622492842],[2352,0.0013445876855791312],[2353,0.0013228042952504705],[2354,0.0013032176003351546],[2355,0.0013199465919815731],[2356,0.001283357077596623],[2357,0.0013055471231183343],[2358,0.0012566009869706960],[2359,0.0012527231811996452],[2360,0.0012281894920428140],[2361,0.0012107366190428237],[2362,0.0011819128539139682],[2363,0.0011970947647280629],[2364,0.0011927753990925863],[2365,0.0012113850068349065],[2366,0.0011262323781777114],[2367,0.0011525582113162821],[2368,0.001156668255594304],[2369,0.0011300355087030659],[2370,0.0011653340069216727],[2371,0.0011488556699522855],[2372,0.0011504351767016418],[2373,0.0011432031878109432],[2374,0.0011451556246043172],[2375,0.0010904237097078789],[2376,0.0010960296289764056],[2377,0.00094105037571576885],[2378,0.000839112759035801],[2379,0.00073576647157586267],[2380,0.00075722377399797694],[2381,0.00076668465228566971],[2382,0.00081119322717501218],[2383,0.00083738443448889586],[2384,0.00085037855849347244],[2385,0.00090409585017904625],[2386,0.00095801794222135381],[2387,0.000985966713925033],[2388,0.00094198315095344622],[2389,0.000963696271779698],[2390,0.00092773285403710635],[2391,0.00089723974157667862],[2392,0.00093184556281674562],[2393,0.00095139427437462962],[2394,0.00092672376632725324],[2395,0.000897308165075361],[2396,0.000878852685797265],[2397,0.0008943208507000578],[2398,0.00085392133386185635],[2399,0.000846070149909184],[2400,0.000853872381687573],[2401,0.000837537840819788],[2402,0.000837005173602261],[2403,0.000889856670698397],[2404,0.000921972132165659],[2405,0.00106745135602626],[2406,0.00105754040520515],[2407,0.00107243989368514],[2408,0.00100872604011504],[2409,0.000945039699116131],[2410,0.000927847127067258],[2411,0.000911111540907671],[2412,0.000917903432403526],[2413,0.000893999176265787],[2414,0.00086741298413699],[2415,0.000895021358206319],[2416,0.00109231420645422],[2417,0.00117002929834257],[2418,0.00122022556506351],[2419,0.001045371323578],[2420,0.00102792506925835],[2421,0.00104590474309611],[2422,0.00114071542166988],[2423,0.00121974986422534],[2424,0.00121234881503452],[2425,0.00118301351314557],[2426,0.00131511066024309],[2427,0.0014338923463546]];
+
+// Build lookup maps for O(1) price access
+const EHEX_MAP=new Map(PRICE_TABLE_EHEX);
+const PHEX_MAP=new Map(PRICE_TABLE_PHEX);
+
+// ── Startup price table auto-update ──
+// Fetches CoinGecko price history from the last hardcoded table entry to today.
+// Patches EHEX_MAP and PHEX_MAP in-memory so any gap — days, months, or years —
+// is filled automatically. The hardcoded table handles all history instantly;
+// this covers only the recent tail that isn't in the table yet.
+// Runs once silently at startup. If CoinGecko is unavailable, the table covers
+// as far as it does and the existing per-analysis CoinGecko fallback handles the rest.
+async function autoUpdatePriceTables(){
+  const today=chd();
+  const chains=[
+    {chain:'eth',cgId:'hex',map:EHEX_MAP,table:PRICE_TABLE_EHEX},
+    {chain:'pls',cgId:'hex-pulsechain',map:PHEX_MAP,table:PRICE_TABLE_PHEX},
+  ];
+  for(const {chain,cgId,map,table} of chains){
+    const maxTableDay=Math.max(...table.map(e=>e[0]));
+    if(today<=maxTableDay)continue;
+    const gapDays=today-maxTableDay;
+    const fromTs=HTS+(maxTableDay)*86400;
+    const toTs=HTS+(today+1)*86400;
+    try{
+      const r=await fetch(`https://api.coingecko.com/api/v3/coins/${cgId}/market_chart/range?vs_currency=usd&from=${fromTs}&to=${toTs}`);
+      if(!r.ok)continue;
+      const j=await r.json();
+      const prices=j.prices||[];
+      if(!prices.length)continue;
+      const byDay={};
+      for(const [ms,price] of prices){
+        const ts=Math.floor(ms/1000);
+        const day=Math.floor((ts-HTS)/86400);
+        if(day<=maxTableDay)continue;
+        if(!byDay[day]||byDay[day].ts<ts)byDay[day]={ts,price};
+      }
+      let filled=0;
+      for(let d=maxTableDay+1;d<=today;d++){
+        if(byDay[d]&&byDay[d].price>0){map.set(d,byDay[d].price);filled++;}
+      }
+    }catch(e){
+      console.warn(`[HSA] Price table auto-update failed for ${chain}:`,e.message);
+    }
+  }
+}
+autoUpdatePriceTables();
+
+// ── Static daily-payout cache (chain-wide, immutable, populated by refresh script) ──
+// Each entry is the raw uint256 returned by the HEX contract's dailyDataRange(), packed:
+//   bits 0..71   = pt (daily payout in hearts)
+//   bits 72..143 = st (sharesTotal at that day)
+// Entry at index i represents HEX day i. Day 0 entry exists (from contract genesis).
+// At analyze time, lgdd() uses these arrays as a starting point and only fetches days
+// past what's cached — typically just the most recent 1-2 days.
+//
+// Empty arrays mean "no static cache available" — runtime falls back to full RPC fetch
+// (existing behavior). Populate via scripts/refresh-daily-data.js (runs locally, paste output).
+const DAILY_DATA_EHEX=['0x0','0x0','0x0','0x6f534bab04a7540000000325256860cde','0xa918091a8d50100000000411110d4a459','0xe11b9024ab77880000000591302bf281b',
+'0x1149f848136b03000000005817e69967d1','0x14401166344b0600000000641c8857df81','0x17eb6cd0b05dcc000000008f168c7682aa','0x1b10b698a8e49b000000007f27408b1834','0x1de8054ef25290000000008a60236ff325','0x20fe682e0ee41a000000009701aa417491',
+'0x2500abfa88fa0200000000a703cea76ed3','0x285370ebbc743200000000b5972796c95d','0x2ccbe504d01bfc00000000beaf36f8863c','0x30a9dca9d2217c00000000c6fdbdda1c53','0x31d154e6b763a000000000d3eea2634d55','0x32f6a1a69765fc00000000e12c27b12f98',
+'0x341b6b9d09e74800000000ebe808d7da7a','0x35bc6d9f3aad0600000000f9469bc833a1','0x371142ad5cd934000000013728ec238533','0x3e54a32cac21de000000010d40014382b4','0x38e237f378d62c000000011b7219b17c67','0x3bf60cba131308000000013e94761b51e8',
+'0x3bff87e178588c00000001307da43087fb','0x3d7fe6df0e7978000000013ceee128a12d','0x3e030db24f0d22000000014bc14e86298f','0x4115fed85e5b040000000157882dc10bca','0x415fde89a92d4400000001866c75c13fd1','0x4281d419c4fc8000000001718be1fd0b0e',
+'0x427cfd01c7a020000000019adb9084f9be','0x459cf60e4f2908000000020042eeb9774f','0x45e78e145a783000000001ca346f17dc57','0x457d0ee54f905c00000001a2257125a1ee','0x48342262ff6bf000000001b438cd30311a','0x47ba25a67da91800000001ca47a43dcf51',
+'0x4a6f860e682be000000001d225da8f2b72','0x4a1899f7e37f2800000001f634aa3a8fee','0x4ab6500fcf769400000001eb5a4d69f953','0x4a3e63e99b3338000000020179ace77d64','0x4ef8d8daf322c400000001ffa16d11380b','0x4d332f6e53fd0000000002073695ef0cac',
+'0x4dc599f326c958000000021242ae858fa5','0x51b13e73b0107c00000002269c9e4ee181','0x4fbe87063ec3a0000000022ce182fd9316','0x509ae0f4aa6a4c00000002438470c5d92a','0x50fef5ad1b606c0000000240dc429b178a','0x51c0bcefcf1698000000027a1e705209c6',
+'0x525f5b3806897800000002ce1a1356800f','0x58c77e22052c880000000290de0594b701','0x5364ac7dd02b200000000274d5fcffac33','0x54068b85462298000000028703d4318e68','0x547804d2676a8000000002b078d6cc6b25','0x55556ce7fb8e0400000002a1577ee38c3d',
+'0x5630fa2aaf7c2000000002d3f53079ce3f','0x56878625b57ffc00000002b3d718c142ab','0x5736e291c85bf000000002c414e832cbc9','0x60089979538ef800000002cde892d14853','0x6084ba1e6389c400000002d99ec9d2d259','0x597f37ab6582d800000002e5bb30f71cc1',
+'0x5a1734aa3b15d0000000030dbc59e96ca7','0x5bc17c2a642d080000000301a6b92c5c07','0x5d0b8165ea440c0000000316b47baad2f0','0x5f2ec4e1fb70a00000000336adba3d9bb4','0x606c63991188c40000000355d3ece161c2','0x61ff0fb963fa5800000003347b4b42e8a1',
+'0x62903ea804b9880000000347e9f5e9414f','0x63cc9882e07a4400000003521824c94533','0x63b1659256780c000000039f80cf0f4e8a','0x6419f9d1cc099800000003a2438c7d0472','0x63fec4ddcad1d0000000043a8e91b94f93','0x64006f8fd9df540000000537710a474bbd',
+'0x6423f4493cc120000000040ce1ef421926','0x74cc862ad5a5340000000e92150acbd687','0x63f6148614dc1c0000000610a99d2bc9cc','0x65ee0d8acedb5000000007f8d4c7b7efc1','0x658464437cc0580000000fbb50cd8e6d15','0x65c4fb28356c200000000a05b42ac42770',
+'0x667fc51686eec80000000470088eaa48f1','0x6744a27b8db71000000007b8bd9bd3e91b','0x65c98356afb04000000003f3e574626781','0x65068d44152738000000041855e37db315','0x64d57f2beea388000000052279304112b6','0x659b2ee2fcff3c00000005a0391b046f2e',
+'0x661bbfc771e3e80000000424b2c41da216','0x665c60b44648d0000000043d48c3ba852b','0x65d603c8a716e800000004a3986e3f9ab1','0x660558568958980000000443beb091bedf','0x65e74b0ec4ab600000000457074f44cd9a','0x66ae0377e98b60000000045bc0a3fef61a',
+'0x66c4a570b3dd64000000046be8f3d10efa','0x66e77e4c241618000000047ba59b1d13ff','0x6712d19a1732700000000483a6a7a9198e','0x670e245169ba74000000048ed2200e9c44','0x66f104eece02f4000000049c8676469e59','0x6780237cf5dba400000004a9e49aab3ab5',
+'0x677ed5c28a0c9000000004b7c2d443a039','0x67be316c3b3fb8000000051c32bc3bc76b','0x678ce95b831cf000000004e3cf56c75497','0x67a23354e69464000000059bd0007192e2','0x6883454d6a481400000004ec5b898707d6','0x689c66205c0e200000000500fc7dfadeab',
+'0x68201c6c7bf3e0000000056a876caebefe','0x684c0214957900000000052c08ae289a85','0x6ad9f2f1fb80f000000005708e392f0f7c','0x6d7bd285d75598000000052965ff1bf5bf','0x6ddfb2ec9b3504000000058f4c98ed2bf6','0x726a04131e65e80000000553dac1b6ff51',
+'0x7289baac3ee6f8000000055d587d9416bf','0x728255b84475d8000000055b4787b96c00','0x730fff5108e9840000000567018ec1c10e','0x732eb836843b8c000000058c6231b2ed58','0x73787666a0b3bc00000005a0c2c0c5cf5c','0x7337b8f843a290000000059129d00560a8',
+'0x734d895074fc080000000c31a4cda95767','0x72ac9a23aff11c000000065e2965d418b0','0x748dc156ac91ac00000005c175395c2f4a','0x746eb66d916338000000077446a0a70bc4','0x748aa09a971ac800000005e83faebddf0d','0x748b32f01a1db400000005e830297dd350',
+'0x74f7ff2f471fdc0000000612068addb1cb','0x74babf4ba6c1ac00000005f457e4a67723','0x7515a543db4b5c00000006156872ca4862','0x7516c4dc99873c0000000852790168e3b2','0x75154ee35048c4000000069058b5d241ad','0x7523e9ec1bf9440000000628234d2709a6',
+'0x7516db4691e41400000006f96263da3020','0x74c9db4e48b804000000064a5658f03e19','0x7500254c83714400000006517679f82e08','0x7561ca6cb08e280000000655fdf888a979','0x75a9301966d9e000000006666d25629618','0x75a8010cd33e500000000678d14e05286a',
+'0x75b1270d4063e000000006cf764ff053b7','0x758957a4e048c800000006df9ee19396e2','0x755864125674cc00000006a60896cb68b3','0x75ecdfef04b09400000006c781443e659c','0x762447cff074c400000007101198fda333','0x7964358e948a800000000700a2fb8a7a10',
+'0x798c069e4136b80000000790b8ce639a86','0x7ec8baa6baab80000000075147cf8ac97f','0x7f783f77920418000000076fe5b1aaec0d','0x80392d4ceac1480000000925f41a6a5546','0x816c76be9d1dd00000000a241bf84f1e3d','0x819fa7710da9e800000007bceaddd54d1b',
+'0x8235d5f1d1da4000000007da7d077db7dc','0x81eb3cacc50080000000074192682dbe0c','0x82fc479e259b2000000008f7e0dbb6488d','0x8314c06eeb8dd0000000083af061e31ad0','0x832d9884f2380000000007b9753a9d971f','0x834cad97b0cdc000000007ee830f75f930',
+'0x832f8ac17414d00000000b2d04f871cd42','0x836c4077a9350800000007d3900e37d0d6','0x83b285ff9052a000000007c1e2d6277f14','0x83d46a380294f8000000085c4e29026f71','0x8457aef0483d0000000008672aec4eefb5','0x847c327c6fad6000000007fc99080a99a3',
+'0x8480e9e35291180000000804f4691ebadd','0x84862fcdabbe880000000849b45bd7e449','0x84b3b026e2b0800000000849056307ba96','0x846567c953d77000000008017858f7962f','0x854b123e33157800000008358811de7bef','0x84fc184b425080000000085428d17f356f',
+'0x854061a54ccda8000000080334348dbdaf','0x852f014ff373600000000833bdd1300f19','0x8589ae2939e4900000000903475900c5bc','0x85ae696e281850000000085fc770cf3acc','0x85b75a63a2f75800000008937537b570bf','0x85db8662aec02000000008bfa3b8708a15',
+'0x860e64fb66f6e0000000089de799f863bb','0x85de344f15d7d80000000a2bd7d227862d','0x85df6ca7a20980000000089afff5896f0a','0x85c99d9f975998000000095d73b154cc85','0x85db3ff19e075000000008d3e0141601cb','0x85be90a65ecc8000000008988771ab6150',
+'0x859e27b07f084000000008e998dfc25587','0x85e49083265a7000000008aa4f65b7ea2a','0x862f5cfe24fa60000000095e0f31805838','0x865ae6e5c317d000000008c6e71b662af7','0x86bf5de766bad800000009e10971a1cf3d','0x871ee73f27e8e0000000093a3d9aeedb96',
+'0x870bcebd4f56e800000008f22e4bc572ee','0x873a6fc4a620a00000000909b731b9f2f3','0x8662600b2c8a2000000009311a11122eb5','0x874f38c509c6700000000a64d942fb16c6','0x876a5a98891830000000091bf9aba9da9b','0x876a2bc26df890000000097b3741b8c41b',
+'0x876d3d924a22c8000000096fab21ee8cb4','0x8739822f050b8000000009e5b3a356542b','0x8746567410c91800000009645386d97cca','0x8744b4defa45a000000009893c1070e0db','0x8723b3a49aefb000000009a928ff4c0d52','0x87ba9e9a9adb6000000009a75e684919ca',
+'0x87324eb6052e50000000097155ea6c3584','0x87b85c18f2ed8000000009ab11df17b2ff','0x878760753203500000000acaeec98387b7','0x877dd979d6d51000000009e83f0075bf33','0x875e5a3ddae4180000000d1bc81da24ad7','0x876810b93cb8b000000009e645c7854a01',
+'0x86f8fcc0f0534000000009cef5c2aab91c','0x8792c0caf3a2a000000009c74bff01bae9','0x878e350c11ba000000000a0591523fb3eb','0x87ccee37b3e1e000000009f441354e0a61','0x87e870bc0a744000000009f70f54fde7ec','0x880cd45ef890400000000a12a194b91817',
+'0x8887aa9d9437e00000000a0df62e7fc081','0x884188a5a064280000000a137c0c534f16','0x87eb2be1e791780000000a269f91e32fb3','0x886113161caf400000000a33f59adf9fc0','0x88b33861dedc400000000a3949526a6739','0x8892ad38addf000000000a458edc70601b',
+'0x88b31e199972d80000000a5a80ca8e9ea3','0x88c608f7f84ab00000000bfdbfd0681f59','0x887c988a6b6cb80000000a71a725f618fe','0x887b71c03f65c00000000a8912f02d13f9','0x885b997cd0c7b00000000b15b867158450','0x88f06fb6d1a0500000000ac3f978b4d22c',
+'0x88a73089c0ac600000000ade697cda0d36','0x88d4268a09de800000000ab90012f84146','0x88f7b2c99a21d00000000add45b7c2c27c','0x88fc27ed010e100000000acbdbe9e3c01f','0x88f40fbca845400000000acdfd00681d8c','0x891f3d8e3b70e00000000ae79c77965fbd',
+'0x8899e769e8ac200000000b28bf136ee7e8','0x891c2863e645300000000afa88f03e47ee','0x891539b28bfe800000000b038a421d98ca','0x894d875298f5600000000b683df6c25642','0x894fef60e3fd100000000b3210d176793b','0x89205462cb11700000000ba87c93d84e34',
+'0x892c65aa8c79500000000b32cb94d9d264','0x88b86372b3ccc00000000c046b2b9432f2','0x889d298a43edf00000000bbc2133e58fed','0x8963fd802d38900000000b574a62e15f50','0x894b0678c0b3b80000000b67a78873f85b','0x8991a3149209700000000b90e7480c3b6e',
+'0x89648280bc5ba00000000b971805ad7e93','0x897d2f07ffbc900000000baca4f76cd3b0','0x895c1474a7ae200000000b8bb8a0ad046d','0x89546274f51e400000000bac80b32497d2','0x8958cf5361cf700000000bd83d1b5655dd','0x898fcb8565faf00000000c0641e81f12e5',
+'0x8961eedb90ab700000000d0e50567ef4af','0x88c90aec80d6980000000be29465783681','0x88e327a48fb3500000000ccd63c9bc5169','0x88d983854ff3b00000000c06360a9e124c','0x88e550506342e80000000bfe60314c1664','0x891cbc3c9d61280000000c193ad126a032',
+'0x8921efa21460f80000000c11c3526e3a69','0x891d891485cdb00000000c1f0863fb9205','0x893affa44052500000000caa393e56b38a','0x88fdafe9333e800000000c5b619d034e99','0x892b10b5c513200000000c67af0428c037','0x89172bc9c400d80000000cb7fcf213f393',
+'0x88f15fe48a45800000000d700fa83adc54','0x88e49608623d580000000d4cd6e0fad6bf','0x88eab6cf54ef200000000d0f0f44ca3dd3','0x88db81908c4e000000000e1a848b327848','0x886446ba4094b00000000d46871de76280','0x88b096d9c130880000000cc4fb392ada8f',
+'0x888f2892b2b5980000000cb45996cf2954','0x88a61d19d647f00000000ccbc0fbe7ed9f','0x88b873ce8998800000000cde8d899d3edc','0x88d1f3d86748e00000000d40a68deaafdc','0x88f57051cb9fb80000000d36500756c793','0x88e6f37c44c7900000000d313bcf6604de',
+'0x88b4d0274c6de80000000cf6390b987367','0x8925987b08ea400000000d08ec020d9966','0x8945339d2b56280000000d2eeeb56eb5eb','0x892028bc29cf700000000d32c996cf2433','0x89375ca546dae00000000d6b55ff9a42c9','0x89381a5ec03c300000000d78ebd5abd132',
+'0x8948f4cf8529380000000d3a5506346940','0x88f0732b398cf00000000d51c1674544dc','0x894c4bd069a3f80000000d51d0304228c5','0x8979fcbf149de00000000d670f25b45228','0x8982e07d143f800000000d80481abed290','0x892064b8a0a21000000014032329b4edce',
+'0x894df5c13819900000000d8f7ab94d21c6','0x8944d88cad49480000000d94be20c9ae55','0x896a1b4237ba000000000dbc4af23c6f3f','0x890b23b444dd000000000dcb57e18a1844','0x8985c52fe3c7e00000000dc048da4ed2cc','0x897c26261cca380000000dfea0879c293c',
+'0x89e30c913fb3980000000dec3c3f8c3112','0x89f51919e455a80000000dfac5f5d6ea02','0x8a3fb0594ab5780000000dfa7fc94f13d7','0x8a3f5f726b05900000000df0d3cc1eaa89','0x89c60ba4ad97a80000000e1f4f3b6534f5','0x89ff55265348700000000e223e547882c0',
+'0x89f9e273660dc80000000e7eaf602771f3','0x8a10f717a2e1800000000e34ce223a0a40','0x8a0e9aeeee7eb80000000e374add821780','0x8a2f1e024698200000000e817a288aa50d','0x8a79023cda4fc00000000e519c7ee75bb8','0x8a6ab4f19eba100000000ed22d0240dd7c',
+'0x89df2fc587d8880000000ee0955e2b039f','0x8afa171c8828f80000000ed0ba2cb37f7b','0x8b158259b0ac600000000eb8f9ce262f03','0x8b395e707ee7b80000000f137d6eeb9d41','0x8b564eb72168c00000000ed85a8382abf4','0x8b5d130bba16d80000000ec196f9031f64',
+'0x8b7a27f47af6e80000000ef70701363811','0x8b85c42e8416e00000000efbdac515aa72','0x8bc86bb39575b00000000ec7495c6abcfd','0x8bb964979c00700000000ee9332988687f','0x8be3b9326712400000000f06498db1118b','0x8bdf4721b44c500000000eec6e3cedda4d',
+'0x8c256734f2eaf80000000f15af67f36f6b','0x8c2e7b6f24f6380000000f1cd63f25a46f','0x8c40b154a9cd500000000f698d31d92114','0x8c2ddac5273ca00000000fbf0af4cebc95','0x8c2a48e73db4280000000f5facf168b7d8','0x8c1a979de134080000000fa92b4868ef6b',
+'0x8c44c10073233800000010be77a5130a37','0x8c306ad303e4900000000fac9fd9b5f32e','0x8bb6d760ecab000000002e230a5eb76158','0x8c0b17c636e9b80000000f74745868b241','0x8c2850cf6cef900000000f9a9ed9bd7db6','0x8c0cc9636a7eb00000001047aab01352d6',
+'0x8bf43bcac93838000000109988c9c096ed','0x8c4d189f5fbb900000000fc8281939fdcb','0x8ca5e0d753b0e80000001000eb95c3433f','0x8cabc138b51b18000000100f5017273e62','0x8cd096ca2c05180000000feaded0ee4422','0x8d0b4261140b40000000101f5bccf48de5',
+'0x8d4fb499ed7768000000111d6126189b6e','0x8d80a33c6f3d88000000102f2575cf74f9','0x8d89cfe62d6e500000001120f6bc6e948c','0x8dab86a526eb00000000104dcc849acf50','0x8dd2253b7e306000000010a341566e616f','0x8e44891c7daec000000010cb0b2c3c5eda',
+'0x8eafce5f1a7828000000107f4f241dd94a','0x8edee7779ce24800000010e7fa1692c706','0x8ee97060ea14200000001367e7a644d124','0x8ee537f67920700000001695174d8951bf','0x8edfb476f69f5000000011d9e8233a3b0d','0x8f1430a5d74bc800000012b5946d82d738',
+'0x8f1c3f365d1660000000116fec7af93bf8','0x8f68e9b3f82b20000000119a2083687c02','0x8fd1f20514d0000000001271c7e8c28acb','0x8fd9f03f1eb65000000012e01bcf0e252e','0x8fc2298546c92000000012aaac49ae9a09','0x8ffa3f24a2d6000000001160ab3cdc88f7',
+'0x90094d67d2f6100000001195319dce71b8','0x902145b882ae80000000115b4473602905','0x93fe89f9943e280000001189052a029eea','0x9413d3ef1da0c0000000123a56ee55dbdf','0x9464b16aed1790000000117108060cbe50','0x949692fbcb647000000011a382629f804e',
+'0x94d9d95fa546c000000011e4fe83314d31','0x950f3cb516964800000011e96137e894bf','0x9570a692650ca000000012be5041a859b6','0xd947d239db32700000001566946a06755b','0x1531182160b44c000000013fb442a54ff19','0x2bcd1a8eeacfd0000000011f7e0c0ee25bd',
+'0x186456634d1852000000015033358712d67','0x16ed59f2181c4c0000000186203463be343','0xd69ff81c22388000000015fd89bfa2450e','0x9662f2346dd7e000000016cc0c8ad22295','0x95fbd858db0f18000000166aecad08eabc','0x961c591fed2890000000166483b86e1f12',
+'0x960c8b9036968800000016a485484c87b8','0x9610986f041f4000000016fae5bf3dd526','0x95d835cd5cdaf0000000167b728ac14bcd','0x960dbce150e24000000016b329db0839b0','0x96395f379e996000000016387cfd1300bb','0x9626f0e8f65bc0000000164273d9ecf6dd',
+'0x965b4e215208e0000000165c01098eac93','0x9673606c07b9b0000000166a29199c6923','0x96762248a15dd8000000163eb92d17ade2','0x96038779f52088000000163ea13638efd5','0x95ffa48ad821e0000000171a71fe91e9f7','0x96bc872861534000000017a0e8fc2ca339',
+'0x96ed5c59f84ff00000001654b1a75427d7','0x96eee44cbf09300000001636a65f710ef7','0x96ffcd19e04d300000001680cc2e033315','0x9701552cfcc7500000001654b6275d3ee8','0x96eea90d7b7a5000000016362afffff241','0x971778ac64a3680000001647afe7027286',
+'0x971c4b5d1346c0000000163f925f8e31b5','0x9724fca3207fb0000000166c2ca823d2a1','0x9709619a3a838000000016d267f2738f4e','0x972b6d3b53d9e00000001942017257fc59','0x97432ee8cd972000000017e8985ad386cd','0x9742b5c4b625380000001654477f9daedd',
+'0x96e2b6a4f5e9f8000000164892322af8dc','0x96b435d7d5f360000000166ab2181a5c2b','0x9704087b665da0000000163fda8c7bb75b','0x9727213c7935a0000000164170e3251749','0x970e01604204b8000000163c4a6fbbba74','0x972dfcf28af5d0000000164dc24dc60fb3',
+'0x97241051df87b0000000173b83f15e2a0b','0x9733b77d1a1dd000000016474bd48e11f5','0x97262e10f4c888000000166a783c46111d','0x972d4aa099f728000000176077f7f15407','0x973baf921a9bb0000000166477bd3384f0','0x9762666d9b0bd000000016cab212806b01',
+'0x96331a4a4a51f000000016a57a03bb55ab','0x96c057fa8b04c0000000174c0b04701a52','0x971db59c461ce000000016f9492d0f77a4','0x972286bfb98bc000000016a17eedc25212','0x9707a814e4e25800000016abb4f190cc7f','0x9706297c3729100000001816a3fe97f295',
+'0x96f285729e5f9000000016b9abc57806dc','0x9700d22d28208800000016bf22b9436f0e','0x965452327caf00000000165f6715f5b39e','0x964e9d57416f70000000166da0e569d34b','0x970847ea2e7bf0000000164cf50a92da2f','0x96c9dadb7c7d1000000016d01875d008ea',
+'0x96b54f1e8f26a00000001675ce446aed47','0x96f89b27ef002800000016ec51d01d0fe8','0x96fb3bc273fae00000001659aef8065be1','0x96ea5736e340a0000000166caa31797c7f','0x96fb1c191b1db0000000169bfa4df60ede','0x96f592edf39cd000000016cb14dd2bc4db',
+'0x96f0c5d1e2c690000000166f2093ee2ae2','0x96a0668141e3a000000016e01dd83d9cc6','0x971019d5e44448000000166730f07866c2','0x972fb7e77aba600000001647c2f066cd13','0x9700ace8d26c50000000164ee3dbc9210a','0x96f22440cdb3080000001651df75d99065',
+'0x970793445f25400000001675191f752056','0x971bf8f2ea9190000000165036f04c3cfa','0x97182d1d83748000000016617a874489b5','0x9741a7d9dcb3880000001655a4ede32751','0x975063dc6a24f00000001661390a0a874f','0x973294604561180000001668cd3139b4e7',
+'0x97255d75674440000000165f777501929f','0x971d3d4e0585a0000000169dc98b3b4e61','0x9701622919b7200000001696c729ca9e01','0x974f4b41729ce800000016706ed773a615','0x97464315f18fd800000016950f4ec580f8','0x972f6b88649890000000164bc5f682c008',
+'0x9724447b5caa100000001675c46f8cf10f','0x968e761985173000000016bcc395168c20','0x96990ff75d02680000001659a4af97943a','0x9651adc5c1d418000000169837c14462ab','0x9641f462991d000000001697ca8e138b63','0x96766f2aaf8e4800000016540def3efa92',
+'0x96870c0167ca8800000016df946378fa5c','0x96719340f8cef000000016bf11e6186acc','0x9713845e9dbb280000001658b002806ec6','0x9710975069be70000000164ab6a4948006','0x9736a08050b2300000001658401e3c398d','0x973a70a577b71800000016707f0b2718e3',
+'0x9756cea031ecf0000000165fd535f41404','0x97496b5681dc50000000173f94b69df639','0x9725015b4a2c080000001658b1ca949fd9','0x973cb60cd150300000001694854a99479a','0x9783e347dae7a00000001658d72aa06f97','0x9783584825f6c000000016d54cf815bf04',
+'0x97b029108aa3f00000001658b678d75c3e','0x97af82d5c2ec68000000165352429eadef','0x966b8c5e6d9a300000001652beb43b3da5','0x96527ec195c5c800000016738ab3e0e341','0x961589bf368ec00000001683186469cb65','0x961c73dc5f1f2800000016564da284e6c9',
+'0x962964d7805fd80000001666f7048fd7ff','0x962ca6d0289da0000000166294141556b2','0x966a5e605d7670000000165d501f72c46b','0x963872048ee810000000165384cf751fe0','0x9655405e18dc6800000017a780ac189f2a','0x9650b0a8e50ce00000001691ed679f99b3',
+'0x9665fbaafbb35800000016b338753959ca','0x9661614a473518000000166ce6e47a3bad','0x968a20af1f91e80000001669b5b8c160b7','0x9680b014f262500000001674650bffc9c1','0x9647998314fcf0000000165df755c2a31f','0x96a286bd86a6300000001742399c49b13b',
+'0x967248455bdaf00000001652d4f71252fb','0x946fb4b1c4b270000000166a97ca854a4b','0x9700ed3db99040000000169ff2aa39e82a','0x972093889897d0000000166e9cc9df9391','0x972206035940f000000016e471f8a4c34b','0x96ffe6100039b800000017112334596fc6',
+'0x97062821137660000000169d73572a84a5','0x96f2396ec15f7800000016692df5385362','0x9734f469fe936000000016608a524f082f','0x971e8b01087c200000001661affab32438','0x9751d76d5fb4a0000000169cd51634ab10','0x976343e5184d1000000016913024c35c7c',
+'0x994f5e7f3c8b3000000017156d22da59c4','0x994638edfc48680000001709cb9f00e24a','0x99633f2881c7c0000000167a2918965012','0x996635ea3052f000000016bc9b70633ad2','0x997d5cc69501d80000001668eb25375d8e','0x99523803a7c1c8000000169e1506ed631e',
+'0x998fe4799c73080000001696c06aed7584','0x98c665a10057d000000017519c6d4e9c24','0x98ead60f174c7000000016b51282737e5a','0x98c64fc78ea7c000000016bed815c8d5b4','0x98d71f91b01820000000169410640dab95','0x991045c05b670000000016793d001f8701',
+'0x98ff09c6ff02d800000016df1b92e2e002','0x99c5d2a78a5bb0000000169b9ba9dc602f','0x99e748739f73980000001669969456096e','0x99b3a53660e2b800000016938aeaa35d20','0x99cfdf0e812ef000000016d0f8fa2bc5e5','0x999e769329a39000000016afed930acdb9',
+'0x9a0103f03358c800000016ad6f6a38575b','0x9a20013c5171a00000001683ec376c4615','0x9a0d82e686a55000000017d1174008a9e4','0x9a2f86dc567e78000000188dae35573390','0x9a05fca74439d0000000166b709611a0e0','0x9a0910c4be0d80000000167390d5a27643',
+'0x9a0cabe95aaab0000000166f3e3f4124d7','0x9a2aa024d1a1a8000000168e4971431028','0x9a55957d8979800000001670d6707b8410','0x9a471934eb7200000000167de34672d4ad','0x9a579db2dfe94800000016d36d4596b4fa','0x9a1f9f5acbb8f000000016c5adf783d668',
+'0x99ea9d7c7186480000001678695bedf2e2','0x9a1f37f31cd110000000166cd1cf37cf20','0x99d005af42d3100000001679df3a811da2','0x99f77175bd4bd80000001676a3def0186c','0x99f11e8fdb7a60000000179593d03cdd5d','0x99f6ddb997069000000017c793082ca75f',
+'0x99775f0499236800000016f0b5b52ee33c','0x9938aca20469d000000016b5b3ac98e2b0','0x9943dd1f7f3a60000000167d979d7a078d','0x998e33e3fe4e90000000166bb4eab36f79','0x99cc0789d8788000000016dcfe4352f1a3','0x99b5c58197feb8000000166d76969ed728',
+'0x99bdae0731125000000016f68584e3f647','0x99dc793475dc4000000016e224fae07307','0x992c3af5ad83e800000017fd2ede61cb19','0x99b1b8c335702800000018295ddf12c226','0x9988bc42bfd4800000001699c1023b3d01','0x9980dec02ea28800000016b594fa1aa632',
+'0x99718a89211d7000000017746d0468057f','0x9966fc57ff9d8000000016e9a8f4d608e4','0x9887f8f7f9d870000000170a04a1e9de1c','0x98eafb699b32e800000016b8942c66331a','0x991b0c51783d9000000016a5435c9868bc','0x98fc8ba002d0480000001676fdc0b31865',
+'0x9923198a6b7d00000000185325a2549e1a','0x98e8d2ddc3494800000017aff06a69dc4c','0x98e5a1af6cbec8000000168931d0c211f8','0x98d9474a9f5b1000000016ce33731088e4','0x98174c2fefd320000000169df7d5ffc42b','0x98fb81d2e88e400000001687907b418f62',
+'0x98ee63d2b6563800000016c6559df59f29','0x98e1189b6ead9800000018019da3453bc3','0x9909636bfa0238000000169ebebf0a7fba','0x99256b96f2135800000016f21ed06641be','0x990c4664bf3cf00000001697f69821e946','0x98dce5b6dfa85000000016bfcdf1ee683b',
+'0x99240c0b84040000000016aa4d69cc81e3','0x990223518250b00000001685a16a17b26c','0x9914b5daf447500000001697b198293956','0x987d0bd11fa208000000167891bda310b4','0x99284cf55095a80000001689f833ee2cf8','0x9920517ffded5000000016ca96ce917619',
+'0x98f7d280dbe93000000017e53eed6f3ebf','0x98f0cecd098830000000169923f6f4fa3c','0x98fde84e8f6200000000168678dfe6afcb','0x98ec71a8094df00000001680d2d3ba4f98','0x98ff5fef9f33c80000001687840abdf06e','0x993691604866f000000017611a24f1e5d3',
+'0x993586e60a17400000001720f38b48af88','0x9932ffcf59ff6000000018e9c945e1d21c','0x995e77e95b030000000016de3e0fc31a43','0x996e20b511fcc00000001a198df4d4c76d','0x9955c4a06f93c000000016c10011684038','0x99593448be67600000001678e25ffb79b7',
+'0x9945e1acdfe0e000000016cbdcce94c6ab','0x98caabdd7d74f8000000172783cf981fbb','0x993f3b2f052fd000000016c6d4f1cd5eb0','0x994d8868e4917000000016f2e10bdf171b','0x995f1c85e32f100000001695a8700d1aa9','0x99623948fcc5880000001684983e259238',
+'0x997718f5403cf8000000171ad5f28f0f80','0x99952969bc64c000000016b2463c989d44','0x99906fa554416000000016a5b22e0a20dd','0x996166b55deef000000016a08a26a554cd','0x9959ebbd815ee8000000167527026ff5a9','0x9935765c17de480000001688b93b7c7f0d',
+'0x9957bb1bf654800000001688039adff0eb','0x992a000c18bb8000000017a7f8f8d75851','0x989dfbba7f76000000001673e388f96348','0x994dfe6a06feb800000016b214e2acd8df','0x9931b020b68d1000000016e15ef120563d','0x9936689b1c761000000016aa26289126e2',
+'0x99159c413e8f6000000017ccae3f5f9b5a','0x9915930b816cb000000016b4c720d48de8','0x98fdff88d25a3000000016ab5b71dab19f','0x990b82603f95c000000016938621d463bd','0x98e2695cca20d0000000168065169ad6b3','0x9814d71b64574800000016ab34cdc042b7',
+'0x97c8579df14c98000000167e471548afe1','0x983821292174a80000001756b4b91dab22','0x98950af73e8dc00000001c09319e62b369','0x986ec2ca79dd10000000190d5527fcdc40','0x98550683833ab00000001b8cec9da5639e','0x97e531f7401f680000001866869423190c',
+'0x9816e37d926628000000189c1635dfc13c','0x9801af06a62b780000001a737e3f08ab46','0x97b70e06b8f7d800000024e28466060b9c','0x97c805538e0be80000001836288b6d9317','0x97d37831a3ead000000016ac5b47f93ac6','0x97e56a5155b5a000000016a18867eac301',
+'0x97dfb83cace76000000016a70565cc640c','0x97cc8a19f309a000000016ab84a97883a3','0x97ea81fa38849000000016b0325d520838','0x97db9924af1bb000000016cee3219281e2','0x97e44b62c380b800000016a2d1571aa697','0x97d33d87da57c000000017b502702712d2',
+'0x97b3578762bd0000000016a776a2a95009','0x97c0e3b5aaf14000000016aeb0ee63f3ec','0x974dc052710250000000169c3fa5dc258a','0x976a990d86452000000016c3dbf3c2c68c','0x97a245f143e51000000016eaee32b6a063','0x97e0e804d99f7800000016b021bb77692d',
+'0x9847d85c0f0df000000016e88b1c84bcce','0x9858352b1a4fd0000000189af333bb3980','0x9856552f3ce318000000174b281c22884e','0x986e6118bb0af00000001684a0b88fd571','0x985c9f754e0fb800000016c4f5d8fb61dd','0x987c2cc94139d0000000168fb0e6faf252',
+'0x988ec2f19bb82800000016b35702b60668','0x98809c2ffdbf0800000018365b776d41fb','0x987c520c69f92800000016921ba883f271','0x98a308dad5f71000000016968c74a324cb','0x988dc6ef30b7300000001711bc533e19b9','0x987f0845326120000000169620298994c3',
+'0x986f132c5c47c000000016812270e8185a','0x989cf42dab3ca80000001692e50d3f72d4','0x986cf66079a95000000016898b15006add','0x98b5bc375439f0000000169caa33f77bcd','0x98b89bed9b22f000000016cf095631526c','0x98a36ddefbce600000001695670c31aabf',
+'0x9890e93583b3400000001695c919e791d5','0x98bf3184d3fef800000016acd5c7ee96ed','0x98d0abf9372b480000001689038aebd39a','0x98a81000ae1d70000000171ff35808d388','0x98c8071c965c3000000016abe90efdf216','0x98b98517aee300000000168acf75ce4371',
+'0x98d178cce7145800000016c4b105517808','0x98eb3986909b10000000169bcc6658dd37','0x98daa70375f14800000016be699da3fad7','0x98c4501b65baa000000016bcb1f75d64dc','0x98ab24b9de94c000000016d9eab1a0544a','0x98acab144652b000000016ea1715843463',
+'0x98c2573605b84000000017bbe0b2ab3d6b','0x98cc19d98c147000000018c8d54343b603','0x98f3776b6e0a600000001781daa35dbc78','0x9917fd0fabfb40000000174724721fc64d','0x99160cb168b29000000017940c0b3fc9cd','0x992298fa06c348000000170e466e23bb22',
+'0x992e168e00e31000000017e0fd104f9cc0','0x991acd57993b9000000016fe4bd7f64ef4','0x9915a84239113000000017398707b21107','0x995eb78bec5df800000016c693fbf9a254','0x9954bdf3c079800000001687e57cb70caf','0x998029f8dd209000000016c2ca47302dae',
+'0x990aa28362df1000000016ea0ad101b43f','0x996bdd80886078000000173c795ec0e0e4','0x99844192451e20000000172a4a954f899d','0x997c42b4b07990000000169b092d3bd9cc','0x99569b29f756c000000027649e8a6e4a64','0x993d2e25e6ab1800000016bd1795fe7034',
+'0x993b71da57381000000016be473cbdb515','0x993ac69267216000000016a2b6800b3c6d','0x994f57bd626ce00000001691a2850896ca','0x992d150ca6d21800000016929d86e197a5','0x99136877eca778000000169fe79ff690a4','0x9929e29983fd70000000168720b46c3f11',
+'0x9930e4abb1a74800000016846aac6eaf30','0x993c9117eff9e80000001699056be676ab','0x994d6d4fc3fa300000001690032ba9da47','0x991196cac4b64000000016ce51ae6b1286','0x99273729e4cf300000001693c7446ece50','0x990ffa3e460be00000001690186b384538',
+'0x9940493631db68000000169222aeba20e8','0x994510a7a70c20000000169033c1900ad5','0x99168091a1211000000016961c7a3cc474','0x995b22cad35758000000169dda9f624325','0x9965bed78240c800000016973b61a71b91','0x9950c0dbf31bc00000001683f048f9a509',
+'0x994a61e23869b000000016846b4c92b56a','0x99535cab888380000000169e67872b1d9a','0x995016756157e0000000168711a55c3148','0x995348f59ac730000000168aa056b1ecd6','0x992d5d1cba18e80000001693df050051e9','0x995d8e27a9229000000016824fda625eae',
+'0x992614cd014998000000187a870c755acb','0x990ad43ca4a21000000016d9fe30892f9d','0x98f90a9dcb995000000016a11cecac5ab2','0x9923e083cfdda000000016924b9682aa49','0x99272bf654c7500000001694dda5c7e00a','0x98f56587b9997800000016c6e2a86be8f8',
+'0x991374d174fef000000016951b4ee4c17e','0x98fca0620ea2a80000001688a59852472f','0x991ffa98ec086000000016867912229bf8','0x991becbd3c235000000016a5c2a46751a5','0x992bd2f9466c7000000016e332d7ab2085','0x99306c6611fb00000000169886b04b65bf',
+'0x9921238f4dd8d000000016ed64d581ac01','0x991ae9b4f6096000000016a80b4d109c2e','0x992c4d7a90b73800000016912399778839','0x992ac6d90d7c7000000016880e9317410b','0x98e9f956c907d80000001680eeed7e90e9','0x9901efb0bf01100000001688a27b0e8a8d',
+'0x9902d2d82bffe0000000167fd291978cc2','0x98fc56dd6650f800000017092d291fb0cf','0x98dae730a94908000000168c151ee8842e','0x98faf59bdf1f60000000168bf858c47179','0x98e6676b713d0000000016d8e0971b3c8d','0x98c97847d47c5800000016b4e9324082dc',
+'0x98d467321a809800000016c2236c3a7792','0x98f08ae88220d0000000168c620eb99c89','0x98f8c788fde800000000168396329e1f92','0x983a26d260c990000000169c2624153dd6','0x983b8fb5c47230000000169920cfe63341','0x97fe928ee83eb800000016a7b741deae74',
+'0x97fc2d1ca47260000000168405e4bdb255','0x97e3e78ece0ef000000016adb522b6c1ee','0x97d1fed99e498000000016ca58d799d167','0x97bfcf3c9200c800000016a5cca3a249b6','0x97c4e490f207b000000016c400df24728f','0x97a9a84ec354c8000000168cc28c10afdb',
+'0x970fc5695924000000005e346d30bebe60','0x96ee45adefadf800000016ef976a5b5dc4','0x972389c977b940000000179454b8f998c3','0x973fb3835a7b3000000016a01a336af4ac','0x973f9661e652f0000000169116dfbd5cc8','0x973884d05da8a8000000170d7d80d9f394',
+'0x9746ecaf9c0d20000000173d5390c5bb0d','0x9731f56568c6c000000017bbc8b1d35a8d','0x972d00f90cccb0000000169e8cf5e9441f','0x973ac0d0ab330000000016acd85f539a83','0x96f36c4c7bd96000000016ae4c05e7112d','0x96d141dbae0750000000169834a8bb2ab6',
+'0x96ed1312b39b50000000168992c19818c4','0x970764d4d661f0000000168c24d48e63a4','0x96d843727416d0000000169c4fd19b102c','0x96c46cbf948f2000000016990478d1ac21','0x96c6887e95639000000016a8e7b57b8ba6','0x96af819ac7d86800000016b6fc075df8c4',
+'0x951710b13f2420000000171f9319431c4d','0x951a51605efe1000000016a1aaa7ff513d','0x951818f8485a300000001690c23eb09101','0x950ba5d54c9888000000190b6c0c9c5e40','0x951b0eeb219298000000169c166c63dbea','0x95045cdfd272c800000016a0b458f794d2',
+'0x950ba561b4525000000016a9611711b39d','0x950b75b4862a90000000169901d0784f66','0x945e756460c31000000016a21d4a81f7ad','0x94de4fa32546d000000016c08de3829553','0x94ca337fcb3ff800000016acebb224809a','0x94c007d2980650000000171d109d2b994e',
+'0x94ca5852185ec0000000169a10e301f948','0x94c7a56b7a693000000016abb50b4a4fa6','0x949544d3eb21000000001690e68e006c8b','0x948ebc48f791d000000016a3bd56a0b711','0x947416df66317000000016902224bdc46a','0x944cbb1ab0afb000000016de530ebeb84d',
+'0x94529861d1730000000016acf9823acd03','0x943481aff12890000000195d4293e4e1a6','0x93a856f95d83a000000018580d13990f43','0x93f41616e0f840000000172a1bc5f77371','0x93a71dd285bb0800000016da7759de7dde','0x9367e6498da3b000000016b26d1e2b00d3',
+'0x936e218d9c4e0800000017335304b26e66','0x93278bd38419e0000000177f62a23e70e9','0x9356230e3f8d5000000016ef553869e40d','0x9357a13e916b080000001de0559272e620','0x93455453ebe0f00000001872b3a345b7ef','0x933da8415033e0000000178d9d9ad351ba',
+'0x9331906179c2580000001701b49c2c39c0','0x92cd96bc024cc000000017cc1f17b34e7c','0x9301079b596730000000169caa3e6b89d4','0x93129ca58160d000000016d4c27209e50d','0x932e37410b3be000000016abd7f063321e','0x93213b057c8ab800000016958486e22267',
+'0x9326879007ae8800000016954c2e318c2d','0x931396006f2e0000000016c15050de926e','0x92e218ff0cf36000000016b7cb552ac38f','0x92e54bbefe3c4800000016a21a2adce9fd','0x92b84a02bb43d0000000169de372f00d20','0x92afd17178faf000000016eb9e24804450',
+'0x92d0a2115543a00000001694e8807e594f','0x92eba650ff13b000000016c4237101eb24','0x92dff7d031d65000000017128857dec597','0x92bb0734a35a00000000169ab49a6c7fa5','0x92b7e59d0f749000000016f2185b1ec14b','0x92c8a042d5585000000016e7198fe81f47',
+'0x92b7bc985092f000000016caadaa2f4cca','0x92f37581d6823800000017455cfd0ef502','0x9316d0c487cc1000000016f79c8195dc6a','0x930675384c14900000001694b9667d7882','0x929294dace15e000000016ac5926772c57','0x93023a6da3622000000016a80bec63e25d',
+'0x92f69d9d3bdad00000001751dae4c952e4','0x9300ce757178f800000016a6b1e645e653','0x93311b0219f3e000000016a1067184d095','0x9313a2d2d4f52000000016b98930f0c36f','0x93184b19fac46000000016bb1dbd7dd3e9','0x9304c25ce6624000000016b13f0422f918',
+'0x9310b40635b09000000016abde5d715493','0x92f0880353f34000000016b23a7507057d','0x9314dab5e36470000000169e8917bc158d','0x93260eaaa7d3f000000016a3d0ea7896a8','0x9317ae2d863b48000000169d2f2020c544','0x931e315c032e0800000016a2f521bae3c9',
+'0x92fd563b2804a000000016b3d8b887dfdf','0x92fbdc10bfeb4000000016a73455ba6d90','0x930eb0a0a5ae3000000016b723723c868e','0x95207e72f55a98000000171ad7a2e417c1','0x94ecd286e799a000000016a57b708ab32d','0x94fb2f857bbf8000000016bb900a2bdc91',
+'0x94f60df6e78e1000000016b130ab1fbb6c','0x94c741a8ee4690000000182bd43412c5e1','0x94e35bd34df42000000016a180007f493c','0x94dc33079bac7800000016d9099e4bb4fc','0x94d5af2bc19f5000000016bae03aee1a9a','0x94ce739c063dc00000001729085721cb41',
+'0x94d25295b87f10000000169ef7fab88b07','0x94c022848354a000000016ae89c495991f','0x948bd3fe62af8800000016dfe96b227b13','0x943772d29e924000000016a893c3e4311b','0x9484258b8c80b800000017140b82e83d37','0x9488d4658bc3e000000016bb49d7608b78',
+'0x9470e54223dbf000000016a6005df13aff','0x9476f7340ab4f00000002af65b17860e64','0x948d9de7976e80000000172ca71f344676','0x9476ce554c12400000001b6e83f60630b6','0x946dc629724f0000000016dcb581a5ccbf','0x9495b04e832940000000183cdda549d9e8',
+'0x948e9bc0ae2a2000000016dc9f37999f49','0x949007afe7053000000016db5ad7851040','0x9470463a8dc98000000016ad565bdc8424','0x9494157dc46d6800000016acef8e64cc18','0x948d284483467000000016b266dd485262','0x9490a018120f7000000016a08ab2fe2a3b',
+'0x9496d896c10b30000000169d91deef9c7d','0x94835ddb671e900000001871126a8013de','0x949e63e4e3b130000000171d705b46fc22','0x94ada916bc87a800000016a539e341d689','0x9496e4dc56925800000016a40ade191d8e','0x9496a7300c6f8800000018a646e497df0a',
+'0x947cee26c3c848000000187e1748ea35e5','0x947b2e19035cd000000016a66bdc24c21d','0x9482997abaf950000000172c580191ac2d','0x948b54caa8a7c000000016a67c37e07371','0x947e5743522fb000000016a590a964c172','0x9457a04baff5880000001e004c825dd16d',
+'0x9473a1d765c11000000016a2d376a3f16b','0x947303b67dbad800000016a7a23d2948f6','0x9477ece3c097b800000016a7df674d9b5d','0x946f4fd5a3ae5000000016b5f755db9230','0x946c1421f38ff000000016b22cb72fab28','0x943c775fc7549000000016bf0c8c4403b7',
+'0x940ec42df1d7f800000016d3f753cfe7d8','0x941ac6d6d830b000000016dc2408cf4b10','0x93f17f0adedcf000000016cf2f3533ec7e','0x941bfdfa08ded800000016b12674a15b03','0x93f628cd5d7b3800000016efc14d99c9ef','0x93c363b7c09ac800000017402d0f8c4553',
+'0x93ff84bc61691000000016f098a85a3e30','0x93ff3fbc384fa0000000175389fce44d4c','0x93f304a04688e000000016e41a57ef964a','0x93f3560d3f47b0000000171b14558657fc','0x93f7190536a1d800000017386d132d5f5f','0x93dbd5c2759580000000170af1da3fbf89',
+'0x93e7c9a000bce000000016d6617d4ae6a0','0x93d65550005c0800000017477d43aeea67','0x93d68af1f8f0b00000001879ad2832b290','0x939c3685d942a0000000186965e7e83069','0x9395f28eaf6ff00000001ed5276d69fbdf','0x939a24586f12c00000001712476551d656',
+'0x93b4f4ef8247f800000016bfb916b8aa26','0x93a5022f6315d800000016a64f2ab1e69d','0x93926ebefb3db000000016ff08dae6b70f','0x93adafa563595000000016fcc8291305e0','0x937e34cdc98a7800000017264dc41936e9','0x93454f233a82c000000016a9450def0d8c',
+'0x93442b3737cbe800000016b3fd459fd316','0x9349aa33ada66800000016e2c54f089a5a','0x933afa919cc06800000016e48fa44e5d4c','0x9334a4642aa4c000000016fbdb4f66554e','0x9333a106ca60f800000016f7da84c35951','0x92eedbfe0a0b0000000016ac139e57a0bb',
+'0x939cdb94aa716000000016fc40d97ef6a8','0x937d01940bb50000000018580035679af2','0x935d273833fe9000000016c4093be2d515','0x9356fccfbb2b0800000016c3c63feff2a2','0x9369f670e64f5800000016b3e972199c05','0x93693325bd50b000000016c69a203c795a',
+'0x93458b11de74e80000001702190fa3d2b4','0x912ba52605e8b000000017296df065e438','0x90ee396ac53e9800000016c355ff680ba7','0x91015081db6a900000001851639498f56a','0x910415ee24e66000000016c56b2ebe56f4','0x90fe90677daa9000000016f7e0b27afddd',
+'0x90e7dd3bd35c4800000017a70e72a99dcc','0x90bde7171712500000001710547bce9003','0x90af3c5d40d10800000016e085f4e0ef96','0x9092c71842f0f000000018c2ab51ad2337','0x90b3f118d51e40000000172c31355b80ba','0x90c176bbe3b84000000016d9df7db92e0b',
+'0x90c0deb64cdf5000000016ed4389bc2a1a','0x90caacdf44f5c000000017683b88f95669','0x90ad0dcead76300000001701f96ec8b618','0x90a11428f4e710000000176fb2c1198d68','0x90b05b6bed356000000017796797faadb9','0x90a181d4495d98000000171bca9df7d7ad',
+'0x90941203e4b93000000017bc797cbb1643','0x90d35845d1eac0000000171a261d9d563c','0x90d1b5ebaa3c4000000016c6fcdf50a072','0x90a4f0c88c6750000000171494c5e3568f','0x90ca8c983ae35000000016be9bf93bb9e6','0x909deafd4d2dd800000016bba9708774a4',
+'0x9079d53a1425b800000017079accdf49cd','0x908baa0c72d3f000000016bb0fa5802a06','0x908efaceb8521000000016eaceee2df28a','0x907ac31babb66800000016be978b254adb','0x90a6061fe7ea3000000016d44437b79e8d','0x90ac89d67dbdf000000016e89a0d670674',
+'0x9088e3551ff67000000016e5f811c149fe','0x9097f42790cc4800000016ce49062e46fc','0x908f0a2bbe34500000001700a501d5187a','0x90b06263ed6c980000001712d8b6127bc3','0x909eab440686f00000001703dd9bc7a0d1','0x90a0467d6f72b800000018fe278454a6d0',
+'0x90a249db32042000000016e4d1a1efc855','0x90aec5bd78044000000016fdb05b6dcf2a','0x90bb9a6d1946b000000016c19721cc3d70','0x90a05e9603f80000000016f5542e34d0d1','0x90c564424965d0000000170a90d67bab8a','0x90c77130288c300000001735520a68f4cf',
+'0x90b5fdf934518000000016c27ae9c6922e','0x90a220a0b72210000000174fb71fa46dbf','0x90ac63fd9e1f3000000017365cfebc6a5a','0x90b4b45e9b502000000016c77e605ed918','0x90be7c837896e0000000176abf6f19fca9','0x90c5ab35b116d000000016dea0f658b989',
+'0x90b602cc185a2800000016c07e76d3dc74','0x907b6cd888884000000016dfe20fb07d32','0x90c328676dbea000000016d5fb7a433f19','0x90d33554fd939000000016c44612ed5fe1','0x90a4cd37c0dd3000000016cd9feada282e','0x90b6829af3c3b800000016be8730d79986',
+'0x9085bf5517a8f000000016e1fa52fb8b41','0x9061fd498622c000000016e0dc6804298a','0x907cf83b1fc9a800000017803a848e2a3a','0x905477ca2d4fd000000016bc670fcba4de','0x908253df0c6d9000000016c3c3484e0012','0x9092a3017c5c6000000016c0ae6fbc2e03',
+'0x907e8b287b05900000001753445da5f4bb','0x90a7801a630b880000001722e4be4b8418','0x9094ca08a3a8c000000017151dbfa07713','0x90890c4a54ef7800000017084b70ca9f1d','0x90b53e2a5039a000000016bfc2aa64e1d8','0x90c01202740300000000178cd4a670ff00',
+'0x90d0b331f6beb800000016ee171027cfa9','0x90cf54efc3c99000000016f2405f346651','0x90c97a810bb65000000016c513d959e8db','0x90aaaeaeaac880000000170cf2ffde1edb','0x908d2249185b7000000016d3b49048b573','0x903ec43a03f9f0000000173ac75e10ed20',
+'0x90e393c799957000000016da36f9375d5b','0x90e88b691b956800000016db1823b68ef3','0x90e67e4d9e376000000016df7f8f698189','0x90fe75158b76f00000001740a574e7e0dc','0x90e666fceb95c000000016e6b794606e8e','0x90f5e466e2c92800000016c5c0405bcf0c',
+'0x90f2efbcefa0d000000016e9577c6f5704','0x910c76f4032b8000000016d13bccbd4355','0x9104fe7198f68000000016c0af79bc285d','0x90f6eeb80604f8000000171805d8a1e68d','0x90e673d910f57000000016cea86c1a6d6f','0x9105b96020b21000000016f3d58532059c',
+'0x90e33cf805e79000000017ce3d320197c3','0x90cad97a3021b0000000174544aab8e3a5','0x908b9da08d583800000017002eab964d64','0x90defc598241b000000016d980b9b74d70','0x90c5beafae9b300000001739322f257370','0x90de77745791b00000001731d0b1db7236',
+'0x90ee031c7f8508000000170c4c358da952','0x90ccb6713011e000000016c78510a016e9','0x90d4e5350dd0a800000016f5156df06ff7','0x90c3d3d49d83e000000016ceae95405cb8','0x90e1afa350654000000016d930094f0c79','0x90db416bedc3b800000016c85403e601ff',
+'0x90e17f89cf223800000016fc5d8df1ff09','0x90c7929c5a4bb000000016e143736f0f5f','0x90b267ac578a40000000173c1a4309741a','0x90cf25ddfe7eb000000017588c9df38fe6','0x90e56fc8f2980000000016e537b132df22','0x91229bae8b5b0000000016da8ac465bde8',
+'0x91083bcc358fa0000000188bd55b33cacc','0x911e36f51515a000000017a65d03435555','0x9121aebadb909000000016ccf981c6c173','0x911e8c43ed5ce000000016df7354360e6d','0x91233255d1aab000000016c7086ba0d969','0x911cec435bb7d000000016c5163f32fb9b',
+'0x91314b367d051000000016c91360c2fe7c','0x9144db272633d0000000173e59191df7f4','0x90e19cd94e0bb000000030f451cecd6996','0x90db34aa2acff8000000175128bab2d57c','0x90bea0929c564000000016e2d604f36eb6','0x90bae549f96eb000000016dc9b0bd250a9',
+'0x909f2ae3e729d000000016df229cba5bd5','0x90ec6169cc85f80000001741decaeb05e4','0x904a750faffab800000016fbfbbce6dbe5','0x90e0af0f8f9cb000000016de90b42a4e6c','0x90e0656cbf2cd0000000170da3533a0aef','0x90de2c4c67442000000017510929e9796b',
+'0x90e463d661872800000017243b2d8b3114','0x90e25efc1dfbe800000016f9c077718610','0x90e17e1e8b389000000017ab04d905d307','0x90ebd03ef56d10000000176717763ad58e','0x90d6b1e230933000000016d5e7be021052','0x90e142af233c900000001722fbc534f537',
+'0x908bde3e6bff5000000016d4bceeceb699','0x909920928211d000000016cea4a8d70005','0x90a88c6cded0f000000016f1b0ad9e0acc','0x909e92dda982e800000016fc5068054fad','0x9098b392d8b400000000175b5ef16b1265','0x90996c05a799f000000016d428f908aee7',
+'0x90a1e9d20eda4800000016d5a1f6385523','0x9085c3b6b8c2f800000017a7bdf4ae90ed','0x907ba0a8fbd79000000016de1c5c4883f9','0x9063ea3855cf2000000016fb39da012345','0x9079d25a60ef08000000176bf4c7f1c878','0x907be84319ac2000000016f6b0e4911c8a',
+'0x9065930c0a039000000017a26b65edb8c9','0x905c5fe8f2721000000019090f1abc1c3c','0x904bf87dce6568000000172b52ace36a15','0x903c8f0660c6100000001769b9866449c1','0x9047405242b73800000016df88e20bba45','0x9199cf7dab4db8000000177e53019ac99f',
+'0x91aee8dcc243c000000016d78fb31add49','0x91b5dbb69a95c000000016eb2c4b09d4d5','0x916af80b98d79800000016db0bf15189af','0x919e2b49644dc000000016e57ce7e9566b','0x9190e35fdb6df000000016ddeee9090c33','0x916349ccb35bc800000017caaed0524b3a',
+'0x916ae36711c6a800000016df27b4c004db','0x91769af88c8eb800000017690abd30c43d','0x9180f3659e57f800000017c1511b799bd9','0x9163d491f5a13000000016fe98e1f2ff02','0x9166f697c8bbd800000017d4ab770a3565','0x9166df92ce283000000016d6653d5bc491',
+'0x9142447e639d4000000016d37d2a80873a','0x9159887344c7d000000016db2efcc012d1','0x9178dedd5b5bc800000016e6fb61464850','0x9175f2590a53c0000000175cdff9af6a28','0x9172e334e61da000000016dc7146adc2dc','0x911c554a51776000000016f2c2524e1c8a',
+'0x912b5c870e673000000016e64bcb44c82f','0x91343e11625a10000000170a9d41dcc0b3','0x9141c1cbfbbc8000000016f64f4e334c57','0x9137f41c52e8c800000016d728c1e060a3','0x91382f50d2729800000017778e91b09fe6','0x912b35007c9bf000000017205d3520db4e',
+'0x90e356fb551c980000001730734e0704a1','0x90e3ca6c77edb000000016f3416ea335e4','0x91078f3ead976000000016e6765d3bf85f','0x90fa335767cac000000016f3680e472a41','0x910e34c545f6d000000016fd7d8608ba32','0x910bcaba13ee3000000016e19dd53bc501',
+'0x91120e97b4e77000000016d78172e01990','0x90f4bfb6e6c2b8000000174394a82c4eb3','0x90f26392c9029800000017170851041db8','0x90cc49e84e16b00000001714508e283d14','0x90bfce28ea2c0800000018bbdec3ced239','0x90e3d00f7d1760000000171cf91e91e5f4',
+'0x90e9ab84f3ee6800000016d44d2f8765fa','0x90c579d7a4f63000000016f0165bae62d5','0x90bd2f1ba96738000000174d01bc63b740','0x90ac4a21c4b09000000017aa8399b4a813','0x90bc0095fe5a480000001778a34e691710','0x90bc5a314e35c00000001946b754734031',
+'0x90c97d291e2d500000001717b118fdf667','0x90c9cbbecaa87000000016e7b55ebc4019','0x90d06c747b428000000016f4e24ae28848','0x90a2e6be9312d000000016eed480e1c05a','0x908c0bf95891000000001ab433fabad37a','0x908a6718fe2b7000000016ee519d976f0c',
+'0x90b26d4e1d1c5000000017021f07680abe','0x904aef967c5f3000000027d0bfef08dc9a','0x90561e6b8c813000000016e8d066092379','0x90677cb0ac84f8000000174e511a75e495','0x9033fcb3ed9a7800000017a94b309e10d9','0x9043afa8a3f37000000016df49c8a4ec3d',
+'0x904a8f1b3810d000000016f80a568973b4','0x90513bb747589000000016d999d2030e18','0x9056a7e9066d0000000016f3cb62b0b77e','0x900c58495f7a50000000176d13186a3884','0x900232595b9da8000000171f84a44c7c35','0x8fb23af9e9de2000000016f582aef36a2e',
+'0x8fb39f3606e39000000017a83bc203d899','0x8fbfad5929e540000000170652bf5a1098','0x8fbeeef13d0a300000001721d6d23e3f72','0x8ef8778f65742000000017084b462a4367','0x8eccd99b634ea8000000175aa13144bd90','0x8ee07f5f41aba000000016f5ace41884f3',
+'0x8eda7227e90bb000000017a63db92ecb30','0x8eaf4d0178cce000000016f7c1d0a4e192','0x8e81ad314c0e98000000181343ef15ab45','0x8ebb581d04745000000017fa95375f7c73','0x8e9715b30364e8000000183b6efdd36cdc','0x8e904e90962e0800000016d6fc6d44312f',
+'0x8e79034d635020000000173674090244a2','0x8e65d740c61f98000000170301dafa6a4c','0x8e512f2f9ce2d000000019697fc47b53d8','0x8e65bab0cf778000000016fffc211e9265','0x8e652039614cf000000017b3f33f91620d','0x8e36afdec51600000000174719e7163879',
+'0x8e51221423897000000017562191da8fec','0x8e3295aeafa000000000183ef1aef4329c','0x8e426ef69258c0000000170f72d020dafc','0x8e29da392af6a0000000176a1324195568','0x8e34190ada9e4800000016f49641a174f5','0x8e3798d95418b8000000170ff080034d5f',
+'0x8e3335f4c0a0d000000016ec0b6bb752fd','0x8e45428261d3f000000017130ef0cd015c','0x8e37834db6ac10000000184e372f74fa65','0x8e1bae4833108000000016dbea604e801d','0x8e09a92cf6682000000017dc2d90bfd1a5','0x8e0a2d693a92e800000017a0a6d71ced4d',
+'0x8df6c9ca3dae18000000172ce8f591bed2','0x8e0d71d29b285800000017716acd99e0aa','0x8df9d455c19aa000000016e905433c1d47','0x8f5bed20fa860000000017355c9b821106','0x8f266fa9eab2f0000000186cd4d9e02c10','0x8ef13095b5b4180000001786135e324661',
+'0x8ef6906699a6200000001762e139577c02','0x8f02ea3365398000000016f893948cd650','0x8f1f570e311c9800000016f4e25b6cd741','0x8f1c02a3a425700000001718d36fa71d8e','0x8f27b702d63880000000172d6851bcf024','0x8f1aaf4a456e3000000016f5c39c8e7e21',
+'0x8ec35c03dfeec000000018571239779d2f','0x8ebfbfa7e3fdc000000018d2d6d4615847','0x8f0bde86c040a000000019038cdba1d33b','0x8f0e21de0febc000000016f3258507e3a1','0x8f135928748db0000000178fc8557d9986','0x8f00dc035837f0000000171f12bea02a2f',
+'0x8f16cc5c843f4000000016f34a46b9bfd2','0x8f06eb1be163f0000000174a0e88a5a996','0x8f01291d7cdd88000000170b38307d1989','0x8efbb5437402a000000017650c03e1d289','0x8f0eb037bcb1c800000016e8d2350355a5','0x8eed71b78c5610000000190ec73b7a76c8',
+'0x8eecb5cb5ed67800000016e6dfaba7fe7c','0x8eeb420919b8d0000000174fae9dc9fd73','0x8f03fec82032d000000016ff1a5c630ab5','0x8f124f7f40ed9000000016fd40d10b2a13','0x8f0b90c6c0018000000018280147dcaac1','0x8f0f653643e2b0000000171680714d3c70',
+'0x8efecb23d551b000000016e5eb177c3b6a','0x8f151e5916a86000000016f26e25a1553c','0x8ee85137701140000000170deeb2aaeb36','0x8ef0daf272c070000000170fede732e571','0x8edc52bba421c000000017311febe681ac','0x8eb2150ae239880000001716a115aa6b1b',
+'0x8eb37193c7099000000016fe5a33a9a9cd','0x8ec04ccf66cb80000000174c4c3620dc05','0x8ecc86ce464108000000174a0336c0e070','0x8ea452416069a80000001733ea95bff314','0x8eb8cc50c0764000000016ed93c77b3c17','0x8ec1a525f97df000000017cd1ea35a7b4c',
+'0x8ed2cf1d414ee8000000172ab0f99f9185','0x8ec3a699e27cc0000000191dbe5c8401eb','0x8ec3c0d11be04000000017038252cf0837','0x8e8b26f5242b7000000017650c14213b78','0x8ea3e87fa59000000000170245af40b355','0x8e79cd7b6caa5000000016e97eb6361066',
+'0x8ea191c62491c800000017740509f37b25','0x8cb89c074348200000001b80cb62788ece','0x8cc1e715e1c74000000016f0a0b60382f8','0x8ceb158edf36e000000016fdf6561a01ec','0x8ceff7a54efc580000001735c56f714859','0x8cd49cf005c860000000170ad549a51fbd',
+'0x8c1e31bd6bfd800000002d3fac08f97eac','0x8e39ade84b31a80000001733762e68ab77','0x8e3399cb6b9f4800000016f9ad8214dfaf','0x8e265be72902c00000001749f8dd36f5ce','0x8e3c0cb055165800000016f1483545bfab','0x8e44d45dc039c800000017065292aa59e2',
+'0x8e1ccccf16243000000017d731ac34f1de','0x8e0d70b4a7b2700000001712e7a0206f68','0x8e29f69b74c2700000001719472721dc61','0x8e0d0a2bd626080000001712a4a20948b3','0x8dea74f67a0ce8000000174328a5e659ee','0x8dda6ead021ce00000001710bc681e8e5b',
+'0x8df144b42a55e00000001702fdd7dffef4','0x8ddd326868d74000000016fb809d6dc589','0x8dc5672feb0b100000001733c3bc020f42','0x8decf1a1992f700000001708034d6e70ec','0x8e0946176356e80000001703289d4e59dd','0x8e0023a2a3194000000016f7acef480e76',
+'0x8dde2a2e34a2a000000016f935a06e5d30','0x8df7a5355ff2d800000017263bee3dac61','0x8de64e72aaa750000000170f3fe87a6169','0x8dddb03ae4c138000000171254bf28b7a9','0x8df5e93c6f5740000000171ee2b9346618','0x8df290a8c416600000001709256e55de23',
+'0x8dddc3c21c073000000017412e67d310a9','0x8df23a3a0c86180000001718f1cd1eb5d3','0x8def88b85b8a00000000172c1dad5084ff','0x8df36a86fe22180000001723e72f800a08','0x8df4fb9103fc200000001740aee3cc7a00','0x8df5cb0b759cc0000000171ede4147bb32',
+'0x8df7f961a5a26000000017d00febc83e90','0x8dddda7a104f1800000018271a455e1e7e','0x8be096a7d251700000001717cce47a95e8','0x8bcc07d04f5350000000170f1437db365c','0x8bbe6c27bbeab0000000174e66de156afc','0x8bb1f50ee3b6c8000000171ba476e70486',
+'0x8bc1767cafdae0000000170b29c55be38a','0x8bb6db5b6d3e4000000016facaaaf43668','0x8bbda5349400d0000000171a40651e24c6','0x8bb429a8a3d3f00000001810ed7e7eae83','0x8b7dd531587510000000175020b2b679fd','0x8b46e39a5b52900000001703c72ffffa83',
+'0x8b5b569e149a880000001757ec1cd847da','0x8b888c09b2b2880000001708ee402236ce','0x8b81a20b5c177000000016f9ed9e769fb6','0x8b6a34e75d69b8000000173cc9f5e6b075','0x8b7e9683799ef000000016f402458f2718','0x8b5a7596c279a00000001704835e046cff',
+'0x8b3c19e69b3b800000001733f278da592a','0x8b23ce8ca158280000001700dc2b2ccd7c','0x8b2cfce349dce8000000171e6eaff0b3bf','0x8b28fb1aaf5a4000000016fe75013f0d74','0x8b1a194f6a83d00000001717784ce8a437','0x8b1d2b25c7ffc800000016f6480b3b6a17',
+'0x8af87a46045ae0000000170f9010128c3d','0x8add170c4200f000000017036857b354e7','0x8acfa4d8fffa5800000016fe74f7dd6e94','0x8ad2d3607c9b90000000170d24960c9219','0x8b3fc73ad55f6000000017103bf98737fe','0x8b1af09e15b6f800000017056b2c103923',
+'0x8b2f1adef0a1b000000017166914124ed8','0x8b04dadea9b5e000000017311f51b18199','0x8aff2f68bda54000000016f6c234a8f441','0x8aff88584ad0500000001723a794312758','0x8af3873d20b4b000000017729434d4b89f','0x8af4aa183544580000001758274a60b752',
+'0x8aed01d8cf42f800000019117ce8cea037','0x8ae8e784809cb8000000170d2ef0d3155a','0x8acffa809783f00000001730c37ea69d7f','0x8ac5f7849041e8000000173db765ab3b5e','0x8aab273e930150000000170e5031cd89f1','0x8aa14488887e30000000180511b0672ac8',
+'0x8aac28eafdcdd000000016fc5a473e8f00','0x8a958e1e3ff0f8000000174acb6e05d95b','0x8aacbf6343b53000000017293b2d8af860','0x8a8a8cfd28a0600000001719a34880f066','0x8a6134920ff468000000172c59c48fbc55','0x8a599c9892ebb800000016ff9e7496fe67',
+'0x8a4bb8526a5000000000171bcd6f7425e3','0x8a44113969a56800000017421831d51c7e','0x8a23b1372f54100000001819b54cbb3f04','0x8a01264e45a000000000185384a535e439','0x89cf0a1a875ea00000001e29a00cccc0ea','0x89c15400b07fa00000001fa0259f308d90',
+'0x898e30b60e8cf800000017133944a87db8','0x89ac72b00e5ec0000000175ae1b4986c95','0x89b2ff2c2f57e00000001758b699761736','0x89a8958a0d0840000000176a087d632374','0x898b7b531db2f0000000172352dd81be8b','0x89838ec7824ee80000001723f5f6bec3bb',
+'0x89672fd5237f1800000017ae3b99856753','0x894bcf78a12f1000000017b8eb292312ca','0x897794acee9d5800000017d3a0adc6f959','0x897ff15bed91d800000017620f086b8ea4','0x8996528d0db0d800000017caef1875de82','0x89935de1b801200000001c40355d5a3a92',
+'0x8995ab302f83780000001772a3a959482d','0x89a77ad7884d5800000017ca8bf28d9f22','0x89bcf7001694b000000017395fb538fe55','0x89c38da412925000000017068c963c0a0d','0x89d28606dfca40000000171f0e7f19186f','0x89b0877cc055300000001713f8a9fa47f9',
+'0x8995501f2fe82000000017102ade0ed230','0x898c571e778ee80000001709909f1e19db','0x898ef8bb4568d000000016fd7c0e899039','0x898aa2ae3842700000001712bd58e689bd','0x89a0c1640d09a000000017e4666a919f62','0x89999c2028a250000000170c4c12e85b2d',
+'0x8986064069f7e000000017cb46b48c4917','0x898cfe854f521800000018ea6673e34787','0x8984b3467198b000000017b134316cfb3d','0x897d520794f6000000001729d87235b7f6','0x89767b9d6230c000000017224879f68c31','0x89818ca0a8b1180000001767eba2d0a4a6',
+'0x896346f87e7c700000001780665c7e37f2','0x8976c1bb9b18e00000001720b987644bc9','0x896689116dda9800000016fb2f1c9a56a5','0x89721d98af1a100000001700590de02b9a','0x895b63d4802918000000170a9ef67be71d','0x896f3d3f5a57000000001708290fe537bd',
+'0x8953016b9be4f00000001701c5bba241c2','0x8965727a585f20000000175f6a0d570150','0x894e338f6944700000001769c93e474ebf','0x895ed58827bd2000000016fd45f064e9f1','0x8941fc342047c00000001755e387830ab9','0x89358a988345e0000000170788d7989173',
+'0x8945149369ba000000001725353607433f','0x898c03add4490000000018f4b55a194e71','0x8998a230a24f50000000170c36ae5f2625','0x89a406068e726000000016fca693c8e2e4','0x899e84d297d6d0000000180905d1aa9042','0x8988f51051dee8000000172d10dadbc09d',
+'0x8977e25a101a5800000017034b52844a1a','0x894f8706bda2a000000017007eaf6190c1','0x894757e2471048000000170b4e583b47fe','0x89632e84e35ef00000001736b8e9bdc544','0x897aef10afe0c000000017132828d71028','0x896cc16841446000000016fff3d7fd0d56',
+'0x896e84aa2cd0c8000000175c1c9ed77b35','0x8974220de3cd100000001707a2bc177423','0x89745741b751b0000000170b68b17a8a12','0x8978af5cdcfbf00000001751f606dbcb92','0x896893bf1aa8f80000001722945abb2988','0x8973c6684b0fb800000017154269942ce1',
+'0x896fbcc015824800000017194cf9247f4d','0x89676f57575a880000001713ffa738af03','0x896efe21675cb0000000170d501b0523c2','0x896e980a8774500000001719055033f54a','0x8980a6540346b8000000171df6cfa086f1','0x8980b8a6f9b5f0000000170fcd62067273',
+'0x897b8428b64c70000000170b9f342a29f5','0x897a331d417568000000173815e2f5eb09','0x8970e6143facc00000001707cb28e17ab8','0x898a16613ad0b8000000170cc411bb6dbc','0x89797f4a43ea18000000170f3c212e6f51','0x898a6f57d9e280000000170fdef622b082',
+'0x8988ceb1d433f000000018850be0e5a34e','0x8988e43a39fb00000000172820f1e640d8','0x8981fe2f89109000000017059ee07dfbe1','0x896fe0fa1891280000001711619f765eeb','0x8925a159ad3cb0000000179fec481c5d2a','0x88f72f0e9d69d000000017d4351980bda3',
+'0x89029eae20f71800000017e9102a473de2','0x889a26eae36a3800000017e65cf2952f8b','0x888c6efffd5848000000176bcac66d584d','0x88d163fe70a0d8000000175ac80bc59b8f','0x88bde9bd96e2700000001708e9a4d760ff','0x88cfdb427200b0000000170639a7cfda29',
+'0x88c53abd122028000000178315add6f3a9','0x88ca544b747b700000001762253e0c5b8a','0x88b932993b9848000000170fcf2181e22d','0x88c1016d743d88000000172c10bb2a0439','0x88a8ee1ef826300000002567f674ccd064','0x8895d9c7175c8800000017127f0e37edb8',
+'0x88a0fe15716e50000000170d0cb98216ac','0x8897d7b3ef116000000017224f41f3b5d5','0x889adc9b5b19f00000001703762f22ba4a','0x88ae19392a92400000001702505dc2e386','0x88705c66fad9d800000017176c44b8f34a','0x8855cda94a147000000017aacf6856e079',
+'0x8845c14e66fae000000017107740775f85','0x883f972b156ac00000001714b2894dc8fb','0x883423e86671700000001704534184ba1a','0x88413fe67ab410000000170a039f2ca576','0x8845c40a317fe000000017368b67b4faf9','0x88365c755261700000001714d0baacff37',
+'0x884115f5375f40000000170b5f6c54f0d6','0x883d2463dd2a58000000170d22b7fad0a7','0x881294c5f971b0000000170ad3ff210aef','0x88662b3c6c691000000017146a956a750a','0x887f72f752ceb00000001706591c5b0f75','0x88840daca4d740000000172729fe8524b8',
+'0x8878f1787630f0000000171c22938272da','0x887278b558b4f000000017116b5fd73b29','0x884591cff658500000001706ef67cb9511','0x885218d5112d900000001711e4b2b509c6','0x8847d042f1a9400000001704ffd2232f5c','0x8849febfbc01a00000001721a5f3e8747d',
+'0x885a6ce8860f880000001734176483dfe0','0x87e7bd4b63b210000000170e2eb46d403e','0x882efcb825d2200000001af2251eaafc7a','0x883e389b800d80000000172b2d8d6c7f80','0x882d31b413a8c80000001731d7280ed981','0x8820ccfcad03f0000000171c27e41597b0',
+'0x8824f8fd232200000000176dbb42b1f338','0x8825f85cc813d00000001772081ccc3ad7','0x881895a3d6db9000000017dc468e6d156d','0x8829176ce65d90000000174b74e4782f52','0x88159c4b78dce000000017298f795cd857','0x881b3e849b8e60000000171dc6d16202bd',
+'0x880ce78d447330000000171daba66b4633','0x880de6aee0f8c00000001756faf738d1e3','0x87f264d04b9de8000000221dc249f60c30','0x87fdca5ea22520000000182c464d506c56','0x87ea45d5c4a8f00000001899ce672d8a9c','0x87fc235d0be7c800000017a62ebfa22a5b',
+'0x87e7d29aa34700000000170e8b5c72b3bd','0x87e9f99bb7ad88000000171ce22a623571','0x880143ef4700d0000000170d661062b4eb','0x87f265273dd8300000001727c4d68c42c2','0x87ffdb5f9062d00000001714837e021468','0x87edc6d71aa170000000174a4f8c08e545',
+'0x87eb74af1198e00000001760e399408d34','0x87ac00c62049a00000001718b51856a8a9','0x87811e6a974b1800000017a14901d323e4','0x87a807b55d83b0000000173237165bdf2f','0x87b3516823abc00000001726059f554bf1','0x879e6ed64eb3a00000001717378c8f9562',
+'0x879d197376242000000017110959923f61','0x87c7789b88a360000000172da89313a29e','0x87ad2e73e781280000001743768b25b80c','0x87477f4c5497c0000000171d2537169ee9','0x877b805afc28e000000017425a9370cb50','0x8782f30f435888000000170d91e16e1920',
+'0x8775bec0d05ff0000000171af73f50ea87','0x878b17761a7d9000000017b77162cbff70','0x87888386e889c0000000171a7d6eecdb9a','0x877e1a8d293880000000171702bcd70301','0x878bbddc20f138000000170bd61373649b','0x876dfd45abd1980000001780c5b1574483',
+'0x879142bcb57a4000000017742ce80c4ee7','0x87965bb44e28780000001719ec0a52d4c8','0x87a06371e78a8000000017c1c7059e877a','0x87985eb2af094000000017e549b547e6dd','0x87756ea271b6c8000000216dd14a9e9f44','0x87858e94583fe0000000173964dde06542',
+'0x8788d1431c1490000000173a78d7bd0b4b','0x87961d59481aa00000001720ac96d861ed','0x8796dec0cbfdd0000000172566ff5897bb','0x878b5041bb45100000002092d5daeb50e8','0x877ce4190ec6e8000000181d964cdff408','0x877d424eddf5380000001730dc7961139d',
+'0x876b0c3860e2a800000019137385d0bc05','0x875fb52a76a450000000171c2b33fec980','0x8725d05ebc5cb00000001716d91398b138','0x876761d9eef6e0000000172ddb1949884b','0x8743b7c2b8fb2800000019539cfb07a1e0','0x8760d42253963800000017498125dfb69a',
+'0x87464699089b20000000173b71911f9617','0x87460058356c6000000017e5b6aaea423b','0x8738f96897efc800000017c59f308149b0','0x873e9459ab7b30000000180e692e8f5ab3','0x874e0235010b3800000019714ae3a75b82','0x874d4d82c308d00000001843ed0926cee6',
+'0x874a00201216c0000000173c12b5a940f3','0x872dc7e526fa500000001721700d704f72','0x872f672fbdf2d00000001727a8ce378369','0x873ab3b048d0c0000000172bea68829816','0x8736dfd0b75b5000000017199632b85e42','0x87473dd9789560000000173f484a631e72',
+'0x8731a89b83f2c000000017204e80244768','0x874b3fd200e9c0000000174fe904b6d9e5','0x8720f5e435a980000000172ed1a0cc2b96','0x873f437cbe4668000000173039f778e42a','0x8745740657c7f0000000174b64072d06ca','0x8746d9c973296800000017125061b69a9c',
+'0x8743c2c4d5fcf00000001714336b6c482f','0x873c6e5044438800000017155cc61e0025','0x873299f16ce8f0000000171540cefbcb74','0x8730a40dcf2190000000171da93f2f0434','0x871a6a569f80e0000000173c0318e8b002','0x8713ef5c489600000000171214bcccb867',
+'0x871cdcdbb208e800000017289cfafe2e6e','0x871dc6cd467c780000001724a48253b726','0x870d865889c18000000017178600d38e55','0x86eddcbb3e3480000000171f4fabd5ea27','0x86ee3a876098000000001787288502746c','0x86ecc0f65a1a980000001713d397f22e04',
+'0x86e6c7ab86aaf000000017420e8098ee4a','0x86e5600a178e98000000172712e523eb74','0x86e10c6a0fd4b80000001730f2b91984a8','0x86da593f945940000000175e987709f75b','0x86ce06061a6dd0000000172f6856728f46','0x865c4df54727080000001730aae1cb6a92',
+'0x86ad69e48befe000000017bb51e2710105','0x86be4680667588000000171b8dd2d25640','0x86c1a24e28bb480000001715250f3d8bcd','0x86c95c901a8670000000171e545db4d408','0x86cab5559a0cd000000017185cb4162fb5','0x86b2f939016df0000000172291f4055a7f',
+'0x869945e7c7fb500000001716e502931a97','0x86ada5d245f890000000171f972e0f8bb0','0x86a73bc5042e6800000017318e91c4b09d','0x869f8879fe08e80000001727fc20b73b9d','0x86a27bc785ef28000000173503e9980e8a','0x868bc28ca0e54000000017201d25aa60c0',
+'0x8685611a98eea0000000171bc074682f2b','0x868f8627c6e6a80000001734af6e358ed6','0x867c6419037750000000181ae280937a61','0x866bc145d1a280000000171d960bb38daa','0x8675763a6a1bd8000000173437931e5160','0x8672e5649d6960000000171e8d97d24432',
+'0x867d24129bd160000000171d03a2382fbc','0x865a6466af1c60000000172fc0a16acba3','0x8665d61081b6a800000017996413d8c03f','0x863b4c5087b40000000017537115533d18','0x85fe0353e4b51000000017968ee469d4d5','0x86359f8c8a1bf000000018dcf27d0c515d',
+'0x864c264f058fe80000001749db308cb6c0','0x86412d9eb1a70800000017283139c542d2','0x85ab8a513139900000001a8c3eee92bcef','0x85b6aa49324c1000000017227e72bbcaf9','0x85a9139ac2cce80000001724bef04b1794','0x85b2b86579e4100000001727ea588a0f62',
+'0x8551617f48b8e00000001845f120766c9a','0x859c35e3d102d0000000176ba83ad0807e','0x859c3450165b50000000172badfbeaecc7','0x858486b21b1c30000000172a850af49ab6','0x85733297337bc800000017368886260aba','0x85710d03029a000000001833d73ba089e0',
+'0x857936769b15180000001734751bd6f2e2','0x858a19d9bf6ee8000000173c6aa54b7683','0x857e260cd0ab3000000017574f3a01a2ed','0x85845fe628b7e800000017ee1c4bed3bee','0x857e873682137000000017a7b939191ee0','0x84cba02cd083980000001efd4547c73fc3',
+'0x84d3ed1c441e68000000172a3d9a25d66b','0x84ddcd255ce470000000173d8298c43207','0x84df52e61453b000000017400dd93b14e6','0x84c6c9567ed748000000172f1e793d5b66','0x84dbfff1be7f30000000174621864e55f2','0x84d01389f029d0000000183a84c2ab5c55',
+'0x84d68deb384b40000000173efa2acb7dd4','0x84ac9774e5ef9000000018c15f0a2c5714','0x84c8982585e7700000001772e9b9e9cbcd','0x84c6b0a6a1ec4000000017258c0662e644','0x849d0d493c4b0800000017341c6d75e2a0','0x84930aa9b8f788000000200c31280deb6c',
+'0x847f9610fd5fc00000001746881828bdf1','0x84755b8095e2b000000017ac4e3c7ba136','0x83bf3dfc37bfa800000020c263dc543d3c','0x83eeca9ea8ab200000001721e76be0ad27','0x83f9200eb62c70000000172855fe62261d','0x83eb3fa94f2200000000171e51e9d66da7',
+'0x83f34fd2c1ca38000000174b6fb046b020','0x83ed2ac307fd700000001746c1cd31308e','0x83e1f6aa7e2c30000000176efed6d92bd4','0x850b6d26b0a358000000175494bf28e0a6','0x85208f4043fc28000000178caa4c85b719','0x85248b9ae7f520000000172cb99aa6edfe',
+'0x852733c7018498000000172452f8516494','0x852045177a125800000017c7b3930aadbe','0x850ba648d95f6000000019780bc21469be','0x85138490bfc9700000001729b2c277147b','0x84e1991656ac1000000017c2de9593cb6a','0x84f1b720bbf2a0000000178839272ca938',
+'0x84eb35ff4289c0000000174bf27275644d','0x84eec019c22ae00000001723002363c0f9','0x84f1a799dcb980000000172db34d977795','0x84e9f39bf8d48000000017230b69b46925','0x84950eed94721000000040b099ac5ea7f0','0x849bc62110a1d000000017274e5f98439d',
+'0x84a365a70e8b60000000172f66e8cae553','0x84936ced2777a00000001731889e557efe','0x84a46f5e868d380000001722ba4fa44cb8','0x848791b0de6a180000001836e2f53f856b','0x84683448e97f900000001757e510e07fcb','0x844c6f267ef250000000172b835df231e9',
+'0x845ccdf2eb79a8000000172f82e57a64b7','0x840a46962561c000000017d8758c594292','0x83fb0e4ea894f0000000172641ab9124e7','0x83eb9fdb1fe8b00000001733801a78150b','0x83edd29361ea5800000017d33e1c2fe88a','0x83e9937d2bf6d0000000172efec8c9385d',
+'0x8372690b1e15a00000002ef91a1492a1c4','0x834464dccbe9e00000001b35352943e9bc','0x8352ccbaedd1700000001780a4c73cc6fe','0x81e44114414dd8000000c92da058e65858','0x81eb9df6aeb4200000001746242ab8954c','0x81b913d0a025b000000030cd34043d955c',
+'0x818b722b5b79a800000029e6cf5980c010','0x8186e528d25cd80000001795458a9208c7','0x818056b0315350000000177fe34086e5d7','0x81821bab306a0000000017343e352b4e34','0x81847bb505a700000000186e2fb009bcb4','0x81ae1204c2670800000017510f84034a0f',
+'0x81967b5abe80b000000017554704888c61','0x8190c7cd72fa80000000190b59219b414f','0x817c4f396bae180000001864c179c8d517','0x817a45ab8c6e400000001760fc42322c4f','0x81796e844c9780000000175409681c89a6','0x8175c2e32054100000001813bc88e185a5',
+'0x816d9addcd5ba8000000172e70b49e1a94','0x816c42ef9d87f000000017525026e69ee2','0x8155b6a7539f10000000173a9dc2fee49f','0x81238dcbfa43600000001a7f67cea999a4','0x812e053c564c90000000174510b8db7c34','0x80f9d59eac7d480000001734755be74385',
+'0x7fb848039319cc00000017321f38ecd585','0x7faff7a4d70cac0000001a2a9ee98484ca','0x7fafb094c421a40000001827ba6ece095c','0x7f9ec0fa5a24f4000000173dd93e46f896','0x7f96fa473834380000001849c3893f7ca9','0x7f885e1c0647b0000000176b907ff8b01e',
+'0x7f6a567d68b084000000173484f3032ea3','0x7f623ba7d66bf400000017afc9ec180392','0x7f4b9a1969ccb40000001733b7eabe1503','0x7f2f6a68e0c2780000001738f1b320ff05','0x7f162af4b4b4940000001763f748e769cf','0x7f1dbc703d7b40000000174dbce94dc05b',
+'0x7f1f835534a768000000177ea8f5091f1e','0x805f11e1e12c3000000017ae758c0bfc01','0x805b89995b61180000001775a8b75a8295','0x8043a6abbac118000000176831e742150b','0x80413d42e275500000001e5f77b2378617','0x8047ef1bfe84b8000000176e96978351e2',
+'0x803d7138786630000000174e06876a9a6f','0x802c8c2faeca70000000178eb25dbc907b','0x802ead562f0f0800000017412c98a86b9b','0x8019de796add0800000017f51a4914ec39','0x801c2fc5629a5800000017986cfdc687d2','0x80184ea07f3dc80000001770f624aa67e4',
+'0x801475d359aa8000000017a3d80c6b8db8','0x8004e25bdafce0000000203ead4ecd030a','0x8011bf3fb79fd0000000174ba2654085d2','0x80029f658e4f00000000173f150dd72e53','0x7ff98ccf65adc00000001772e55b59d107','0x800307fe621b08000000173d8139ffe076',
+'0x7fd71f482429a400000017f052ad45f413','0x7fd2ab4d94f60000000017d35ea81b6dfc','0x7fba77c1a052200000001744b908881eba','0x7f91c396bef914000000182bd9c60c5f0d','0x7fa971e12eaae8000000174c57c1ca90c8','0x7fa997d6da57300000001766c87f74eb42',
+'0x7fa84ee4b6354000000017b2fa413f29f9','0x7f9eed7a6a615000000017a3c43873e932','0x7f942bbfcc60a0000000182edc9470eac0','0x7f97df8fe39f3400000017502a317e98d3','0x7f89e42d180b9c000000177dbb8da5df94','0x7f92845a364e280000001814a0cf476e80',
+'0x7f8217dda2e668000000194f228f38ee02','0x7f7edde7123664000000174cf47b6586b4','0x7f787b8e0640b800000017e6ff4f26c9ad','0x7f70a9178940f800000017792282c8e799','0x7f8951a7d49508000000178920016e0e44','0x7f7a8306d9a4100000001784ffe5b6946f',
+'0x7f7ae938cd03280000001753cd17e2c837','0x7f7066a7d13128000000173da7a79fa4b3','0x7ecaee411616080000007fbb077ac5751c','0x7ec0e7e33ea1b0000000173c9142b7082c','0x7ec1db3ed71350000000174923ac5fa32c','0x7ebb2a2d4d903800000017a67f101079b3',
+'0x7ed2e0dd0728f00000001830ad8fc0637d','0x7ec817ff80c154000000173b3f004cc82f','0x7ec71e9fbec6f4000000173cb0763016fc','0x7eb745edd04784000000173a6e22478ef1','0x7ec83ed6b17a9c000000173bf363d1557e','0x7e9bb08d50e1880000001774e7a9cfe61e',
+'0x7e749bf8ea7f3c00000017aa5017518e9a','0x7e80a0370e658000000017fcf11de6891b','0x7e7db6a8766d10000000174d1bcd72649d','0x7e83256776bb4400000017415059dc5a59','0x7e65022f20c13000000017599ac28d1c59','0x7e6d200caa7acc0000001789994c95db91',
+'0x7e77ef7068464800000017637c4c41d428','0x7e5f105ca8edd000000017a2fddc234046','0x7e7152d52703400000001742258635f479','0x7e6c1a64602604000000173e4dbf9f9426','0x7e732b46daed780000001745b97d436fd6','0x7e6d141d338710000000173c25395f346b',
+'0x7e6b4b24059a000000001747ae157c4f9e','0x7e64bc0faead7c00000018c66b9d651aac','0x7d20b7839f349c000000174eacb9983b4c','0x7cecffbcb6f480000000176c9b1414cb52','0x7cf6ce960fe944000000176c97bbe6f4c3','0x7cebfe78044a900000001790f4c736a4e4',
+'0x7cf1848b9f38f800000017833fdf8d8327','0x7ceead1314718c00000017cf00735898c9','0x7cdd1f39fe5ee80000001842b083b0646b','0x7cd8f222d4d7c8000000250db0ed19d6fe','0x7cc73a4763a484000000175dcde7215af7','0x7ce56411f6c1e8000000179e7e04f702e8',
+'0x7ce4f15d60b630000000175257429baba7','0x7cdf7be800bfb0000000177d6c14dfb2ce','0x7cd2d2c0e817e000000017d2beb52083ca','0x7cde59958c76d800000017553b7d7c2619','0x7cdf0eb6982fc400000017557b4edeb432','0x7cccca42d1d51800000018681730578626',
+'0x7cb711313c1e0c0000001750b8afc41608','0x7cba8be93b0b5c000000175f9bc84948f3','0x7cb933d2bcf11c0000001776fc6e384be0','0x7cb6ac1d59a4280000001740e3486a1fa6','0x7c9eea3e7ae19c000000175f2379d72459','0x7ca502947f2a0c000000174b686e3f3f0f',
+'0x7c9f0a04d5d91c00000017928bc290b4df','0x7ca4948a45ee0400000017660ee0e40bbb','0x7caf8c681b37880000001801892d0d12fd','0x7cb091440357340000001742c8758683b1','0x7ca5c65682e2c8000000174df0c6ddd9f4','0x7ca5d0e1c283c80000001750658eec94fd',
+'0x7ca77c9992d01400000017461e67b1e218','0x7ca57d24a029d40000001740f9ef693e9f','0x7c9621c865a0f8000000174ccce325298b','0x7c95dbc5646a000000001745ebcc8ebe92','0x7c8d5127254e5c00000017470573c2211f','0x7c909220522e040000001741607197aa97',
+'0x7c8094059f49cc0000001760e20dcdc1b5','0x7c8927aabd3c5400000017e8cfaa873568','0x7c6be9b7ee039400000017885fb9ad7ae1','0x7c77dbe56acd7c0000001745d55a003873','0x7c7dbc14f6b690000000176357a836c2e9','0x7c73fa896321b0000000174c43d1954b44',
+'0x7c76a2405e10700000001752befbba063b','0x7c75bfcc9c04f8000000175994b326ba30','0x7c6d84d2aade7c0000001790948140835b','0x7c6969c507b944000000174aa932625bff','0x7c6a5621686e4c00000017d9ab3dab02fb','0x7c5900e3ca267800000018bd060e616c85',
+'0x7c5ce479ba909c000000174793754a20d4','0x7c20e65307a43400000017c39f41a0eadf','0x7c2e7c67053b900000001742c1701be74b','0x7c24f75c9e99dc0000001768230dc2d896','0x7c3bb69f72896c0000001744269e6c0068','0x7c3f90ab77d5f0000000174cf97caf65db',
+'0x7c3e5ffbeba168000000176458abe88826','0x7c3e4e16614078000000174a7964ac43fa','0x7c2b5d44c9d0a40000001746da6c3c8bd6','0x7c25bad2ccd510000000174c71bf2d9e1f','0x7c1cce7da521b000000017d04ad84f3c2f','0x7c31058cbbaf10000000174fb3ad4f446a',
+'0x7c2cba581260e40000001752b05c43ed66','0x7c2f8bd1e2e01800000017576090ec8a27','0x7c2ff2c1777db0000000175564fb6dcf66','0x7c294c55ab19c4000000175ad98513034f','0x7c1c90d24c2d18000000175d02c18d3ecc','0x7c2abf4baa8f7c00000017a5d88043f364',
+'0x7c2d710e37446c00000017d636f277cea6','0x7c21f05a4e6b84000000177da3cf07407c','0x7c1b42b60b45880000001a34cde163722c','0x7c18c8fc4484880000001764c8fe1f914b','0x7c0a8da04739200000001771f64c8b6062','0x7c0f728aae6c34000000175535c2f78d6d',
+'0x7c011d320a1cf4000000177d69676323c6','0x7bf67cba52b81800000017abce7a6ec3ef','0x7be2a998fea8ec00000017e4fadfc382f5','0x7c047975797254000000176378d14d129f','0x7be6bf1627b71400000017d0a4cdf76a9f','0x7bfb5bb3486b10000000190188d43bcbeb',
+'0x7c059c0a648e00000000175ac5be4c5796','0x7bf0d2bc6a90480000001754e0b775957d','0x7bdd37829d997c00000017c5f1c3d2d58b','0x7bdd6aa4b1e3bc00000019ba516d9a3be0','0x7bdd93d81a08b000000017557b0403aab2','0x7bc8c7234f8da400000018d7a74d302d8e',
+'0x7bd9a9675d7bf8000000179811a0139bf1','0x7bd2a796e6971c00000017783b80c9225a','0x7bb5e3b06c1acc000000179bfb1ccf53ed','0x7bcc64a73676280000001775e4aeb1589f','0x7bc9a658dd92e00000001756e266d6476a','0x7be112c58e54dc000000175cdd4e053ab9',
+'0x7bd6a7595eab680000001768c7cffd4da5','0x7bdb194707cf38000000176c18c032280b','0x7bd1f7a4c5a81c0000001763b9192cbf6a','0x7bdade3bd63e28000000176200a5cb4806','0x7bcaa394850bf00000001756a864791283','0x7bd27ab1d48bb000000017607aa9c9de3c',
+'0x7bd1b67313fdfc000000176f988b1b475c','0x7bd06d127aad9000000017502da31e18e3','0x7bd4d02f5d878c000000174e531a7c2c59','0x7bd1519eb8906400000017526c706213bc','0x7bc282695bbaa00000001774d926cfb79f','0x7bb39ad496af24000000180f8320d3d040',
+'0x7bcca055cbf8840000001761f121885c3e','0x7bc6cccdac4db000000017528561e7f17a','0x7bbc55221d74540000001751904b538c29','0x7bb8b60ee92528000000176506e3fe6307','0x7bb9e6990255680000001782773f4ec21c','0x7bb651e4e29600000000180687697302b2',
+'0x7bb40a8fb672f8000000178c3a14557df4','0x7bb40a8fb672f8000000178c3a14557df4','0x7bbc65196d16880000001752a0205e70ba','0x7b77aa90a1f73c00000017718968912cf7','0x7b77aa90a1f73c00000017718968912cf7','0x7b6f74ad9899fc000000177af77ed751d6',
+'0x7b522dc1a1d3c800000018c158dcf2d878','0x7b516c6999063400000017ccfdf8ecd4e3','0x7b516c6999063400000017ccfdf8ecd4e3','0x7c8594bb686ae8000000178a13406ff1ac','0x7c86765f7e69a0000000175018fd21308c','0x7c77610991e9c4000000184ebf8c96485d',
+'0x7c7a84f613f7c8000000175d5e6341c849','0x7c63ee9a656d34000000179d9365dcc64e','0x7c47dfcc3ab538000000176ed6123791e9','0x7c54b32537ddf40000001784f6e57a466d','0x7c0fa0e98cdb8400000017992ce0f402c0','0x7c4ce003812724000000174e696782efb3',
+'0x7c589d4565f340000000175ddc5096999b','0x7c5003fa2e0a2800000017961e184a9a9e','0x7c53ccd0c26b500000001752055ad9cb43','0x7c3a8ad469d1ac00000018c05b099502d5','0x7c3ef8abc739780000001756f9c09533de','0x7c282976e3ccc80000001a80d409898cd7',
+'0x7c206c554a105c00000017732e06a1ad4d','0x7c074a2dd6bc44000000176316f6b978ae','0x7c1e546f244c00000000177fc289c4a81b','0x7c1d4fb3e2bcfc00000017679142d0a864','0x7c0c7223d7815c000000176983f57ccab0','0x7c0c7223d7815c000000176983f57ccab0',
+'0x7bf44e9da0b1380000001781a178595412','0x7beee506ce882c0000001815ea5bdce823','0x7bb87ccdfc856c0000001768ebc8c728b0','0x7bdf07bc6a691c000000177a21f1c88d7a','0x7bdb7359823c5800000017694ef780933c','0x7bc86284a1b2bc00000017649e776c9a81',
+'0x7bc8bfe178a8b8000000175b3077e745ce','0x7baecccae9af380000001755746699a917','0x7bc14c06d2ffec000000175e10cb7d727d','0x7bb30dd4d94b68000000176bd9ce8b0e48','0x7bb726d4ceeca400000017b94a7e372434','0x7ba6034280bad8000000178c493137b449',
+'0x7ba1451d29d8940000001775b487bcbbcb','0x7ba4d69f295b5c00000017592de887afa0','0x7ba72bb5b8f650000000179fadc0fe3b4b','0x7b52ffd26800ac0000001845a6ca02467b','0x7b8a7aeca45d44000000177e50504600d7','0x7b87b9332f01b8000000177ca777b81fca',
+'0x7b6e6ca8ce9cb800000017fbf8b0bc8028','0x7b667e434afe9800000019bc726a1de4e6','0x7b7248c2f050340000001781b3826813df','0x7b6688fc65ba2800000017d14ddb203069','0x7b6f9f59a27d840000001770cfc9a0de62','0x7b68ebfc16dc640000001769d4581bfad7',
+'0x7b6c322965f58c000000179dfef1c19786','0x7b66ac57ba1fcc0000001780d0bc0151e8','0x7b65ef98eff7c8000000177d21a319b658','0x7b684eb77e4808000000177199463fddd9','0x7b5eb092f799fc00000017dc05b5efe494','0x7b4beafad1547c00000018faf6adc317ff',
+'0x7b514cf1fd7f5800000019cf4df853b797','0x7b514cf1fd7f5800000019cf4df853b797','0x7afe39981fb83c00000017b25efb46e523','0x7ba94058c8efe000000017b62f844442c9','0x7bbe922e18798c000000176693561ac84f','0x7bb54c1f7461f000000018cb700597a993',
+'0x7bad601c28cc6c000000179b3a576ce79d','0x7ba933aff72d1000000017ab0f5f55c850','0x7b866e36467e7000000017fb30eb2edd03','0x7b63e7bd74c86000000017d181d2f434de','0x7b701c98e091f80000001760a896e85c0e','0x7b7d782963178000000017ba31e6ef9402',
+'0x7b737869135da8000000176338474007a0','0x7b6d37fa3299a8000000177c2a706cc508','0x7b52ca280b55c40000001767cc02a9039d','0x7b4a5bff79c0f000000017bc969ec310c4','0x7b4c4318d51ed40000001882872b9982fe','0x7b5107ebdcc7a0000000179e43358f5db6',
+'0x7b34f26b60d88800000017b09580a7ca4c','0x7b51aa66228f7000000017a1de5552a6ff','0x7b4a0d6e8dbe6000000017887348198ae5','0x7b4679a57dc480000000175fe65cd2ec3f','0x7b20036e17fb74000000186b2107eca9ff','0x7b100c77781c3000000018ba43eaf3cac2',
+'0x7adf8e7e84765c00000017c8f298f09dbc','0x7adf8e7e84765c00000017c8f298f09dbc','0x7ae4c9682032c00000001760dd6e221f4c','0x7acbfc843f40a40000001b6c7823b799dd','0x7ac4133084f44000000019122e7c374b66','0x7ac3bb7a2d1d5c000000186a02230436bd',
+'0x7ac6b0aa97b3cc000000182ed3fd53ea9d','0x7ab3bbc38e2390000000177d1f16e1c299','0x7ab4df915ba4c400000017a27e9575725c','0x7aa813f6594d380000001a5fdd31758934','0x7a871f2eb34b7c0000001842ba815d4ee4','0x7a7e80bac2284800000019378c7cc4b540',
+'0x7a74a983c5c1580000001765781bdc30eb','0x7a4325852fde30000000181fbf4b7b6e7b','0x7a5c0e93f198dc000000178ae9d1d0a45a','0x7a4ba5e8856e200000001766aaa4abd326','0x7a46da6b052ad000000018389ce1e19e41','0x7a449b25a9a504000000177f21b7f95b10',
+'0x7a342ec05aa0cc00000017ab3568023b19','0x7a2673749403a8000000181064256a9f34','0x7a1a488f7c7d500000001a01bf0b73a75b','0x7a1b4687cffe4000000018f08d3360fba7','0x79ff550eb21c20000000184f6bb85fd678','0x79ff550eb21c20000000184f6bb85fd678',
+'0x79da4091fa0f0400000017c07bf34f4d53','0x79d9d68fa459f800000017a694e603dac5','0x79cc56c9301f54000000176e753c4d915f','0x79c56d1a6a0ac800000017834fb7ab5cff','0x79bc5573ab3488000000177cece1f61221','0x79cbbbae680a30000000177e5f6346ed7d',
+'0x79c154cc8ea0440000001a908db042e1cf','0x79c07a84430ea8000000178125feeccd5e','0x79d23248c62994000000177e26dc42a80e','0x79c0568b5e66e800000017efa76b0d820e','0x79806f59163d700000001b6d1bcb15539d','0x79b5f78f2ecbe400000017a4fa66583570',
+'0x79b5f78f2ecbe400000017a4fa66583570','0x79bb40e500ea1c00000017a03a9bab63b8','0x79b90bb4cb0b4c00000017e49e5bf1d141','0x79b8478854a4bc00000017a6716daa45df','0x79a8e0f45ce30000000017ba1c833aa445','0x79a8e0f45ce30000000017ba1c833aa445',
+'0x79acec1b491b48000000178871c00e59ea','0x798bc1247c2b60000000185e6dbd24701a','0x798d567ef0db1400000017a9db9d6b6187','0xff59ef6e83de00000000189f89a1c4cb1d','0xff15edd2e5d018000000192eee9f831ff7','0xff315f336cd758000000183bc2b2c659c8',
+'0x103b577b0924b600000001aa93c90d395e6','0x149d7397029a00000000018081cb078777a','0x1d4b8d9fac686400000003dd72b8f9b7a1a','0x1d4b8d9fac686400000003dd72b8f9b7a1a','0x1d5bde39126cdb0000000194d630e88eed8','0x1e4c0fe4100d1f00000001b0551b75c226d',
+'0x1e4a8bb220d8b4000000017819ba470e855','0x1e50023e0a0a0800000001875388d016c0e','0x1e4df714f86fb8000000017ac0b37e927e5','0x1e4df714f86fb8000000017ac0b37e927e5','0x1e4d0cf3fa56cc000000017cc326326cf5a','0x1e4d23621f39fb00000001795c4213a18f3',
+'0x1e4cb12358d9ac00000001783bd76ca0043','0x1e4c3c5824d48b000000017bb8c66e61c7b','0x1e4bcab10b2d87000000018080fee2d15b0','0x1e495c7a0bb84c000000020784ee741e0fc','0x1e4997324f8e76000000017a820d39d91f6','0x1e2b053952fdfd0000000352c282a5a2cc8',
+'0x1e2b053952fdfd0000000352c282a5a2cc8','0x1e2af4e6f53aa000000001871ccd9343f11','0x1e29c9338fe5a5000000017fd515fe17ff5','0x1e29c9338fe5a5000000017fd515fe17ff5','0x1e25bf4f1351c2000000017ee20b5322058','0x1e2594ed81110b000000017d8cd0a3d4fa5',
+'0x1e245344fc22db000000017bdb04ac835af','0x1e245344fc22db000000017bdb04ac835af','0x1e251760ed296d000000017bd5b3fb9504e','0x1e23c177ac509800000001867f4c650ed02','0x1e23fe6afc1177000000017d14185ede981','0x1e23cb652baab3000000018e78ed8733f76',
+'0x1e23a19bbd5f9d000000017dbf1239275ad','0x1e243f4ccb1ba50000000178d496cc95d54','0x1e23f88cfabde4000000018624e5f19211a','0x1e23a0d9588f500000000179b175bb652f8','0x1e23462c6b9a38000000017c7030fd2d7b3','0x1e23462c6b9a38000000017c7030fd2d7b3',
+'0x2583de6e0b17ce0000000179fca721e8040','0x2583de6e0b17ce0000000179fca721e8040','0x258294b28a66fe000000017fd7423ff9a5f','0x25837076a99cd8000000017b11fe7403f46','0x2582ae24ed0a300000000178f0c90213271','0x25826efd2110340000000179191f25629aa',
+'0x2580c32de323a6000000017d0644716e7dc','0x25807e32898b8800000001a0a265754ac31','0x2580437afcc91a0000000179196b3201ffc','0x2580096844b7100000000199666a969e4e3','0x257f0a76bbba640000000179d4618627f7d','0x257d5ebd5c587c000000017d68847ac23a1',
+'0x257e3bf0840170000000017cb4b25466e51','0x257b528924b0a600000001b17c70c92e08d','0x257b18a8a56bf20000000178920a0eb9d42','0x257b18a8a56bf20000000178920a0eb9d42','0x2579c1fbb9aa90000000017aa8f8b35d967','0x2579c1fbb9aa90000000017aa8f8b35d967',
+'0x2576d348c5c2da000000017a53acb2a5798','0x2576d348c5c2da000000017a53acb2a5798','0x2574a5c45084d400000001e31c70179a158','0x2573b80efeb166000000018c2ca291c699e','0x2570f65f57cf4c00000001968273f990142','0x2570bde42c767a0000000179d2a0c336112',
+'0x2570bde42c767a0000000179d2a0c336112','0x25702e087b7ee6000000017a96e155f0303','0x256fb787e5cd2a0000000178b6cc20fb18b','0x256eff7a0a721a000000017d8968c9e38d7','0x256eb96e5203ea000000017d2a20bb604db','0x256dbf5af16a54000000017a6ed8395e36e',
+'0x256c9effed19740000000198bb5f1d687c2','0x256cf989857062000000017b12e6bdfd8bf','0x256cf989857062000000017b12e6bdfd8bf','0x256c07c4b6a51200000001868d2345b71b3','0x256b743054136e000000017a59e1ef97c6e','0x256b65aa5bd8c8000000017beac4bb1e697',
+'0x256b65aa5bd8c8000000017beac4bb1e697','0x256a691df18fb6000000017fc348897c6fa','0x256a129d2949b8000000017f781f3c485e7','0x2569e8c0d4796c000000017e76a42459228','0x2569c18c663a740000000186817381b674e','0x256869f1482f0800000001837c7e3a9649f',
+'0x2569321427cfba000000018830475630b71','0x25689cb415d520000000018876db0935075','0x25689cb415d520000000018876db0935075','0x2567805b6f241c000000017da5a4e696df3','0x2566f36e6c25b8000000017d785a6c5a385','0x2566f36e6c25b8000000017d785a6c5a385',
+'0x256607a0b14dd4000000017951c689f7d70','0x256505b62a98c4000000018776bb35ab8b8','0x256438d40527f000000001f0f8fef21c30f','0x256438d40527f000000001f0f8fef21c30f','0x256336c1a18a26000000018e06676e6bb99','0x25626f7ceb18ee0000000179a371c8012b2',
+'0x2562df745c9034000000017c532627bedb8','0x2561c4a71a3570000000017dc19024cf53d','0x2561f74c0646ae000000019e00bff3c2b23','0x2560ae0c914d16000000017c531c4263f6f','0x2561519b0bf0c80000000192708be082db7','0x2561332345ad5a000000017a940fdfc2752',
+'0x255f895e8a868c000000017bcddab2445de','0x255f9ac35e4214000000017e69997085544','0x255f0a9d436160000000017d9a69da53feb','0x255f0b867def46000000017d15c0f6a2c36','0x255df1af43c3c800000001912ae2698477c','0x255da02f75ec6800000001a2e00b6fb188e',
+'0x255d17b20519cc000000017e84d77a80800','0x255d3d2d7b88ea000000017b6f7c676521f','0x255cfa4e7ed140000000017ce01679a1ac2','0x255c77d3562080000000018ce991bfeb633','0x255a9faf863c8400000001c3c5bcd30341d','0x255b531ccd81ba000000017b97187a4f2b6',
+'0x2559e4c1ccbf48000000017e7bcb6f66ec9','0x255a341e1bb7920000000179e805b1a83c3','0x2559f8d06aa2200000000179437552dc20d','0x2559b7e2a30f36000000017a68a8f08dbb9','0x255858f3b26e84000000017bfdfd44f2a52','0x2556e97e7da49c000000017a8622023b1ff',
+'0x2555f9f5f66f0e00000001903182998afae','0x2557a5d6397c1c000000017910cb08373eb','0x25574c91e96e38000000018305bc59d0445','0x25574ef6cb225e000000017a59b2cb627bd','0x2556c22c01019e0000000192887583e0f9c','0x25567b205637ce000000017c3a2f9ed7937',
+'0x2556e4ae881c44000000017bcd984ee1f73','0x25564f9384d1ec000000017ea93cbc71e7d','0x25567a3788e53c000000018c4997dfea22a','0x25564ee81c66de000000017ca92141c3863','0x2555f748b2590e000000018540e2322145d','0x2555ec8c8210e40000000179fb656f6ed53',
+'0x25547a6f2783b60000000179e19f4c52e71','0x255417bfcc02a4000000017a1ad0d540f46','0x2553a9c312c1a0000000019602df8c72d47','0x2552f7d20a8bbc000000017cf290729e9a1','0x2552bf18a3c454000000017e74f4d711d84','0x25532fb9e8e0f80000000186761432b6c8f',
+'0x25530810004078000000017df7fca3224f5','0x2552984004b79c000000017c3959776d9bf','0x25522b3e7ebc58000000017dcfaffc38300','0x2551615d3306000000000179d304cfb5609','0x2552695218d41c000000017957236f01159','0x2552ae2e859ee8000000017aa5b3c12a50f',
+'0x2552758980e170000000017ce7d38990efd','0x255243c5eb1730000000017fe60422ceb51','0x2551c1de9cbf90000000017b734fe2bea42','0x255178bb67e434000000017ace2997513f5','0x254ec1d26ef67c000000017c1d8c1453f6a','0x254fba73dd3f64000000019c85dc8a296c4',
+'0x254f7c99498db4000000017a755cf44dc1e','0x254fb314f37e46000000018125eeb5602ef','0x254f36a4c3d02c0000000179aba12b98e4f','0x254e7fffb809ec000000017b41380867c24','0x254decaebc4920000000017ff9469f827ea','0x254e04ffe6e342000000017b099ce183d1a',
+'0x254dfb70b89b74000000017b039244f80fb','0x254e090fcc958400000001797d978dc25e0','0x254d708a017ad00000000179fa7c8a685fb','0x254cd926e10088000000018329d63525ac8','0x254c1b690fcd1400000001813e9206242c1','0x254c1b690fcd1400000001813e9206242c1',
+'0x254b2d7bad9c560000000179da2600ed75b','0x254b83c888f926000000017aa98dbd711fa','0x254a3b9c2dcbd0000000017988cbc7e15a1','0x254a1883a82f78000000017d2a56428835f','0x254950fde82226000000017b374c845336d','0x254878c547dab400000001a43c06d3a3373',
+'0x25480b8e2a8702000000017d49ec502d24b','0x2547f5ad1de040000000017e1060d117eb3','0x25486c0c6fd9200000000179fdc95caf776','0x2547c76c11f46e000000017ad6ec826831f','0x25477e5574fc4c000000017ae1d77ab1ef5','0x25472a87c32c74000000018496f1615d56d',
+'0x25456d02cd2e540000000180dfd1da6de92','0x254593f04367f400000001c4e4946e22f15','0x254593f04367f400000001c4e4946e22f15','0x254533167450ea0000000184607a30b42b6','0x2544e6f98f52ea000000018260f66e2fc90','0x2543f390f36800000000018bd4d660c671d',
+'0x2544dc2c0cb6a60000000183f672e5c6854','0x2542c028ca8a2c000000017c0d02400af57','0x25433e2e4e1f4e000000017d5daae11b205','0x25433b259901940000000179ceb65c0c169','0x2542e15f80090c0000000182ca28cf7c95b','0x2542bf20941eb80000000179e9dcd9cd834',
+'0x2541750d60dd9a00000001a06d455430739','0x253e98b52ab7a4000000017e8f9b5cc22a3','0x253ead2fba4d4c000000017a6b4b5311929','0x253eba05756584000000017b4cfee4c7a6e','0x253e7d4578f93a0000000182e1184bbfddb','0x253e31de3b0d84000000018c460a23eda4b',
+'0x253e44349d5e560000000187594e9bd809b','0x253dfa1bf4a6bc0000000181db86e0ad9b9','0x253dcee228128a000000017a1086e3396fb','0x253d27ca16e6b2000000017a78b9fe4d6a6','0x253d139222adf8000000017ab4bf36d4e4c','0x253b81587bf520000000017f5c435dd9bca',
+'0x253b405eff3ad4000000017c9c6500eaf79','0x253b867f47b486000000017ca80fd4d028e','0x253b0fc31ae72c00000001aed017b6b2204','0x253a922271515c000000017bfd527cce02d','0x253a45a7309c18000000017f7b281b574b2','0x25393cc92efdaa00000001814344a9cc6ef',
+'0x253a4e04f6a52200000001811deaf9b3ced','0x253990464a1e14000000017abb17d15e92f','0x2538aad6b879440000000181e35fa1fea75','0x253944ea552d3e000000017c37e3f4ff407','0x2538e5afe0f78a000000017c97bb93ba5b1','0x2537266ad2660e000000017c06f9de3e2bf',
+'0x2535aa2518480a00000001f98d5d4cedcdb','0x253648d2bf354e000000018452e8e562627','0x25361a80d5e0700000000179cb31c1d4871','0x253623537c012000000001893ecfb5ee869','0x25363c418424fe000000017d95760738b82','0x2535fb3459add2000000017c6f9c0a9e31a',
+'0x2535c82869ea6c000000017a6ad755fb477','0x253548ab873f9c000000017d6ace194fa3a','0x2535624cb4c694000000017a7801b79c8e6','0x25348bf60d72bc000000017aec36c9217fd','0x25352fd82a2efe000000017cbf6b484ecd8','0x2534ff9c070426000000017e436477d6948',
+'0x253404586dbeee000000017a650c6be1da2','0x2532d150134bf8000000018b19233ab3cab','0x25311f672e66aa000000017f0bc0c3ab265','0x2532ffa45977900000000181be93f2d86a2','0x25331267007f68000000017d9d6edff81fa','0x253415f99cf56e000000017d89dd35b4e53',
+'0x2533d6f1520e02000000018020fdda331e1','0x2533c85d5c143c0000000179cfc256e5f20','0x2532012580340a000000017b2c09222870a','0x2530745d5d353c000000017ebfee2c2f4ae','0x2530ad4652fa2c000000019d890bda60f66','0x253099daa572580000000199efcfadcc9a9',
+'0x253099daa572580000000199efcfadcc9a9','0x253051459998fe000000017b13851ce8e71','0x2530306bf664160000000183ee274d67887','0x2530306bf664160000000183ee274d67887','0x252f832d62099a000000017f577ca3c0f3f','0x252ec1b98fc6b6000000018a589e92562c7',
+'0x252f221e2e0c64000000017b50eef63495f','0x252ec0a8784f88000000017b905cc323557','0x252e3fcf756f0a000000019038e4cd75958','0x252e12e5c768ae000000017d579d30cb751','0x252d99cde4215e0000000198e82be8631f9','0x252aef12f183b4000000017ca8a565ef394',
+'0x252c8ea0b6d6d0000000017b1a461cddeda','0x252c50dc0144c6000000018504be3d81e78','0x252bd7450e7a4800000001969f027456210','0x252c1a50427fae000000017c24e32068fc6','0x252b6595060f28000000017f464e5aed7ac','0x252aeb577f1c22000000018ce84a6f3932b',
+'0x25293edd9bcfcc000000017e862e0540b84','0x25294361a05a8e0000000199f904d7ac0ac','0x2527fc346b2740000000018b5ed65500f20','0x25269ff24ea778000000017a4f19041d21d','0x252744d1af9a3e000000018225169ce8403','0x2527232d5f242c000000017e6f47623b9c5',
+'0x25265fe6d4fd34000000018b234ae9f0378','0x2525dfede90150000000018c00818147e82','0x2526010fbde9ac000000017df73b96cfb9f','0x25266fbb76beba000000017b63355af9986','0x2526122d7cdfa4000000017a2b342397908','0x2526522fb9dda2000000017a5ca05e3808f',
+'0x25244a6737b01e000000017c3fd2ec39973','0x2524cceb14b098000000017d94d2f50e7cd','0x2523e62846b9cc000000017c6de87ed7881','0x25248c050782c4000000017ad339ee80f1c','0x25246912e91310000000018b903ae1203a0','0x2523758894fa36000000017a304554eac93',
+'0x2522e67a1844a6000000017a6cec5b8cc63','0x2522bd19da61e40000000195583c00df8bc','0x252229953c4e8a00000001837d2b9d26363','0x2521a3e8dfab4600000001838f05f583cb1','0x25215a72e9540800000001a76d75ce2acf9','0x2520bf81ceb674000000017a93d3acf6ad5',
+'0x25209c2f52ccbe000000017aa1a161245cf','0x25204fb83a545800000001866861ab72798','0x251f8282850898000000018a2d4b2ee7e57','0x251ead558acb08000000017ca1cab213744','0x251e710ce12cd8000000017c0b186d4530b','0x251cde4b16455c000000017c353c7ab049b',
+'0x251c30bb4dde600000000183b66468c1a28','0x251ac2bcd24d3000000001c81f36f120a04','0x251a5bfdeeec5a000000017ded9de79eb36','0x25197850dedc060000000190ecfeae866d7','0x2519fc8d4d7cd0000000017cfef858b250d','0x25171c2f7fff4400000002b9ae70dc1c0d0',
+'0x251839addbdf78000000017e9abcdf32272','0x2517d017db294c000000019186d2479bad7','0x2517ef48436d90000000017c3ff192687da','0x2517b7414210d4000000019bb462be58f5d','0x25187e457b5288000000017b45018f431ce','0x25183760e0d0a8000000017abee44a1c6f4',
+'0x251713aae421de000000017bb70dd547234','0x251818c01443d0000000017b7121f7c8b98','0x2517eecd170706000000017a988db7e9618','0x2517a92d7e60ee000000017e87aa3ee5ec9','0x2517bd1fbfb72800000001895a2d21c0dec','0x251794dfba76c4000000017b34962ff51d0',
+'0x2515fac2ff6240000000017bcfb1ba48a2f','0x25156d5decc87c000000017ca53a2863592','0x251379ba42757600000001e99b1e4f17f40','0x25129db355fe0e00000001ad04900e6ec4c','0x25129db355fe0e00000001ad04900e6ec4c','0x25128bfebba5fc000000017f435b77fbb24',
+'0x25123c26accc44000000017bd617518072b','0x2511780c0f53c8000000017a87216393cbf','0x25104dbcda4d58000000017b75e4f3ab3a3','0x2510caaa497e1e0000000182f08fbc7e4f8','0x25102fe1d98f3800000001cf07bb3353127','0x25104f773262c80000000180402b25f7647',
+'0x250f6f28f9dc5c0000000181eca12f44cac','0x250fa1d651c6b40000000196940d8b8c58d','0x250e447442a1cc000000017ba5e558e30fa','0x250ea009e81644000000017b7c93a122878','0x250e3d94ed1ff40000000182f4115f286e5','0x250e47aa852ee0000000017c929ae9f17e4',
+'0x250dbc9ba3c426000000017fcd7cc18ce3f','0x250d813e6908c20000000184c10d0e68d59','0x250d53f56110a8000000017baf12a340618','0x250bc3bcc6fc44000000018c67995ac9b85','0x250b774cdd7d580000000182eaa473a24fd','0x250b5bcf008668000000017f289dd760d56',
+'0x250b83a6d1d4ae000000017b00777c629ae','0x250b41d116ed680000000181b468ae2e3c1','0x250ad048c0704800000001920a174bacea7','0x250a468977e08e0000000185f69d60f0b7d','0x250a259e5dec8e000000017c226f7e4a2eb','0x2509137ceba470000000017b53533ac07b1',
+'0x25080ca4c09c8000000001b885fb49f5a25','0x250723673883d60000000257d70fd9da58a','0x25064a006a0b72000000017b69e1979da53','0x2505cb061c667a000000017da3d81de7975','0x2506be1251095a0000000186a40de82cba9','0x25042fc7738d7a00000002a121e94033170',
+'0x25039e0ee99ba6000000017f998261aba11','0x2502ca9bcaddd600000001877da43d1d18c','0x2502df353a6426000000017e8b37e93b057','0x2502b5425faf78000000017c618abc1ddab','0x250222cecc7d3c00000001811d51fb05990','0x2501050738f740000000017ef0fb06a6c7e',
+'0x250111bb6e33a80000000180522a1193730','0x250102ad763c3c000000017ce7840a6f132','0x25001b2ee2e41600000001919b61c9481b6','0x25008f908a1cc4000000017f1ba2742ebb7','0x2500519a7955c2000000017bc00fb63ba6f','0x250034920aab82000000017b71082254298',
+'0x24ffcd21fd5a28000000018968af1cde9ce','0x24ff4bd584b1b4000000017b5a95fd9bc29','0x24feed1c6befdc000000017f9e82a85e826','0x24fdb5342e3d20000000017b7394e8c8161','0x24fe87fa729bd4000000017b3872a272d1f','0x24fe24d5d7948e0000000181e80922a2a31',
+'0x24fe7c990761bc000000017c5fd96f5681a','0x24fc8234f2d770000000017c66380470ee7','0x24fe775c53099c000000017c847793517c9','0x24fc16af40ed4a00000001a0ff8168ae312','0x24fc8b290640bc000000017bb6900319800','0x24fc88669b3310000000017dcb0995aa604',
+'0x24fad6839158be00000001c72bccd020672','0x24fa74cb222582000000017c292ffd4f4f2','0x24f7e80b62492c000000017b7753cd3accc','0x24f7a7e3cd40580000000185934a1ad401b','0x24f956d26de7e2000000017c2373751716b','0x24f9d5c6da03740000000184ba45f8dd486',
+'0x24f992cfa6cde00000000186279684676a3','0x24f9736509ab200000000182c42122a14f6','0x24f90d4e82d640000000017c491b4c27aa1','0x24f81289494134000000017cf16f067178b','0x24f7de681df1ce0000000180e4d1fc3b2fa','0x24f7d6c87ee23e000000017e0d37dc611e6',
+'0x24f785401d4058000000017ccb3c0ae5f9c','0x24f7f8ed41064a00000001b7c004133900e','0x24f808c4207e22000000017b29f9c8866ad','0x24f7772eb64484000000017b92bc7bbcbcc','0x24f7feadfe63920000000181aeebafb6c58','0x24f80baa2bc168000000018286342a5b74d',
+'0x24f7d2c7d84d64000000017c20e44f26a4a','0x24f7f5eed07d3a00000001819ba9465d3b2','0x24f80b3e8fd9f4000000017d981ff616ccc','0x24f7a6f07d7348000000017e29079d9d624','0x24f4c06cc2c79000000001956d3a17c3a95','0x24f7a5b8852fe40000000180001cb7ff70f',
+'0x24f76111235ff4000000017d54fa638acda','0x24f742ba34e77c000000017b6dcbcdfffd5','0x24f6f1970da20c000000017b4b982362a04','0x24f9f559066af4000000017c0886b1741bb','0x24f9de36c5e670000000017ffd8dab8a536','0x24f91504e3a4a80000000180fc7686df51c',
+'0x24f90bfe6a5ca400000001924ecc9a0e12e','0x24f8b155149138000000017bdf9057caea2','0x24f7f06802e3a2000000018c3d30ed32c16','0x24f77f872383d8000000017b79a94004916','0x24f824b5690976000000017cc3c5013bbd3','0x24f7f145dae4e4000000017d2f39dce4a8e',
+'0x24f7daabd0f472000000017fad718c22147','0x24f7e10edffd88000000017c06191a00738','0x24f7c34e7d3dde000000017bf002c396786','0x24f78338e71fdc000000017b8b0010aca90','0x24f759679808d6000000017c6aa90af6336','0x24f746fd14f1820000000198a6cbe83d5a9',
+'0x24f817cd982ebc000000017e27b1cc30c66','0x24f801c883b582000000017cfbba49b09f3','0x24f7d7704008c8000000018065d311b769d','0x24f71fc3f3fe48000000017ca3a49f957b0','0x24f74b2bb3017c000000017fd7bdd6d1122','0x252ec861c2825c00000002b984abc7dff68',
+'0x252ec2e65e8554000000017c1c37cd3c343','0x252eb8856a5508000000017baeabf531a6b','0x252eb88aaf3a04000000017b6136acc506a','0x252f2083e93f16000000017c57a40937e8e','0x252f23c293874e000000017da15b98fb18d','0x252f849c20b392000000017ca3402d4b43f',
+'0x252ea968a29b6200000001873b674877cc9','0x252f205fae809e000000017d6843e80c387','0x252f038cc3f0b6000000017ea40e24fbb78','0x252efef4f287e6000000017c211c6f6113e','0x252f1a9c460e64000000017dd0f144e20a5','0x252ea362cf98a0000000017d5a8c6009e7e',
+'0x252e99252cadd80000000195c3b1ad29d75','0x252eec0acd78880000000180f81f3240cf8','0x252eb2b9180684000000017e0d66a9af99a','0x252b41612c5962000000017edc1914d3250','0x252f0935069b6c000000017b801aa0e0d4b','0x252dffd7cc5768000000017c1f9d597eaf6',
+'0x252ddc42f24adc00000001979710f2cf4a4','0x252daab2e6df60000000017b9a51d016297','0x252daab2e6df60000000017b9a51d016297','0x252d4fabbc163a000000017c0e1429a4013','0x252c7c6ed0d368000000017c6de38dbdaac','0x252cd66629a440000000017bdbfbe3045b5',
+'0x252cb2db4bdcb0000000017c07dbce33e02','0x252c587e190d14000000017fe6436620a44','0x252c262af0f4d8000000017e6a4b7d3cd5e','0x252aae1f4f81fe000000017c574ca63beb8','0x252baa27cf76a4000000018752a3b6eb4be','0x252ba05cec8430000000017f8ef7e1062ac',
+'0x2526707ff4002c00000004e91d38ba8509c','0x2526624ce6d92c000000017cb28a9049a06','0x25256d6a32d658000000017dfe155b8ef3f','0x252607cda7af48000000017dccdd2408a37','0x25267c9c318d94000000017bba218f4229f','0x25268bc866f768000000017b98e7976c778',
+'0x2526496cca207c000000017bdf19d2bbb2f','0x25263b288daebc000000017ccaf9e6db0b1','0x252588885d89a8000000018308fb468d513','0x2525bec98f3cda000000017c1f05949ff4a','0x2525cd8f8c60ba000000017cddba5a668d2','0x2525837dfcb0ee000000017c2b9e69547bc',
+'0x252546863b6aa2000000017cfbbdc2eb2b5','0x25252f4b281960000000017c1d31e604031','0x252492d1411aa600000001a0eb926a0aba7','0x252498524140bc000000017beb2de51f1ef','0x251fb26889c28c000000018a34d45a88ac5','0x251ef4edb1cc5c000000017bfd411537036',
+'0x251de7b30ca0ac000000017d90a8d28eb39','0x2521bf1015bcac000000019bd3e6ce36e80','0x25216a7a6540ac0000000180cf34f117f4e','0x25217ebda462f20000000181a7469b17f3a','0x25213ac0268c64000000017d4a090768463','0x25214fe583fe58000000017c916537a1c96',
+'0x25200c33b15c2c000000017e210db176acb','0x2520c475f6612e000000017c59fcf78d98d','0x25208924f6ccae000000017e7ddd9a9879c','0x2520163e4ddbac000000017d547da68a796','0x25207fa7883e40000000017da895e94e5ae','0x2520ccf314f5e4000000017c45bb321639d',
+'0x251ffc6df35d24000000017d708eed14455','0x252060d56abc24000000017d5c1502c2a12','0x252060d56abc24000000017d5c1502c2a12','0x251fed7db65c18000000017cd4111600a38','0x252002539047e0000000017d6449b9fe33d','0x251fbc189ff0d6000000017e8c9eab43ee3',
+'0x251fac4bab5168000000017c5b899b457b4','0x251f999ee60a9e000000017c888a6e8c0e3','0x251f86260f30340000000180a671350f9a3','0x251f616ffcf082000000017e893b63def86','0x251f4fa342e02c000000017d697b7b528e1','0x251ee44db20fe8000000017e0d3b016ba76',
+'0x251f0422e5ed7c00000001811f0df2a6846','0x251eae46377ef2000000018293086ac2e0e','0x251eb7acae3a92000000017d92b67a6971b','0x251d8c7a4d03ec00000001a8884c1876c0b','0x25198b191aa530000000017da10a4e740ce'].map(BigInt);
+const DAILY_DATA_PHEX=['0x0','0x0','0x0','0x6f534bab04a7540000000325256860cde','0xa918091a8d50100000000411110d4a459','0xe11b9024ab77880000000591302bf281b',
+'0x1149f848136b03000000005817e69967d1','0x14401166344b0600000000641c8857df81','0x17eb6cd0b05dcc000000008f168c7682aa','0x1b10b698a8e49b000000007f27408b1834','0x1de8054ef25290000000008a60236ff325','0x20fe682e0ee41a000000009701aa417491',
+'0x2500abfa88fa0200000000a703cea76ed3','0x285370ebbc743200000000b5972796c95d','0x2ccbe504d01bfc00000000beaf36f8863c','0x30a9dca9d2217c00000000c6fdbdda1c53','0x31d154e6b763a000000000d3eea2634d55','0x32f6a1a69765fc00000000e12c27b12f98',
+'0x341b6b9d09e74800000000ebe808d7da7a','0x35bc6d9f3aad0600000000f9469bc833a1','0x371142ad5cd934000000013728ec238533','0x3e54a32cac21de000000010d40014382b4','0x38e237f378d62c000000011b7219b17c67','0x3bf60cba131308000000013e94761b51e8',
+'0x3bff87e178588c00000001307da43087fb','0x3d7fe6df0e7978000000013ceee128a12d','0x3e030db24f0d22000000014bc14e86298f','0x4115fed85e5b040000000157882dc10bca','0x415fde89a92d4400000001866c75c13fd1','0x4281d419c4fc8000000001718be1fd0b0e',
+'0x427cfd01c7a020000000019adb9084f9be','0x459cf60e4f2908000000020042eeb9774f','0x45e78e145a783000000001ca346f17dc57','0x457d0ee54f905c00000001a2257125a1ee','0x48342262ff6bf000000001b438cd30311a','0x47ba25a67da91800000001ca47a43dcf51',
+'0x4a6f860e682be000000001d225da8f2b72','0x4a1899f7e37f2800000001f634aa3a8fee','0x4ab6500fcf769400000001eb5a4d69f953','0x4a3e63e99b3338000000020179ace77d64','0x4ef8d8daf322c400000001ffa16d11380b','0x4d332f6e53fd0000000002073695ef0cac',
+'0x4dc599f326c958000000021242ae858fa5','0x51b13e73b0107c00000002269c9e4ee181','0x4fbe87063ec3a0000000022ce182fd9316','0x509ae0f4aa6a4c00000002438470c5d92a','0x50fef5ad1b606c0000000240dc429b178a','0x51c0bcefcf1698000000027a1e705209c6',
+'0x525f5b3806897800000002ce1a1356800f','0x58c77e22052c880000000290de0594b701','0x5364ac7dd02b200000000274d5fcffac33','0x54068b85462298000000028703d4318e68','0x547804d2676a8000000002b078d6cc6b25','0x55556ce7fb8e0400000002a1577ee38c3d',
+'0x5630fa2aaf7c2000000002d3f53079ce3f','0x56878625b57ffc00000002b3d718c142ab','0x5736e291c85bf000000002c414e832cbc9','0x60089979538ef800000002cde892d14853','0x6084ba1e6389c400000002d99ec9d2d259','0x597f37ab6582d800000002e5bb30f71cc1',
+'0x5a1734aa3b15d0000000030dbc59e96ca7','0x5bc17c2a642d080000000301a6b92c5c07','0x5d0b8165ea440c0000000316b47baad2f0','0x5f2ec4e1fb70a00000000336adba3d9bb4','0x606c63991188c40000000355d3ece161c2','0x61ff0fb963fa5800000003347b4b42e8a1',
+'0x62903ea804b9880000000347e9f5e9414f','0x63cc9882e07a4400000003521824c94533','0x63b1659256780c000000039f80cf0f4e8a','0x6419f9d1cc099800000003a2438c7d0472','0x63fec4ddcad1d0000000043a8e91b94f93','0x64006f8fd9df540000000537710a474bbd',
+'0x6423f4493cc120000000040ce1ef421926','0x74cc862ad5a5340000000e92150acbd687','0x63f6148614dc1c0000000610a99d2bc9cc','0x65ee0d8acedb5000000007f8d4c7b7efc1','0x658464437cc0580000000fbb50cd8e6d15','0x65c4fb28356c200000000a05b42ac42770',
+'0x667fc51686eec80000000470088eaa48f1','0x6744a27b8db71000000007b8bd9bd3e91b','0x65c98356afb04000000003f3e574626781','0x65068d44152738000000041855e37db315','0x64d57f2beea388000000052279304112b6','0x659b2ee2fcff3c00000005a0391b046f2e',
+'0x661bbfc771e3e80000000424b2c41da216','0x665c60b44648d0000000043d48c3ba852b','0x65d603c8a716e800000004a3986e3f9ab1','0x660558568958980000000443beb091bedf','0x65e74b0ec4ab600000000457074f44cd9a','0x66ae0377e98b60000000045bc0a3fef61a',
+'0x66c4a570b3dd64000000046be8f3d10efa','0x66e77e4c241618000000047ba59b1d13ff','0x6712d19a1732700000000483a6a7a9198e','0x670e245169ba74000000048ed2200e9c44','0x66f104eece02f4000000049c8676469e59','0x6780237cf5dba400000004a9e49aab3ab5',
+'0x677ed5c28a0c9000000004b7c2d443a039','0x67be316c3b3fb8000000051c32bc3bc76b','0x678ce95b831cf000000004e3cf56c75497','0x67a23354e69464000000059bd0007192e2','0x6883454d6a481400000004ec5b898707d6','0x689c66205c0e200000000500fc7dfadeab',
+'0x68201c6c7bf3e0000000056a876caebefe','0x684c0214957900000000052c08ae289a85','0x6ad9f2f1fb80f000000005708e392f0f7c','0x6d7bd285d75598000000052965ff1bf5bf','0x6ddfb2ec9b3504000000058f4c98ed2bf6','0x726a04131e65e80000000553dac1b6ff51',
+'0x7289baac3ee6f8000000055d587d9416bf','0x728255b84475d8000000055b4787b96c00','0x730fff5108e9840000000567018ec1c10e','0x732eb836843b8c000000058c6231b2ed58','0x73787666a0b3bc00000005a0c2c0c5cf5c','0x7337b8f843a290000000059129d00560a8',
+'0x734d895074fc080000000c31a4cda95767','0x72ac9a23aff11c000000065e2965d418b0','0x748dc156ac91ac00000005c175395c2f4a','0x746eb66d916338000000077446a0a70bc4','0x748aa09a971ac800000005e83faebddf0d','0x748b32f01a1db400000005e830297dd350',
+'0x74f7ff2f471fdc0000000612068addb1cb','0x74babf4ba6c1ac00000005f457e4a67723','0x7515a543db4b5c00000006156872ca4862','0x7516c4dc99873c0000000852790168e3b2','0x75154ee35048c4000000069058b5d241ad','0x7523e9ec1bf9440000000628234d2709a6',
+'0x7516db4691e41400000006f96263da3020','0x74c9db4e48b804000000064a5658f03e19','0x7500254c83714400000006517679f82e08','0x7561ca6cb08e280000000655fdf888a979','0x75a9301966d9e000000006666d25629618','0x75a8010cd33e500000000678d14e05286a',
+'0x75b1270d4063e000000006cf764ff053b7','0x758957a4e048c800000006df9ee19396e2','0x755864125674cc00000006a60896cb68b3','0x75ecdfef04b09400000006c781443e659c','0x762447cff074c400000007101198fda333','0x7964358e948a800000000700a2fb8a7a10',
+'0x798c069e4136b80000000790b8ce639a86','0x7ec8baa6baab80000000075147cf8ac97f','0x7f783f77920418000000076fe5b1aaec0d','0x80392d4ceac1480000000925f41a6a5546','0x816c76be9d1dd00000000a241bf84f1e3d','0x819fa7710da9e800000007bceaddd54d1b',
+'0x8235d5f1d1da4000000007da7d077db7dc','0x81eb3cacc50080000000074192682dbe0c','0x82fc479e259b2000000008f7e0dbb6488d','0x8314c06eeb8dd0000000083af061e31ad0','0x832d9884f2380000000007b9753a9d971f','0x834cad97b0cdc000000007ee830f75f930',
+'0x832f8ac17414d00000000b2d04f871cd42','0x836c4077a9350800000007d3900e37d0d6','0x83b285ff9052a000000007c1e2d6277f14','0x83d46a380294f8000000085c4e29026f71','0x8457aef0483d0000000008672aec4eefb5','0x847c327c6fad6000000007fc99080a99a3',
+'0x8480e9e35291180000000804f4691ebadd','0x84862fcdabbe880000000849b45bd7e449','0x84b3b026e2b0800000000849056307ba96','0x846567c953d77000000008017858f7962f','0x854b123e33157800000008358811de7bef','0x84fc184b425080000000085428d17f356f',
+'0x854061a54ccda8000000080334348dbdaf','0x852f014ff373600000000833bdd1300f19','0x8589ae2939e4900000000903475900c5bc','0x85ae696e281850000000085fc770cf3acc','0x85b75a63a2f75800000008937537b570bf','0x85db8662aec02000000008bfa3b8708a15',
+'0x860e64fb66f6e0000000089de799f863bb','0x85de344f15d7d80000000a2bd7d227862d','0x85df6ca7a20980000000089afff5896f0a','0x85c99d9f975998000000095d73b154cc85','0x85db3ff19e075000000008d3e0141601cb','0x85be90a65ecc8000000008988771ab6150',
+'0x859e27b07f084000000008e998dfc25587','0x85e49083265a7000000008aa4f65b7ea2a','0x862f5cfe24fa60000000095e0f31805838','0x865ae6e5c317d000000008c6e71b662af7','0x86bf5de766bad800000009e10971a1cf3d','0x871ee73f27e8e0000000093a3d9aeedb96',
+'0x870bcebd4f56e800000008f22e4bc572ee','0x873a6fc4a620a00000000909b731b9f2f3','0x8662600b2c8a2000000009311a11122eb5','0x874f38c509c6700000000a64d942fb16c6','0x876a5a98891830000000091bf9aba9da9b','0x876a2bc26df890000000097b3741b8c41b',
+'0x876d3d924a22c8000000096fab21ee8cb4','0x8739822f050b8000000009e5b3a356542b','0x8746567410c91800000009645386d97cca','0x8744b4defa45a000000009893c1070e0db','0x8723b3a49aefb000000009a928ff4c0d52','0x87ba9e9a9adb6000000009a75e684919ca',
+'0x87324eb6052e50000000097155ea6c3584','0x87b85c18f2ed8000000009ab11df17b2ff','0x878760753203500000000acaeec98387b7','0x877dd979d6d51000000009e83f0075bf33','0x875e5a3ddae4180000000d1bc81da24ad7','0x876810b93cb8b000000009e645c7854a01',
+'0x86f8fcc0f0534000000009cef5c2aab91c','0x8792c0caf3a2a000000009c74bff01bae9','0x878e350c11ba000000000a0591523fb3eb','0x87ccee37b3e1e000000009f441354e0a61','0x87e870bc0a744000000009f70f54fde7ec','0x880cd45ef890400000000a12a194b91817',
+'0x8887aa9d9437e00000000a0df62e7fc081','0x884188a5a064280000000a137c0c534f16','0x87eb2be1e791780000000a269f91e32fb3','0x886113161caf400000000a33f59adf9fc0','0x88b33861dedc400000000a3949526a6739','0x8892ad38addf000000000a458edc70601b',
+'0x88b31e199972d80000000a5a80ca8e9ea3','0x88c608f7f84ab00000000bfdbfd0681f59','0x887c988a6b6cb80000000a71a725f618fe','0x887b71c03f65c00000000a8912f02d13f9','0x885b997cd0c7b00000000b15b867158450','0x88f06fb6d1a0500000000ac3f978b4d22c',
+'0x88a73089c0ac600000000ade697cda0d36','0x88d4268a09de800000000ab90012f84146','0x88f7b2c99a21d00000000add45b7c2c27c','0x88fc27ed010e100000000acbdbe9e3c01f','0x88f40fbca845400000000acdfd00681d8c','0x891f3d8e3b70e00000000ae79c77965fbd',
+'0x8899e769e8ac200000000b28bf136ee7e8','0x891c2863e645300000000afa88f03e47ee','0x891539b28bfe800000000b038a421d98ca','0x894d875298f5600000000b683df6c25642','0x894fef60e3fd100000000b3210d176793b','0x89205462cb11700000000ba87c93d84e34',
+'0x892c65aa8c79500000000b32cb94d9d264','0x88b86372b3ccc00000000c046b2b9432f2','0x889d298a43edf00000000bbc2133e58fed','0x8963fd802d38900000000b574a62e15f50','0x894b0678c0b3b80000000b67a78873f85b','0x8991a3149209700000000b90e7480c3b6e',
+'0x89648280bc5ba00000000b971805ad7e93','0x897d2f07ffbc900000000baca4f76cd3b0','0x895c1474a7ae200000000b8bb8a0ad046d','0x89546274f51e400000000bac80b32497d2','0x8958cf5361cf700000000bd83d1b5655dd','0x898fcb8565faf00000000c0641e81f12e5',
+'0x8961eedb90ab700000000d0e50567ef4af','0x88c90aec80d6980000000be29465783681','0x88e327a48fb3500000000ccd63c9bc5169','0x88d983854ff3b00000000c06360a9e124c','0x88e550506342e80000000bfe60314c1664','0x891cbc3c9d61280000000c193ad126a032',
+'0x8921efa21460f80000000c11c3526e3a69','0x891d891485cdb00000000c1f0863fb9205','0x893affa44052500000000caa393e56b38a','0x88fdafe9333e800000000c5b619d034e99','0x892b10b5c513200000000c67af0428c037','0x89172bc9c400d80000000cb7fcf213f393',
+'0x88f15fe48a45800000000d700fa83adc54','0x88e49608623d580000000d4cd6e0fad6bf','0x88eab6cf54ef200000000d0f0f44ca3dd3','0x88db81908c4e000000000e1a848b327848','0x886446ba4094b00000000d46871de76280','0x88b096d9c130880000000cc4fb392ada8f',
+'0x888f2892b2b5980000000cb45996cf2954','0x88a61d19d647f00000000ccbc0fbe7ed9f','0x88b873ce8998800000000cde8d899d3edc','0x88d1f3d86748e00000000d40a68deaafdc','0x88f57051cb9fb80000000d36500756c793','0x88e6f37c44c7900000000d313bcf6604de',
+'0x88b4d0274c6de80000000cf6390b987367','0x8925987b08ea400000000d08ec020d9966','0x8945339d2b56280000000d2eeeb56eb5eb','0x892028bc29cf700000000d32c996cf2433','0x89375ca546dae00000000d6b55ff9a42c9','0x89381a5ec03c300000000d78ebd5abd132',
+'0x8948f4cf8529380000000d3a5506346940','0x88f0732b398cf00000000d51c1674544dc','0x894c4bd069a3f80000000d51d0304228c5','0x8979fcbf149de00000000d670f25b45228','0x8982e07d143f800000000d80481abed290','0x892064b8a0a21000000014032329b4edce',
+'0x894df5c13819900000000d8f7ab94d21c6','0x8944d88cad49480000000d94be20c9ae55','0x896a1b4237ba000000000dbc4af23c6f3f','0x890b23b444dd000000000dcb57e18a1844','0x8985c52fe3c7e00000000dc048da4ed2cc','0x897c26261cca380000000dfea0879c293c',
+'0x89e30c913fb3980000000dec3c3f8c3112','0x89f51919e455a80000000dfac5f5d6ea02','0x8a3fb0594ab5780000000dfa7fc94f13d7','0x8a3f5f726b05900000000df0d3cc1eaa89','0x89c60ba4ad97a80000000e1f4f3b6534f5','0x89ff55265348700000000e223e547882c0',
+'0x89f9e273660dc80000000e7eaf602771f3','0x8a10f717a2e1800000000e34ce223a0a40','0x8a0e9aeeee7eb80000000e374add821780','0x8a2f1e024698200000000e817a288aa50d','0x8a79023cda4fc00000000e519c7ee75bb8','0x8a6ab4f19eba100000000ed22d0240dd7c',
+'0x89df2fc587d8880000000ee0955e2b039f','0x8afa171c8828f80000000ed0ba2cb37f7b','0x8b158259b0ac600000000eb8f9ce262f03','0x8b395e707ee7b80000000f137d6eeb9d41','0x8b564eb72168c00000000ed85a8382abf4','0x8b5d130bba16d80000000ec196f9031f64',
+'0x8b7a27f47af6e80000000ef70701363811','0x8b85c42e8416e00000000efbdac515aa72','0x8bc86bb39575b00000000ec7495c6abcfd','0x8bb964979c00700000000ee9332988687f','0x8be3b9326712400000000f06498db1118b','0x8bdf4721b44c500000000eec6e3cedda4d',
+'0x8c256734f2eaf80000000f15af67f36f6b','0x8c2e7b6f24f6380000000f1cd63f25a46f','0x8c40b154a9cd500000000f698d31d92114','0x8c2ddac5273ca00000000fbf0af4cebc95','0x8c2a48e73db4280000000f5facf168b7d8','0x8c1a979de134080000000fa92b4868ef6b',
+'0x8c44c10073233800000010be77a5130a37','0x8c306ad303e4900000000fac9fd9b5f32e','0x8bb6d760ecab000000002e230a5eb76158','0x8c0b17c636e9b80000000f74745868b241','0x8c2850cf6cef900000000f9a9ed9bd7db6','0x8c0cc9636a7eb00000001047aab01352d6',
+'0x8bf43bcac93838000000109988c9c096ed','0x8c4d189f5fbb900000000fc8281939fdcb','0x8ca5e0d753b0e80000001000eb95c3433f','0x8cabc138b51b18000000100f5017273e62','0x8cd096ca2c05180000000feaded0ee4422','0x8d0b4261140b40000000101f5bccf48de5',
+'0x8d4fb499ed7768000000111d6126189b6e','0x8d80a33c6f3d88000000102f2575cf74f9','0x8d89cfe62d6e500000001120f6bc6e948c','0x8dab86a526eb00000000104dcc849acf50','0x8dd2253b7e306000000010a341566e616f','0x8e44891c7daec000000010cb0b2c3c5eda',
+'0x8eafce5f1a7828000000107f4f241dd94a','0x8edee7779ce24800000010e7fa1692c706','0x8ee97060ea14200000001367e7a644d124','0x8ee537f67920700000001695174d8951bf','0x8edfb476f69f5000000011d9e8233a3b0d','0x8f1430a5d74bc800000012b5946d82d738',
+'0x8f1c3f365d1660000000116fec7af93bf8','0x8f68e9b3f82b20000000119a2083687c02','0x8fd1f20514d0000000001271c7e8c28acb','0x8fd9f03f1eb65000000012e01bcf0e252e','0x8fc2298546c92000000012aaac49ae9a09','0x8ffa3f24a2d6000000001160ab3cdc88f7',
+'0x90094d67d2f6100000001195319dce71b8','0x902145b882ae80000000115b4473602905','0x93fe89f9943e280000001189052a029eea','0x9413d3ef1da0c0000000123a56ee55dbdf','0x9464b16aed1790000000117108060cbe50','0x949692fbcb647000000011a382629f804e',
+'0x94d9d95fa546c000000011e4fe83314d31','0x950f3cb516964800000011e96137e894bf','0x9570a692650ca000000012be5041a859b6','0xd947d239db32700000001566946a06755b','0x1531182160b44c000000013fb442a54ff19','0x2bcd1a8eeacfd0000000011f7e0c0ee25bd',
+'0x186456634d1852000000015033358712d67','0x16ed59f2181c4c0000000186203463be343','0xd69ff81c22388000000015fd89bfa2450e','0x9662f2346dd7e000000016cc0c8ad22295','0x95fbd858db0f18000000166aecad08eabc','0x961c591fed2890000000166483b86e1f12',
+'0x960c8b9036968800000016a485484c87b8','0x9610986f041f4000000016fae5bf3dd526','0x95d835cd5cdaf0000000167b728ac14bcd','0x960dbce150e24000000016b329db0839b0','0x96395f379e996000000016387cfd1300bb','0x9626f0e8f65bc0000000164273d9ecf6dd',
+'0x965b4e215208e0000000165c01098eac93','0x9673606c07b9b0000000166a29199c6923','0x96762248a15dd8000000163eb92d17ade2','0x96038779f52088000000163ea13638efd5','0x95ffa48ad821e0000000171a71fe91e9f7','0x96bc872861534000000017a0e8fc2ca339',
+'0x96ed5c59f84ff00000001654b1a75427d7','0x96eee44cbf09300000001636a65f710ef7','0x96ffcd19e04d300000001680cc2e033315','0x9701552cfcc7500000001654b6275d3ee8','0x96eea90d7b7a5000000016362afffff241','0x971778ac64a3680000001647afe7027286',
+'0x971c4b5d1346c0000000163f925f8e31b5','0x9724fca3207fb0000000166c2ca823d2a1','0x9709619a3a838000000016d267f2738f4e','0x972b6d3b53d9e00000001942017257fc59','0x97432ee8cd972000000017e8985ad386cd','0x9742b5c4b625380000001654477f9daedd',
+'0x96e2b6a4f5e9f8000000164892322af8dc','0x96b435d7d5f360000000166ab2181a5c2b','0x9704087b665da0000000163fda8c7bb75b','0x9727213c7935a0000000164170e3251749','0x970e01604204b8000000163c4a6fbbba74','0x972dfcf28af5d0000000164dc24dc60fb3',
+'0x97241051df87b0000000173b83f15e2a0b','0x9733b77d1a1dd000000016474bd48e11f5','0x97262e10f4c888000000166a783c46111d','0x972d4aa099f728000000176077f7f15407','0x973baf921a9bb0000000166477bd3384f0','0x9762666d9b0bd000000016cab212806b01',
+'0x96331a4a4a51f000000016a57a03bb55ab','0x96c057fa8b04c0000000174c0b04701a52','0x971db59c461ce000000016f9492d0f77a4','0x972286bfb98bc000000016a17eedc25212','0x9707a814e4e25800000016abb4f190cc7f','0x9706297c3729100000001816a3fe97f295',
+'0x96f285729e5f9000000016b9abc57806dc','0x9700d22d28208800000016bf22b9436f0e','0x965452327caf00000000165f6715f5b39e','0x964e9d57416f70000000166da0e569d34b','0x970847ea2e7bf0000000164cf50a92da2f','0x96c9dadb7c7d1000000016d01875d008ea',
+'0x96b54f1e8f26a00000001675ce446aed47','0x96f89b27ef002800000016ec51d01d0fe8','0x96fb3bc273fae00000001659aef8065be1','0x96ea5736e340a0000000166caa31797c7f','0x96fb1c191b1db0000000169bfa4df60ede','0x96f592edf39cd000000016cb14dd2bc4db',
+'0x96f0c5d1e2c690000000166f2093ee2ae2','0x96a0668141e3a000000016e01dd83d9cc6','0x971019d5e44448000000166730f07866c2','0x972fb7e77aba600000001647c2f066cd13','0x9700ace8d26c50000000164ee3dbc9210a','0x96f22440cdb3080000001651df75d99065',
+'0x970793445f25400000001675191f752056','0x971bf8f2ea9190000000165036f04c3cfa','0x97182d1d83748000000016617a874489b5','0x9741a7d9dcb3880000001655a4ede32751','0x975063dc6a24f00000001661390a0a874f','0x973294604561180000001668cd3139b4e7',
+'0x97255d75674440000000165f777501929f','0x971d3d4e0585a0000000169dc98b3b4e61','0x9701622919b7200000001696c729ca9e01','0x974f4b41729ce800000016706ed773a615','0x97464315f18fd800000016950f4ec580f8','0x972f6b88649890000000164bc5f682c008',
+'0x9724447b5caa100000001675c46f8cf10f','0x968e761985173000000016bcc395168c20','0x96990ff75d02680000001659a4af97943a','0x9651adc5c1d418000000169837c14462ab','0x9641f462991d000000001697ca8e138b63','0x96766f2aaf8e4800000016540def3efa92',
+'0x96870c0167ca8800000016df946378fa5c','0x96719340f8cef000000016bf11e6186acc','0x9713845e9dbb280000001658b002806ec6','0x9710975069be70000000164ab6a4948006','0x9736a08050b2300000001658401e3c398d','0x973a70a577b71800000016707f0b2718e3',
+'0x9756cea031ecf0000000165fd535f41404','0x97496b5681dc50000000173f94b69df639','0x9725015b4a2c080000001658b1ca949fd9','0x973cb60cd150300000001694854a99479a','0x9783e347dae7a00000001658d72aa06f97','0x9783584825f6c000000016d54cf815bf04',
+'0x97b029108aa3f00000001658b678d75c3e','0x97af82d5c2ec68000000165352429eadef','0x966b8c5e6d9a300000001652beb43b3da5','0x96527ec195c5c800000016738ab3e0e341','0x961589bf368ec00000001683186469cb65','0x961c73dc5f1f2800000016564da284e6c9',
+'0x962964d7805fd80000001666f7048fd7ff','0x962ca6d0289da0000000166294141556b2','0x966a5e605d7670000000165d501f72c46b','0x963872048ee810000000165384cf751fe0','0x9655405e18dc6800000017a780ac189f2a','0x9650b0a8e50ce00000001691ed679f99b3',
+'0x9665fbaafbb35800000016b338753959ca','0x9661614a473518000000166ce6e47a3bad','0x968a20af1f91e80000001669b5b8c160b7','0x9680b014f262500000001674650bffc9c1','0x9647998314fcf0000000165df755c2a31f','0x96a286bd86a6300000001742399c49b13b',
+'0x967248455bdaf00000001652d4f71252fb','0x946fb4b1c4b270000000166a97ca854a4b','0x9700ed3db99040000000169ff2aa39e82a','0x972093889897d0000000166e9cc9df9391','0x972206035940f000000016e471f8a4c34b','0x96ffe6100039b800000017112334596fc6',
+'0x97062821137660000000169d73572a84a5','0x96f2396ec15f7800000016692df5385362','0x9734f469fe936000000016608a524f082f','0x971e8b01087c200000001661affab32438','0x9751d76d5fb4a0000000169cd51634ab10','0x976343e5184d1000000016913024c35c7c',
+'0x994f5e7f3c8b3000000017156d22da59c4','0x994638edfc48680000001709cb9f00e24a','0x99633f2881c7c0000000167a2918965012','0x996635ea3052f000000016bc9b70633ad2','0x997d5cc69501d80000001668eb25375d8e','0x99523803a7c1c8000000169e1506ed631e',
+'0x998fe4799c73080000001696c06aed7584','0x98c665a10057d000000017519c6d4e9c24','0x98ead60f174c7000000016b51282737e5a','0x98c64fc78ea7c000000016bed815c8d5b4','0x98d71f91b01820000000169410640dab95','0x991045c05b670000000016793d001f8701',
+'0x98ff09c6ff02d800000016df1b92e2e002','0x99c5d2a78a5bb0000000169b9ba9dc602f','0x99e748739f73980000001669969456096e','0x99b3a53660e2b800000016938aeaa35d20','0x99cfdf0e812ef000000016d0f8fa2bc5e5','0x999e769329a39000000016afed930acdb9',
+'0x9a0103f03358c800000016ad6f6a38575b','0x9a20013c5171a00000001683ec376c4615','0x9a0d82e686a55000000017d1174008a9e4','0x9a2f86dc567e78000000188dae35573390','0x9a05fca74439d0000000166b709611a0e0','0x9a0910c4be0d80000000167390d5a27643',
+'0x9a0cabe95aaab0000000166f3e3f4124d7','0x9a2aa024d1a1a8000000168e4971431028','0x9a55957d8979800000001670d6707b8410','0x9a471934eb7200000000167de34672d4ad','0x9a579db2dfe94800000016d36d4596b4fa','0x9a1f9f5acbb8f000000016c5adf783d668',
+'0x99ea9d7c7186480000001678695bedf2e2','0x9a1f37f31cd110000000166cd1cf37cf20','0x99d005af42d3100000001679df3a811da2','0x99f77175bd4bd80000001676a3def0186c','0x99f11e8fdb7a60000000179593d03cdd5d','0x99f6ddb997069000000017c793082ca75f',
+'0x99775f0499236800000016f0b5b52ee33c','0x9938aca20469d000000016b5b3ac98e2b0','0x9943dd1f7f3a60000000167d979d7a078d','0x998e33e3fe4e90000000166bb4eab36f79','0x99cc0789d8788000000016dcfe4352f1a3','0x99b5c58197feb8000000166d76969ed728',
+'0x99bdae0731125000000016f68584e3f647','0x99dc793475dc4000000016e224fae07307','0x992c3af5ad83e800000017fd2ede61cb19','0x99b1b8c335702800000018295ddf12c226','0x9988bc42bfd4800000001699c1023b3d01','0x9980dec02ea28800000016b594fa1aa632',
+'0x99718a89211d7000000017746d0468057f','0x9966fc57ff9d8000000016e9a8f4d608e4','0x9887f8f7f9d870000000170a04a1e9de1c','0x98eafb699b32e800000016b8942c66331a','0x991b0c51783d9000000016a5435c9868bc','0x98fc8ba002d0480000001676fdc0b31865',
+'0x9923198a6b7d00000000185325a2549e1a','0x98e8d2ddc3494800000017aff06a69dc4c','0x98e5a1af6cbec8000000168931d0c211f8','0x98d9474a9f5b1000000016ce33731088e4','0x98174c2fefd320000000169df7d5ffc42b','0x98fb81d2e88e400000001687907b418f62',
+'0x98ee63d2b6563800000016c6559df59f29','0x98e1189b6ead9800000018019da3453bc3','0x9909636bfa0238000000169ebebf0a7fba','0x99256b96f2135800000016f21ed06641be','0x990c4664bf3cf00000001697f69821e946','0x98dce5b6dfa85000000016bfcdf1ee683b',
+'0x99240c0b84040000000016aa4d69cc81e3','0x990223518250b00000001685a16a17b26c','0x9914b5daf447500000001697b198293956','0x987d0bd11fa208000000167891bda310b4','0x99284cf55095a80000001689f833ee2cf8','0x9920517ffded5000000016ca96ce917619',
+'0x98f7d280dbe93000000017e53eed6f3ebf','0x98f0cecd098830000000169923f6f4fa3c','0x98fde84e8f6200000000168678dfe6afcb','0x98ec71a8094df00000001680d2d3ba4f98','0x98ff5fef9f33c80000001687840abdf06e','0x993691604866f000000017611a24f1e5d3',
+'0x993586e60a17400000001720f38b48af88','0x9932ffcf59ff6000000018e9c945e1d21c','0x995e77e95b030000000016de3e0fc31a43','0x996e20b511fcc00000001a198df4d4c76d','0x9955c4a06f93c000000016c10011684038','0x99593448be67600000001678e25ffb79b7',
+'0x9945e1acdfe0e000000016cbdcce94c6ab','0x98caabdd7d74f8000000172783cf981fbb','0x993f3b2f052fd000000016c6d4f1cd5eb0','0x994d8868e4917000000016f2e10bdf171b','0x995f1c85e32f100000001695a8700d1aa9','0x99623948fcc5880000001684983e259238',
+'0x997718f5403cf8000000171ad5f28f0f80','0x99952969bc64c000000016b2463c989d44','0x99906fa554416000000016a5b22e0a20dd','0x996166b55deef000000016a08a26a554cd','0x9959ebbd815ee8000000167527026ff5a9','0x9935765c17de480000001688b93b7c7f0d',
+'0x9957bb1bf654800000001688039adff0eb','0x992a000c18bb8000000017a7f8f8d75851','0x989dfbba7f76000000001673e388f96348','0x994dfe6a06feb800000016b214e2acd8df','0x9931b020b68d1000000016e15ef120563d','0x9936689b1c761000000016aa26289126e2',
+'0x99159c413e8f6000000017ccae3f5f9b5a','0x9915930b816cb000000016b4c720d48de8','0x98fdff88d25a3000000016ab5b71dab19f','0x990b82603f95c000000016938621d463bd','0x98e2695cca20d0000000168065169ad6b3','0x9814d71b64574800000016ab34cdc042b7',
+'0x97c8579df14c98000000167e471548afe1','0x983821292174a80000001756b4b91dab22','0x98950af73e8dc00000001c09319e62b369','0x986ec2ca79dd10000000190d5527fcdc40','0x98550683833ab00000001b8cec9da5639e','0x97e531f7401f680000001866869423190c',
+'0x9816e37d926628000000189c1635dfc13c','0x9801af06a62b780000001a737e3f08ab46','0x97b70e06b8f7d800000024e28466060b9c','0x97c805538e0be80000001836288b6d9317','0x97d37831a3ead000000016ac5b47f93ac6','0x97e56a5155b5a000000016a18867eac301',
+'0x97dfb83cace76000000016a70565cc640c','0x97cc8a19f309a000000016ab84a97883a3','0x97ea81fa38849000000016b0325d520838','0x97db9924af1bb000000016cee3219281e2','0x97e44b62c380b800000016a2d1571aa697','0x97d33d87da57c000000017b502702712d2',
+'0x97b3578762bd0000000016a776a2a95009','0x97c0e3b5aaf14000000016aeb0ee63f3ec','0x974dc052710250000000169c3fa5dc258a','0x976a990d86452000000016c3dbf3c2c68c','0x97a245f143e51000000016eaee32b6a063','0x97e0e804d99f7800000016b021bb77692d',
+'0x9847d85c0f0df000000016e88b1c84bcce','0x9858352b1a4fd0000000189af333bb3980','0x9856552f3ce318000000174b281c22884e','0x986e6118bb0af00000001684a0b88fd571','0x985c9f754e0fb800000016c4f5d8fb61dd','0x987c2cc94139d0000000168fb0e6faf252',
+'0x988ec2f19bb82800000016b35702b60668','0x98809c2ffdbf0800000018365b776d41fb','0x987c520c69f92800000016921ba883f271','0x98a308dad5f71000000016968c74a324cb','0x988dc6ef30b7300000001711bc533e19b9','0x987f0845326120000000169620298994c3',
+'0x986f132c5c47c000000016812270e8185a','0x989cf42dab3ca80000001692e50d3f72d4','0x986cf66079a95000000016898b15006add','0x98b5bc375439f0000000169caa33f77bcd','0x98b89bed9b22f000000016cf095631526c','0x98a36ddefbce600000001695670c31aabf',
+'0x9890e93583b3400000001695c919e791d5','0x98bf3184d3fef800000016acd5c7ee96ed','0x98d0abf9372b480000001689038aebd39a','0x98a81000ae1d70000000171ff35808d388','0x98c8071c965c3000000016abe90efdf216','0x98b98517aee300000000168acf75ce4371',
+'0x98d178cce7145800000016c4b105517808','0x98eb3986909b10000000169bcc6658dd37','0x98daa70375f14800000016be699da3fad7','0x98c4501b65baa000000016bcb1f75d64dc','0x98ab24b9de94c000000016d9eab1a0544a','0x98acab144652b000000016ea1715843463',
+'0x98c2573605b84000000017bbe0b2ab3d6b','0x98cc19d98c147000000018c8d54343b603','0x98f3776b6e0a600000001781daa35dbc78','0x9917fd0fabfb40000000174724721fc64d','0x99160cb168b29000000017940c0b3fc9cd','0x992298fa06c348000000170e466e23bb22',
+'0x992e168e00e31000000017e0fd104f9cc0','0x991acd57993b9000000016fe4bd7f64ef4','0x9915a84239113000000017398707b21107','0x995eb78bec5df800000016c693fbf9a254','0x9954bdf3c079800000001687e57cb70caf','0x998029f8dd209000000016c2ca47302dae',
+'0x990aa28362df1000000016ea0ad101b43f','0x996bdd80886078000000173c795ec0e0e4','0x99844192451e20000000172a4a954f899d','0x997c42b4b07990000000169b092d3bd9cc','0x99569b29f756c000000027649e8a6e4a64','0x993d2e25e6ab1800000016bd1795fe7034',
+'0x993b71da57381000000016be473cbdb515','0x993ac69267216000000016a2b6800b3c6d','0x994f57bd626ce00000001691a2850896ca','0x992d150ca6d21800000016929d86e197a5','0x99136877eca778000000169fe79ff690a4','0x9929e29983fd70000000168720b46c3f11',
+'0x9930e4abb1a74800000016846aac6eaf30','0x993c9117eff9e80000001699056be676ab','0x994d6d4fc3fa300000001690032ba9da47','0x991196cac4b64000000016ce51ae6b1286','0x99273729e4cf300000001693c7446ece50','0x990ffa3e460be00000001690186b384538',
+'0x9940493631db68000000169222aeba20e8','0x994510a7a70c20000000169033c1900ad5','0x99168091a1211000000016961c7a3cc474','0x995b22cad35758000000169dda9f624325','0x9965bed78240c800000016973b61a71b91','0x9950c0dbf31bc00000001683f048f9a509',
+'0x994a61e23869b000000016846b4c92b56a','0x99535cab888380000000169e67872b1d9a','0x995016756157e0000000168711a55c3148','0x995348f59ac730000000168aa056b1ecd6','0x992d5d1cba18e80000001693df050051e9','0x995d8e27a9229000000016824fda625eae',
+'0x992614cd014998000000187a870c755acb','0x990ad43ca4a21000000016d9fe30892f9d','0x98f90a9dcb995000000016a11cecac5ab2','0x9923e083cfdda000000016924b9682aa49','0x99272bf654c7500000001694dda5c7e00a','0x98f56587b9997800000016c6e2a86be8f8',
+'0x991374d174fef000000016951b4ee4c17e','0x98fca0620ea2a80000001688a59852472f','0x991ffa98ec086000000016867912229bf8','0x991becbd3c235000000016a5c2a46751a5','0x992bd2f9466c7000000016e332d7ab2085','0x99306c6611fb00000000169886b04b65bf',
+'0x9921238f4dd8d000000016ed64d581ac01','0x991ae9b4f6096000000016a80b4d109c2e','0x992c4d7a90b73800000016912399778839','0x992ac6d90d7c7000000016880e9317410b','0x98e9f956c907d80000001680eeed7e90e9','0x9901efb0bf01100000001688a27b0e8a8d',
+'0x9902d2d82bffe0000000167fd291978cc2','0x98fc56dd6650f800000017092d291fb0cf','0x98dae730a94908000000168c151ee8842e','0x98faf59bdf1f60000000168bf858c47179','0x98e6676b713d0000000016d8e0971b3c8d','0x98c97847d47c5800000016b4e9324082dc',
+'0x98d467321a809800000016c2236c3a7792','0x98f08ae88220d0000000168c620eb99c89','0x98f8c788fde800000000168396329e1f92','0x983a26d260c990000000169c2624153dd6','0x983b8fb5c47230000000169920cfe63341','0x97fe928ee83eb800000016a7b741deae74',
+'0x97fc2d1ca47260000000168405e4bdb255','0x97e3e78ece0ef000000016adb522b6c1ee','0x97d1fed99e498000000016ca58d799d167','0x97bfcf3c9200c800000016a5cca3a249b6','0x97c4e490f207b000000016c400df24728f','0x97a9a84ec354c8000000168cc28c10afdb',
+'0x970fc5695924000000005e346d30bebe60','0x96ee45adefadf800000016ef976a5b5dc4','0x972389c977b940000000179454b8f998c3','0x973fb3835a7b3000000016a01a336af4ac','0x973f9661e652f0000000169116dfbd5cc8','0x973884d05da8a8000000170d7d80d9f394',
+'0x9746ecaf9c0d20000000173d5390c5bb0d','0x9731f56568c6c000000017bbc8b1d35a8d','0x972d00f90cccb0000000169e8cf5e9441f','0x973ac0d0ab330000000016acd85f539a83','0x96f36c4c7bd96000000016ae4c05e7112d','0x96d141dbae0750000000169834a8bb2ab6',
+'0x96ed1312b39b50000000168992c19818c4','0x970764d4d661f0000000168c24d48e63a4','0x96d843727416d0000000169c4fd19b102c','0x96c46cbf948f2000000016990478d1ac21','0x96c6887e95639000000016a8e7b57b8ba6','0x96af819ac7d86800000016b6fc075df8c4',
+'0x951710b13f2420000000171f9319431c4d','0x951a51605efe1000000016a1aaa7ff513d','0x951818f8485a300000001690c23eb09101','0x950ba5d54c9888000000190b6c0c9c5e40','0x951b0eeb219298000000169c166c63dbea','0x95045cdfd272c800000016a0b458f794d2',
+'0x950ba561b4525000000016a9611711b39d','0x950b75b4862a90000000169901d0784f66','0x945e756460c31000000016a21d4a81f7ad','0x94de4fa32546d000000016c08de3829553','0x94ca337fcb3ff800000016acebb224809a','0x94c007d2980650000000171d109d2b994e',
+'0x94ca5852185ec0000000169a10e301f948','0x94c7a56b7a693000000016abb50b4a4fa6','0x949544d3eb21000000001690e68e006c8b','0x948ebc48f791d000000016a3bd56a0b711','0x947416df66317000000016902224bdc46a','0x944cbb1ab0afb000000016de530ebeb84d',
+'0x94529861d1730000000016acf9823acd03','0x943481aff12890000000195d4293e4e1a6','0x93a856f95d83a000000018580d13990f43','0x93f41616e0f840000000172a1bc5f77371','0x93a71dd285bb0800000016da7759de7dde','0x9367e6498da3b000000016b26d1e2b00d3',
+'0x936e218d9c4e0800000017335304b26e66','0x93278bd38419e0000000177f62a23e70e9','0x9356230e3f8d5000000016ef553869e40d','0x9357a13e916b080000001de0559272e620','0x93455453ebe0f00000001872b3a345b7ef','0x933da8415033e0000000178d9d9ad351ba',
+'0x9331906179c2580000001701b49c2c39c0','0x92cd96bc024cc000000017cc1f17b34e7c','0x9301079b596730000000169caa3e6b89d4','0x93129ca58160d000000016d4c27209e50d','0x932e37410b3be000000016abd7f063321e','0x93213b057c8ab800000016958486e22267',
+'0x9326879007ae8800000016954c2e318c2d','0x931396006f2e0000000016c15050de926e','0x92e218ff0cf36000000016b7cb552ac38f','0x92e54bbefe3c4800000016a21a2adce9fd','0x92b84a02bb43d0000000169de372f00d20','0x92afd17178faf000000016eb9e24804450',
+'0x92d0a2115543a00000001694e8807e594f','0x92eba650ff13b000000016c4237101eb24','0x92dff7d031d65000000017128857dec597','0x92bb0734a35a00000000169ab49a6c7fa5','0x92b7e59d0f749000000016f2185b1ec14b','0x92c8a042d5585000000016e7198fe81f47',
+'0x92b7bc985092f000000016caadaa2f4cca','0x92f37581d6823800000017455cfd0ef502','0x9316d0c487cc1000000016f79c8195dc6a','0x930675384c14900000001694b9667d7882','0x929294dace15e000000016ac5926772c57','0x93023a6da3622000000016a80bec63e25d',
+'0x92f69d9d3bdad00000001751dae4c952e4','0x9300ce757178f800000016a6b1e645e653','0x93311b0219f3e000000016a1067184d095','0x9313a2d2d4f52000000016b98930f0c36f','0x93184b19fac46000000016bb1dbd7dd3e9','0x9304c25ce6624000000016b13f0422f918',
+'0x9310b40635b09000000016abde5d715493','0x92f0880353f34000000016b23a7507057d','0x9314dab5e36470000000169e8917bc158d','0x93260eaaa7d3f000000016a3d0ea7896a8','0x9317ae2d863b48000000169d2f2020c544','0x931e315c032e0800000016a2f521bae3c9',
+'0x92fd563b2804a000000016b3d8b887dfdf','0x92fbdc10bfeb4000000016a73455ba6d90','0x930eb0a0a5ae3000000016b723723c868e','0x95207e72f55a98000000171ad7a2e417c1','0x94ecd286e799a000000016a57b708ab32d','0x94fb2f857bbf8000000016bb900a2bdc91',
+'0x94f60df6e78e1000000016b130ab1fbb6c','0x94c741a8ee4690000000182bd43412c5e1','0x94e35bd34df42000000016a180007f493c','0x94dc33079bac7800000016d9099e4bb4fc','0x94d5af2bc19f5000000016bae03aee1a9a','0x94ce739c063dc00000001729085721cb41',
+'0x94d25295b87f10000000169ef7fab88b07','0x94c022848354a000000016ae89c495991f','0x948bd3fe62af8800000016dfe96b227b13','0x943772d29e924000000016a893c3e4311b','0x9484258b8c80b800000017140b82e83d37','0x9488d4658bc3e000000016bb49d7608b78',
+'0x9470e54223dbf000000016a6005df13aff','0x9476f7340ab4f00000002af65b17860e64','0x948d9de7976e80000000172ca71f344676','0x9476ce554c12400000001b6e83f60630b6','0x946dc629724f0000000016dcb581a5ccbf','0x9495b04e832940000000183cdda549d9e8',
+'0x948e9bc0ae2a2000000016dc9f37999f49','0x949007afe7053000000016db5ad7851040','0x9470463a8dc98000000016ad565bdc8424','0x9494157dc46d6800000016acef8e64cc18','0x948d284483467000000016b266dd485262','0x9490a018120f7000000016a08ab2fe2a3b',
+'0x9496d896c10b30000000169d91deef9c7d','0x94835ddb671e900000001871126a8013de','0x949e63e4e3b130000000171d705b46fc22','0x94ada916bc87a800000016a539e341d689','0x9496e4dc56925800000016a40ade191d8e','0x9496a7300c6f8800000018a646e497df0a',
+'0x947cee26c3c848000000187e1748ea35e5','0x947b2e19035cd000000016a66bdc24c21d','0x9482997abaf950000000172c580191ac2d','0x948b54caa8a7c000000016a67c37e07371','0x947e5743522fb000000016a590a964c172','0x9457a04baff5880000001e004c825dd16d',
+'0x9473a1d765c11000000016a2d376a3f16b','0x947303b67dbad800000016a7a23d2948f6','0x9477ece3c097b800000016a7df674d9b5d','0x946f4fd5a3ae5000000016b5f755db9230','0x946c1421f38ff000000016b22cb72fab28','0x943c775fc7549000000016bf0c8c4403b7',
+'0x940ec42df1d7f800000016d3f753cfe7d8','0x941ac6d6d830b000000016dc2408cf4b10','0x93f17f0adedcf000000016cf2f3533ec7e','0x941bfdfa08ded800000016b12674a15b03','0x93f628cd5d7b3800000016efc14d99c9ef','0x93c363b7c09ac800000017402d0f8c4553',
+'0x93ff84bc61691000000016f098a85a3e30','0x93ff3fbc384fa0000000175389fce44d4c','0x93f304a04688e000000016e41a57ef964a','0x93f3560d3f47b0000000171b14558657fc','0x93f7190536a1d800000017386d132d5f5f','0x93dbd5c2759580000000170af1da3fbf89',
+'0x93e7c9a000bce000000016d6617d4ae6a0','0x93d65550005c0800000017477d43aeea67','0x93d68af1f8f0b00000001879ad2832b290','0x939c3685d942a0000000186965e7e83069','0x9395f28eaf6ff00000001ed5276d69fbdf','0x939a24586f12c00000001712476551d656',
+'0x93b4f4ef8247f800000016bfb916b8aa26','0x93a5022f6315d800000016a64f2ab1e69d','0x93926ebefb3db000000016ff08dae6b70f','0x93adafa563595000000016fcc8291305e0','0x937e34cdc98a7800000017264dc41936e9','0x93454f233a82c000000016a9450def0d8c',
+'0x93442b3737cbe800000016b3fd459fd316','0x9349aa33ada66800000016e2c54f089a5a','0x933afa919cc06800000016e48fa44e5d4c','0x9334a4642aa4c000000016fbdb4f66554e','0x9333a106ca60f800000016f7da84c35951','0x92eedbfe0a0b0000000016ac139e57a0bb',
+'0x939cdb94aa716000000016fc40d97ef6a8','0x937d01940bb50000000018580035679af2','0x935d273833fe9000000016c4093be2d515','0x9356fccfbb2b0800000016c3c63feff2a2','0x9369f670e64f5800000016b3e972199c05','0x93693325bd50b000000016c69a203c795a',
+'0x93458b11de74e80000001702190fa3d2b4','0x912ba52605e8b000000017296df065e438','0x90ee396ac53e9800000016c355ff680ba7','0x91015081db6a900000001851639498f56a','0x910415ee24e66000000016c56b2ebe56f4','0x90fe90677daa9000000016f7e0b27afddd',
+'0x90e7dd3bd35c4800000017a70e72a99dcc','0x90bde7171712500000001710547bce9003','0x90af3c5d40d10800000016e085f4e0ef96','0x9092c71842f0f000000018c2ab51ad2337','0x90b3f118d51e40000000172c31355b80ba','0x90c176bbe3b84000000016d9df7db92e0b',
+'0x90c0deb64cdf5000000016ed4389bc2a1a','0x90caacdf44f5c000000017683b88f95669','0x90ad0dcead76300000001701f96ec8b618','0x90a11428f4e710000000176fb2c1198d68','0x90b05b6bed356000000017796797faadb9','0x90a181d4495d98000000171bca9df7d7ad',
+'0x90941203e4b93000000017bc797cbb1643','0x90d35845d1eac0000000171a261d9d563c','0x90d1b5ebaa3c4000000016c6fcdf50a072','0x90a4f0c88c6750000000171494c5e3568f','0x90ca8c983ae35000000016be9bf93bb9e6','0x909deafd4d2dd800000016bba9708774a4',
+'0x9079d53a1425b800000017079accdf49cd','0x908baa0c72d3f000000016bb0fa5802a06','0x908efaceb8521000000016eaceee2df28a','0x907ac31babb66800000016be978b254adb','0x90a6061fe7ea3000000016d44437b79e8d','0x90ac89d67dbdf000000016e89a0d670674',
+'0x9088e3551ff67000000016e5f811c149fe','0x9097f42790cc4800000016ce49062e46fc','0x908f0a2bbe34500000001700a501d5187a','0x90b06263ed6c980000001712d8b6127bc3','0x909eab440686f00000001703dd9bc7a0d1','0x90a0467d6f72b800000018fe278454a6d0',
+'0x90a249db32042000000016e4d1a1efc855','0x90aec5bd78044000000016fdb05b6dcf2a','0x90bb9a6d1946b000000016c19721cc3d70','0x90a05e9603f80000000016f5542e34d0d1','0x90c564424965d0000000170a90d67bab8a','0x90c77130288c300000001735520a68f4cf',
+'0x90b5fdf934518000000016c27ae9c6922e','0x90a220a0b72210000000174fb71fa46dbf','0x90ac63fd9e1f3000000017365cfebc6a5a','0x90b4b45e9b502000000016c77e605ed918','0x90be7c837896e0000000176abf6f19fca9','0x90c5ab35b116d000000016dea0f658b989',
+'0x90b602cc185a2800000016c07e76d3dc74','0x907b6cd888884000000016dfe20fb07d32','0x90c328676dbea000000016d5fb7a433f19','0x90d33554fd939000000016c44612ed5fe1','0x90a4cd37c0dd3000000016cd9feada282e','0x90b6829af3c3b800000016be8730d79986',
+'0x9085bf5517a8f000000016e1fa52fb8b41','0x9061fd498622c000000016e0dc6804298a','0x907cf83b1fc9a800000017803a848e2a3a','0x905477ca2d4fd000000016bc670fcba4de','0x908253df0c6d9000000016c3c3484e0012','0x9092a3017c5c6000000016c0ae6fbc2e03',
+'0x907e8b287b05900000001753445da5f4bb','0x90a7801a630b880000001722e4be4b8418','0x9094ca08a3a8c000000017151dbfa07713','0x90890c4a54ef7800000017084b70ca9f1d','0x90b53e2a5039a000000016bfc2aa64e1d8','0x90c01202740300000000178cd4a670ff00',
+'0x90d0b331f6beb800000016ee171027cfa9','0x90cf54efc3c99000000016f2405f346651','0x90c97a810bb65000000016c513d959e8db','0x90aaaeaeaac880000000170cf2ffde1edb','0x908d2249185b7000000016d3b49048b573','0x903ec43a03f9f0000000173ac75e10ed20',
+'0x90e393c799957000000016da36f9375d5b','0x90e88b691b956800000016db1823b68ef3','0x90e67e4d9e376000000016df7f8f698189','0x90fe75158b76f00000001740a574e7e0dc','0x90e666fceb95c000000016e6b794606e8e','0x90f5e466e2c92800000016c5c0405bcf0c',
+'0x90f2efbcefa0d000000016e9577c6f5704','0x910c76f4032b8000000016d13bccbd4355','0x9104fe7198f68000000016c0af79bc285d','0x90f6eeb80604f8000000171805d8a1e68d','0x90e673d910f57000000016cea86c1a6d6f','0x9105b96020b21000000016f3d58532059c',
+'0x90e33cf805e79000000017ce3d320197c3','0x90cad97a3021b0000000174544aab8e3a5','0x908b9da08d583800000017002eab964d64','0x90defc598241b000000016d980b9b74d70','0x90c5beafae9b300000001739322f257370','0x90de77745791b00000001731d0b1db7236',
+'0x90ee031c7f8508000000170c4c358da952','0x90ccb6713011e000000016c78510a016e9','0x90d4e5350dd0a800000016f5156df06ff7','0x90c3d3d49d83e000000016ceae95405cb8','0x90e1afa350654000000016d930094f0c79','0x90db416bedc3b800000016c85403e601ff',
+'0x90e17f89cf223800000016fc5d8df1ff09','0x90c7929c5a4bb000000016e143736f0f5f','0x90b267ac578a40000000173c1a4309741a','0x90cf25ddfe7eb000000017588c9df38fe6','0x90e56fc8f2980000000016e537b132df22','0x91229bae8b5b0000000016da8ac465bde8',
+'0x91083bcc358fa0000000188bd55b33cacc','0x911e36f51515a000000017a65d03435555','0x9121aebadb909000000016ccf981c6c173','0x911e8c43ed5ce000000016df7354360e6d','0x91233255d1aab000000016c7086ba0d969','0x911cec435bb7d000000016c5163f32fb9b',
+'0x91314b367d051000000016c91360c2fe7c','0x9144db272633d0000000173e59191df7f4','0x90e19cd94e0bb000000030f451cecd6996','0x90db34aa2acff8000000175128bab2d57c','0x90bea0929c564000000016e2d604f36eb6','0x90bae549f96eb000000016dc9b0bd250a9',
+'0x909f2ae3e729d000000016df229cba5bd5','0x90ec6169cc85f80000001741decaeb05e4','0x904a750faffab800000016fbfbbce6dbe5','0x90e0af0f8f9cb000000016de90b42a4e6c','0x90e0656cbf2cd0000000170da3533a0aef','0x90de2c4c67442000000017510929e9796b',
+'0x90e463d661872800000017243b2d8b3114','0x90e25efc1dfbe800000016f9c077718610','0x90e17e1e8b389000000017ab04d905d307','0x90ebd03ef56d10000000176717763ad58e','0x90d6b1e230933000000016d5e7be021052','0x90e142af233c900000001722fbc534f537',
+'0x908bde3e6bff5000000016d4bceeceb699','0x909920928211d000000016cea4a8d70005','0x90a88c6cded0f000000016f1b0ad9e0acc','0x909e92dda982e800000016fc5068054fad','0x9098b392d8b400000000175b5ef16b1265','0x90996c05a799f000000016d428f908aee7',
+'0x90a1e9d20eda4800000016d5a1f6385523','0x9085c3b6b8c2f800000017a7bdf4ae90ed','0x907ba0a8fbd79000000016de1c5c4883f9','0x9063ea3855cf2000000016fb39da012345','0x9079d25a60ef08000000176bf4c7f1c878','0x907be84319ac2000000016f6b0e4911c8a',
+'0x9065930c0a039000000017a26b65edb8c9','0x905c5fe8f2721000000019090f1abc1c3c','0x904bf87dce6568000000172b52ace36a15','0x903c8f0660c6100000001769b9866449c1','0x9047405242b73800000016df88e20bba45','0x9199cf7dab4db8000000177e53019ac99f',
+'0x91aee8dcc243c000000016d78fb31add49','0x91b5dbb69a95c000000016eb2c4b09d4d5','0x916af80b98d79800000016db0bf15189af','0x919e2b49644dc000000016e57ce7e9566b','0x9190e35fdb6df000000016ddeee9090c33','0x916349ccb35bc800000017caaed0524b3a',
+'0x916ae36711c6a800000016df27b4c004db','0x91769af88c8eb800000017690abd30c43d','0x9180f3659e57f800000017c1511b799bd9','0x9163d491f5a13000000016fe98e1f2ff02','0x9166f697c8bbd800000017d4ab770a3565','0x9166df92ce283000000016d6653d5bc491',
+'0x9142447e639d4000000016d37d2a80873a','0x9159887344c7d000000016db2efcc012d1','0x9178dedd5b5bc800000016e6fb61464850','0x9175f2590a53c0000000175cdff9af6a28','0x9172e334e61da000000016dc7146adc2dc','0x911c554a51776000000016f2c2524e1c8a',
+'0x912b5c870e673000000016e64bcb44c82f','0x91343e11625a10000000170a9d41dcc0b3','0x9141c1cbfbbc8000000016f64f4e334c57','0x9137f41c52e8c800000016d728c1e060a3','0x91382f50d2729800000017778e91b09fe6','0x912b35007c9bf000000017205d3520db4e',
+'0x90e356fb551c980000001730734e0704a1','0x90e3ca6c77edb000000016f3416ea335e4','0x91078f3ead976000000016e6765d3bf85f','0x90fa335767cac000000016f3680e472a41','0x910e34c545f6d000000016fd7d8608ba32','0x910bcaba13ee3000000016e19dd53bc501',
+'0x91120e97b4e77000000016d78172e01990','0x90f4bfb6e6c2b8000000174394a82c4eb3','0x90f26392c9029800000017170851041db8','0x90cc49e84e16b00000001714508e283d14','0x90bfce28ea2c0800000018bbdec3ced239','0x90e3d00f7d1760000000171cf91e91e5f4',
+'0x90e9ab84f3ee6800000016d44d2f8765fa','0x90c579d7a4f63000000016f0165bae62d5','0x90bd2f1ba96738000000174d01bc63b740','0x90ac4a21c4b09000000017aa8399b4a813','0x90bc0095fe5a480000001778a34e691710','0x90bc5a314e35c00000001946b754734031',
+'0x90c97d291e2d500000001717b118fdf667','0x90c9cbbecaa87000000016e7b55ebc4019','0x90d06c747b428000000016f4e24ae28848','0x90a2e6be9312d000000016eed480e1c05a','0x908c0bf95891000000001ab433fabad37a','0x908a6718fe2b7000000016ee519d976f0c',
+'0x90b26d4e1d1c5000000017021f07680abe','0x904aef967c5f3000000027d0bfef08dc9a','0x90561e6b8c813000000016e8d066092379','0x90677cb0ac84f8000000174e511a75e495','0x9033fcb3ed9a7800000017a94b309e10d9','0x9043afa8a3f37000000016df49c8a4ec3d',
+'0x904a8f1b3810d000000016f80a568973b4','0x90513bb747589000000016d999d2030e18','0x9056a7e9066d0000000016f3cb62b0b77e','0x900c58495f7a50000000176d13186a3884','0x900232595b9da8000000171f84a44c7c35','0x8fb23af9e9de2000000016f582aef36a2e',
+'0x8fb39f3606e39000000017a83bc203d899','0x8fbfad5929e540000000170652bf5a1098','0x8fbeeef13d0a300000001721d6d23e3f72','0x8ef8778f65742000000017084b462a4367','0x8eccd99b634ea8000000175aa13144bd90','0x8ee07f5f41aba000000016f5ace41884f3',
+'0x8eda7227e90bb000000017a63db92ecb30','0x8eaf4d0178cce000000016f7c1d0a4e192','0x8e81ad314c0e98000000181343ef15ab45','0x8ebb581d04745000000017fa95375f7c73','0x8e9715b30364e8000000183b6efdd36cdc','0x8e904e90962e0800000016d6fc6d44312f',
+'0x8e79034d635020000000173674090244a2','0x8e65d740c61f98000000170301dafa6a4c','0x8e512f2f9ce2d000000019697fc47b53d8','0x8e65bab0cf778000000016fffc211e9265','0x8e652039614cf000000017b3f33f91620d','0x8e36afdec51600000000174719e7163879',
+'0x8e51221423897000000017562191da8fec','0x8e3295aeafa000000000183ef1aef4329c','0x8e426ef69258c0000000170f72d020dafc','0x8e29da392af6a0000000176a1324195568','0x8e34190ada9e4800000016f49641a174f5','0x8e3798d95418b8000000170ff080034d5f',
+'0x8e3335f4c0a0d000000016ec0b6bb752fd','0x8e45428261d3f000000017130ef0cd015c','0x8e37834db6ac10000000184e372f74fa65','0x8e1bae4833108000000016dbea604e801d','0x8e09a92cf6682000000017dc2d90bfd1a5','0x8e0a2d693a92e800000017a0a6d71ced4d',
+'0x8df6c9ca3dae18000000172ce8f591bed2','0x8e0d71d29b285800000017716acd99e0aa','0x8df9d455c19aa000000016e905433c1d47','0x8f5bed20fa860000000017355c9b821106','0x8f266fa9eab2f0000000186cd4d9e02c10','0x8ef13095b5b4180000001786135e324661',
+'0x8ef6906699a6200000001762e139577c02','0x8f02ea3365398000000016f893948cd650','0x8f1f570e311c9800000016f4e25b6cd741','0x8f1c02a3a425700000001718d36fa71d8e','0x8f27b702d63880000000172d6851bcf024','0x8f1aaf4a456e3000000016f5c39c8e7e21',
+'0x8ec35c03dfeec000000018571239779d2f','0x8ebfbfa7e3fdc000000018d2d6d4615847','0x8f0bde86c040a000000019038cdba1d33b','0x8f0e21de0febc000000016f3258507e3a1','0x8f135928748db0000000178fc8557d9986','0x8f00dc035837f0000000171f12bea02a2f',
+'0x8f16cc5c843f4000000016f34a46b9bfd2','0x8f06eb1be163f0000000174a0e88a5a996','0x8f01291d7cdd88000000170b38307d1989','0x8efbb5437402a000000017650c03e1d289','0x8f0eb037bcb1c800000016e8d2350355a5','0x8eed71b78c5610000000190ec73b7a76c8',
+'0x8eecb5cb5ed67800000016e6dfaba7fe7c','0x8eeb420919b8d0000000174fae9dc9fd73','0x8f03fec82032d000000016ff1a5c630ab5','0x8f124f7f40ed9000000016fd40d10b2a13','0x8f0b90c6c0018000000018280147dcaac1','0x8f0f653643e2b0000000171680714d3c70',
+'0x8efecb23d551b000000016e5eb177c3b6a','0x8f151e5916a86000000016f26e25a1553c','0x8ee85137701140000000170deeb2aaeb36','0x8ef0daf272c070000000170fede732e571','0x8edc52bba421c000000017311febe681ac','0x8eb2150ae239880000001716a115aa6b1b',
+'0x8eb37193c7099000000016fe5a33a9a9cd','0x8ec04ccf66cb80000000174c4c3620dc05','0x8ecc86ce464108000000174a0336c0e070','0x8ea452416069a80000001733ea95bff314','0x8eb8cc50c0764000000016ed93c77b3c17','0x8ec1a525f97df000000017cd1ea35a7b4c',
+'0x8ed2cf1d414ee8000000172ab0f99f9185','0x8ec3a699e27cc0000000191dbe5c8401eb','0x8ec3c0d11be04000000017038252cf0837','0x8e8b26f5242b7000000017650c14213b78','0x8ea3e87fa59000000000170245af40b355','0x8e79cd7b6caa5000000016e97eb6361066',
+'0x8ea191c62491c800000017740509f37b25','0x8cb89c074348200000001b80cb62788ece','0x8cc1e715e1c74000000016f0a0b60382f8','0x8ceb158edf36e000000016fdf6561a01ec','0x8ceff7a54efc580000001735c56f714859','0x8cd49cf005c860000000170ad549a51fbd',
+'0x8c1e31bd6bfd800000002d3fac08f97eac','0x8e39ade84b31a80000001733762e68ab77','0x8e3399cb6b9f4800000016f9ad8214dfaf','0x8e265be72902c00000001749f8dd36f5ce','0x8e3c0cb055165800000016f1483545bfab','0x8e44d45dc039c800000017065292aa59e2',
+'0x8e1ccccf16243000000017d731ac34f1de','0x8e0d70b4a7b2700000001712e7a0206f68','0x8e29f69b74c2700000001719472721dc61','0x8e0d0a2bd626080000001712a4a20948b3','0x8dea74f67a0ce8000000174328a5e659ee','0x8dda6ead021ce00000001710bc681e8e5b',
+'0x8df144b42a55e00000001702fdd7dffef4','0x8ddd326868d74000000016fb809d6dc589','0x8dc5672feb0b100000001733c3bc020f42','0x8decf1a1992f700000001708034d6e70ec','0x8e0946176356e80000001703289d4e59dd','0x8e0023a2a3194000000016f7acef480e76',
+'0x8dde2a2e34a2a000000016f935a06e5d30','0x8df7a5355ff2d800000017263bee3dac61','0x8de64e72aaa750000000170f3fe87a6169','0x8dddb03ae4c138000000171254bf28b7a9','0x8df5e93c6f5740000000171ee2b9346618','0x8df290a8c416600000001709256e55de23',
+'0x8dddc3c21c073000000017412e67d310a9','0x8df23a3a0c86180000001718f1cd1eb5d3','0x8def88b85b8a00000000172c1dad5084ff','0x8df36a86fe22180000001723e72f800a08','0x8df4fb9103fc200000001740aee3cc7a00','0x8df5cb0b759cc0000000171ede4147bb32',
+'0x8df7f961a5a26000000017d00febc83e90','0x8dddda7a104f1800000018271a455e1e7e','0x8be096a7d251700000001717cce47a95e8','0x8bcc07d04f5350000000170f1437db365c','0x8bbe6c27bbeab0000000174e66de156afc','0x8bb1f50ee3b6c8000000171ba476e70486',
+'0x8bc1767cafdae0000000170b29c55be38a','0x8bb6db5b6d3e4000000016facaaaf43668','0x8bbda5349400d0000000171a40651e24c6','0x8bb429a8a3d3f00000001810ed7e7eae83','0x8b7dd531587510000000175020b2b679fd','0x8b46e39a5b52900000001703c72ffffa83',
+'0x8b5b569e149a880000001757ec1cd847da','0x8b888c09b2b2880000001708ee402236ce','0x8b81a20b5c177000000016f9ed9e769fb6','0x8b6a34e75d69b8000000173cc9f5e6b075','0x8b7e9683799ef000000016f402458f2718','0x8b5a7596c279a00000001704835e046cff',
+'0x8b3c19e69b3b800000001733f278da592a','0x8b23ce8ca158280000001700dc2b2ccd7c','0x8b2cfce349dce8000000171e6eaff0b3bf','0x8b28fb1aaf5a4000000016fe75013f0d74','0x8b1a194f6a83d00000001717784ce8a437','0x8b1d2b25c7ffc800000016f6480b3b6a17',
+'0x8af87a46045ae0000000170f9010128c3d','0x8add170c4200f000000017036857b354e7','0x8acfa4d8fffa5800000016fe74f7dd6e94','0x8ad2d3607c9b90000000170d24960c9219','0x8b3fc73ad55f6000000017103bf98737fe','0x8b1af09e15b6f800000017056b2c103923',
+'0x8b2f1adef0a1b000000017166914124ed8','0x8b04dadea9b5e000000017311f51b18199','0x8aff2f68bda54000000016f6c234a8f441','0x8aff88584ad0500000001723a794312758','0x8af3873d20b4b000000017729434d4b89f','0x8af4aa183544580000001758274a60b752',
+'0x8aed01d8cf42f800000019117ce8cea037','0x8ae8e784809cb8000000170d2ef0d3155a','0x8acffa809783f00000001730c37ea69d7f','0x8ac5f7849041e8000000173db765ab3b5e','0x8aab273e930150000000170e5031cd89f1','0x8aa14488887e30000000180511b0672ac8',
+'0x8aac28eafdcdd000000016fc5a473e8f00','0x8a958e1e3ff0f8000000174acb6e05d95b','0x8aacbf6343b53000000017293b2d8af860','0x8a8a8cfd28a0600000001719a34880f066','0x8a6134920ff468000000172c59c48fbc55','0x8a599c9892ebb800000016ff9e7496fe67',
+'0x8a4bb8526a5000000000171bcd6f7425e3','0x8a4bb8526a5000000000171bcd6f7425e3','0x8a4bb8526a5000000000171bcd6f7425e3','0x8a472b3c1f4580000000174130710f6062','0x8a0d788357e81000000017f06c5c7ff466','0x89e167ecc16bc80000001731b149872d72',
+'0x89e4239b157590000000176cb6b9167206','0x89e87db92629e0000000176fdadbe2c414','0x89eb7387bc83f00000001767a9f27aa2a5','0x89e5d8245c377000000017427b06e02a1f','0x89b460cd8674400000001765ae2ad3b915','0x89bcb22178b880000000172e40c5e96597',
+'0x89d284e5e2c1f000000017556c6a529a09','0x89df787294d218000000183e26146a3b2f','0x89cd96162c4700000000184ab388884a4f','0x89f158caa99b40000000171eee6c0c7e97','0x8a0212acd5c010000000172fe3acad33e5','0x8a077ca56192e800000017116b108c9fde',
+'0x8a508b3bc9a3e80000001723ddd2b3e8e9','0x8a510d107968e00000001716e9c83cb31c','0x8a5a23ac8eba30000000174fe952f88209','0x8a66bce4501560000000172cb83b22be06','0x8a6efcb712f5f800000017209b1a6e7cbd','0x8a53ebc4a067f000000016ff37ed00d9e9',
+'0x8a4f537cf0564000000017db1accbc3ad7','0x8a3c8e1dead7f8000000174bd0de30e0a9','0x8a45682cacce980000001703ae2342e5c9','0x8a3dcbdcd81bc00000001752c912d88ed7','0x8a352405856930000000176ec86114da95','0x8a326e99e42eb000000017278e99d4b74f',
+'0x8a36901e030500000000173abb277f753c','0x8a362a23958e5800000017649a9606da86','0x8a34873570b4c80000001734449d02be78','0x8a29d363952e40000000170d1b31edbc99','0x8a167fdd578e500000001733f8f3a0d5fe','0x8a2364663ea3c0000000170e4a99113446',
+'0x89d383151164b0000000180ad9b034ae0c','0x89fa172981c5c000000017263e7813ecd7','0x89e818b9028f48000000173e379623bb28','0x89eb595b2565a000000017b36d10caacb6','0x89d79f98d42a7000000016f9b0db5e047c','0x89ec92c1074bd000000016fcc153873f5b',
+'0x89ceb29877da2000000016fe0b16770748','0x89f640280cfae0000000170a2536aaf312','0x89d812c8bdd8a800000017070c166ebe0d','0x89d3a995944c9800000017dad1fe8a5f3b','0x89c73c467994200000001712187c0736fb','0x89c445d668f118000000173e641c53e817',
+'0x89c84a84e7197800000017169651dba549','0x89c744ff1050380000001708e0a6e89cad','0x89cb256795fe50000000171696c1bf49a8','0x89d313d363190000000016ffd874b0d94b','0x89ce667b1be178000000172d16bcf48a98','0x89c68a47d8e8a000000016fdf371ea5ebc',
+'0x89b69b74c2db2000000017005871ec3ad3','0x89a2da66511a30000000170b70a105aa86','0x89ab0999636fe0000000170ca89a6db53e','0x89a8fc95227d80000000176ba2402d6d41','0x89b7896c4d09580000001721f9b159e7aa','0x89b194e279ba40000000172f7d3b7513a4',
+'0x89d11a2683c040000000171cf8b63da10e','0x89e1addc1f098000000017057b558d5695','0x89dd977373cca0000000170c3ce1f81757','0x89d83bb1286ce00000001765ffa3003cd9','0x89c3afedbc71900000001a8902f819c2b1','0x89cd2d664096f0000000176d44cd764bb1',
+'0x89c65dd5239c0000000019401f5cf1d968','0x8992cdc10126400000001745636ee115c9','0x89cad49f6041280000001727df0befb38a','0x89c8c42eb028c0000000187ec6fe620759','0x89d5f03ec86d980000001b59fc871fa469','0x89c1811c1dd020000000173c834b7f5e38',
+'0x89c88a8254e4c0000000181d252da3c64d','0x89cac134894ee000000017199c55cb5023','0x89bc2cc9429d800000001707a49d606fbd','0x89cc352f2e8700000000182fe16096eb3d','0x89ba9c7408f460000000172d9ce202b3f2','0x89cb2ff82cf2d800000018a3469b41662b',
+'0x89cd9ec42cbbe800000018b0baf770cadc','0x89d0992f0e64e800000017ac90b86f6459','0x89b1311b74f5e00000001796139b02cb8e','0x89b467e18f464000000017495fa2b4d44e','0x895e34503e25c000000017d90f957e36f6','0x891dfdcad0e5e0000000189e69f5cc4ef1',
+'0x8922370ded93c000000018eff7bf41912d','0x88ef79446d42200000001855ad03224894','0x88f15368aee620000000170d11db2ea764','0x8945848519be900000001762872fe7f1db','0x892c9b6a74a040000000172a695e330f5e','0x894426d5c814180000001781bdca081294',
+'0x89516711a3ff80000000178b4e57580750','0x894bbdafcebe300000001764508ddaa3fb','0x893f926133398000000018564f287f91f3','0x893d94832ab100000000171efcb86cea97','0x8905a13a0a89d800000025d5f42cb868a0','0x88fc497c4f22d0000000175698c86d7846',
+'0x89048362cedeb00000001753b2d2caf0d6','0x88c199878c59b0000000177720e1be5a8a','0x890f363242f24000000017d1910891cb10','0x890c7bf183634800000017d12c30a1a8ff','0x88dbbbc0f445400000001720bdfc062b40','0x88fad7394e98f8000000173a907f886bc6',
+'0x88e91c0106e21800000017ac2ae2e8ca9f','0x88e679fd553ec8000000175ba0b3228064','0x88c68efe8762e00000001803ebbc32ca38','0x88db8fc60bd830000000174945b363ebb7','0x88d6c5c51831d8000000170f7be20add8a','0x88b79f4dc7ece80000001711b6094a8e02',
+'0x88ccf294a2048000000017972fa4169a2e','0x887c3c62562dd0000000171ccee67bcb8d','0x887147ce0da2c0000000170d7e7c8c5795','0x88ca4f54479370000000170e5350d78bc6','0x88e73e37b2e4280000001709761d971c2a','0x88e998adde81f0000000177c92b7da501c',
+'0x88e2ecfe39f3f0000000170a89db129de1','0x88d3c94909fa20000000170778edd3946b','0x88c5ec8afabe300000001710fb3f219615','0x88c8790f7bbbd0000000171d65a6a81954','0x88dabc91227e0800000017bc7abc06803e','0x88ebcb22794ae8000000171744d1736ee6',
+'0x88ea934c385888000000170e9f97aabb9c','0x887fa692d74ae0000000170d6b69dfb651','0x88b7ce21745680000000176da55296cc48','0x88ab2d4bcd43d80000001716db81901a7e','0x88bac1b8c891600000001727fca0362b23','0x88a06e84298fe000000017e60fc6fb86a5',
+'0x88b12340bd565800000017734dc0a54510','0x88aad80725a5f0000000188883e63b568e','0x889cb99f9fe0c000000017397fcc5bae0a','0x8882323eb53de000000017211dfb82786f','0x8898645f5eeed0000000171a079f48785f','0x88a11fc44f7aa00000001717555d9da2b8',
+'0x88713c3828db58000000170f8a69d81421','0x889fccf001b8c000000017126dd9c1c97a','0x88a3e1c2aa79c0000000175a42cffc503b','0x88a10144fb81c800000018587fe2f2a443','0x888c5ca1bec7c0000000188a0ca4f45070','0x88af3d820c19400000001744b9b58fda9a',
+'0x88996dedded430000000170c1922aafa29','0x889a9a3e2da7a00000001710220818e99a','0x88a3fc157c2f28000000171159df479e5e','0x889d89da9c5858000000175905f93b7be4','0x88a8dc3546de30000000171191dfc370a8','0x884ebd818458b00000001793572fbd8368',
+'0x88878c2c1c90f0000000171840b6f3cd92','0x885b61b82614d0000000171d309bd88b60','0x8819a5313b6ee000000017f2424e4b7d78','0x882c79290e7168000000174c1a82e019b2','0x88643fc778cb100000001717165039e043','0x884d0df457afa0000000171cbc58e038c4',
+'0x8852b60e38d6f8000000179217b6d7b7cc','0x884a73ca6cea1800000017469e806ded87','0x883490199361380000001739f76d4fa2a2','0x87db7fd6f37be00000001753ce2675312e','0x88423d152a2fd000000017330849b6a08d','0x882ae5d3520a680000001755e5a08ddda8',
+'0x8816fc50ac6c40000000178765985bb159','0x883074aee5f760000000171c2be4e3a107','0x882cace9ff38580000001738d2806d2ff1','0x8827b29c8b3cd0000000174d1ca5a44c4e','0x88058f919cb0d0000000171b883560560a','0x87f7142ebf70d800000017180d1cc19253',
+'0x88054860cfeff0000000173bdd98c5a1a8','0x882b9432dfe2c00000001711805053e192','0x888637973d4b080000001725818720950e','0x888d39945910e00000001728400ac76d6f','0x888b4159d1fee000000017f6032aa6b6c2','0x887262c2226de00000001995a3cfc618b7',
+'0x8874fa525b8780000000174c77990e16f6','0x88802699a3b3b000000017a2bb66412e34','0x8886d94f28aab000000017b795adf15fa0','0x886960686b669800000017f62c0b4f5ff8','0x8884e55511f84800000017a86272a655d3','0x8884d4dc47c24800000018cec391afb5f3',
+'0x8861d94b26998800000019f05a864c970d','0x8863c43890ba7000000018be96054fa427','0x8848dff0c5c1a0000000173f4ea1798d80','0x884e35ce27ae680000001722d6c7e33f03','0x881d7a2695ab580000001758303a0a0f36','0x8834f7d6892d600000001746fd0c0ab4f2',
+'0x8802502a1ae0d8000000174b646c94551f','0x882802301eee80000000174ef37f01c7b9','0x883a77b98367480000001720f32ba0889f','0x880aa9aea174c800000017ccc576654660','0x8824f6162939a0000000192c242e3106d9','0x8820ac895720b0000000175be17c717c54',
+'0x881aa7b65c18e0000000173aad80ace5e3','0x882c5c81dfaf50000000174d96dd282cf0','0x881faaa25b2ba80000001746ed8131e7a0','0x882f03b282b350000000171faadcca0c81','0x880c866d6ffc580000001723dbf24266a5','0x882343535db508000000176bdabe79f880',
+'0x8810a5b04b954800000017278e019980fb','0x881312d3767c00000000171c38e3d3bcaf','0x87d0dcd99162d00000001743b5a8cd9192','0x87eb1d72a9cf40000000172563e749156a','0x87f12c6ed452a000000017140de770f313','0x87e26af0e4c1d00000001813b9fb408340',
+'0x87eae161419b90000000173b3600414c8a','0x87e9857889d7300000001724f7689426d6','0x87e167e92e85400000001717cf8f9daccb','0x87c00dc17770a00000001721d72d460d36','0x87d24fc4e1ede80000001737ad1e107c98','0x87ce52970cce40000000172a961720c5bb',
+'0x87dec28c85630800000017215155b91d5f','0x87d5867168a5200000001734c752866838','0x87c707f1b3f9a0000000172011e2026c72','0x87af2ec5babbd0000000173406e54ca6d1','0x87e785c7827408000000172292094c6105','0x87c3098a01b1b80000001724a2a149600e',
+'0x87bacb09d01cf000000017b75dae2e9401','0x87b90b0929b9b00000001795b77ee8bef5','0x87e90525b9f940000000172c108153e875','0x87c25a87e61990000000174120058533e2','0x875962b2425f90000000171e646c05858f','0x873b0557addef800000017423784d1ee7b',
+'0x8783edfc878a100000001723cd88f23f26','0x87a286f537deb0000000171abac052dafd','0x87a08fd726d680000000172d7906278143','0x87b6778f19a868000000172922ccf526b4','0x87b38f96e118d800000017305206dfef61','0x87a7118bb70c30000000171c1943e9bc7b',
+'0x878e85d2f8ff580000001726c366c6b7f0','0x879d10cd68d0b0000000173f1575dc3301','0x879ac02e21fff0000000177172ef427d3a','0x879b6866c1b568000000171cf5cebd2543','0x87aa2d1cabf8b8000000171d5adc48a29a','0x878dddc71df7b80000001720815b8e5afc',
+'0x878fc3cbcb5400000000172f1ead91f16c','0x87629bfbf30ee00000001728eb8883e501','0x87609471690c70000000172af3ce369efb','0x8756c73c05add0000000171e1b7384f764','0x875e88f60fdde0000000173954f8fef725','0x875fab8790ae2000000017567887ba1a12',
+'0x878b3867b138d8000000171cf463b2197d','0x875fa603fca708000000176f22ab499666','0x8759733b739790000000179ef845caa041','0x86f82c61e8a10000000021e0c405a32278','0x86ba091d00bc900000001863147a287152','0x86c88a6b47b5580000001ab31c476e5771',
+'0x8682251d01c3600000001a3c2a14779dcc','0x867b41ff7184580000001730944486b102','0x863317f3ae8f7000000018723f905d8487','0x85992dd06918a00000001bcadd46589b5d','0x8597848853bca000000017427aa47d79cb','0x85a4e90987dbb800000017645bf97728ff',
+'0x854085307619d000000018672d57034aeb','0x8586963aea5b9000000017548e67bc4922','0x85910f2c9e52f8000000174399386a3627','0x8541ab5624cd200000001732f317bca570','0x853efd65f042400000001745587b8e18f6','0x854951af86d688000000181e33801712c8',
+'0x851f384e46f2f00000001730be5065552c','0x8557d24380f2e00000001764034921c5b4','0x8553afc56a6e30000000173eeed2f74147','0x854beb89fd4d400000001878860e35cc31','0x855925da93d480000000175bb7f767573a','0x85500583939dc8000000174307ea4b33e8',
+'0x853f9acaf0a08800000017331c4d262b51','0x85586d93582c300000001723cc5006ffb3','0x853cdbd119bf4000000017317ab660959e','0x854566812a1f600000001733b3c7e11a4f','0x856117ba689298000000176c6b8a3d1401','0x85582f6e90e6500000001741d6f37e2c3b',
+'0x8559e9209e68b8000000173b08aebd2774','0x85154aa74de12000000017587ce2ca9cd6','0x851d2cb59aecd0000000172bb84e1db79c','0x8513e669fc5ea00000001727946cec4058','0x84f2ba145cd8100000001737f8c0c6c38a','0x84e4493675b7c0000000201d9ad06e21de',
+'0x84f33937123d8800000017488ac0747202','0x84d8a55b097e30000000173b6cb679a7de','0x849988a980f8180000001721746429d148','0x84c22e9105b7a8000000172520df9bd9f9','0x84d6d1eb775440000000172ed01018274c','0x84e7940fb01ca0000000175fdefa8558a2',
+'0x84f7464b7408f80000001741a51c1dd08d','0x84f114da6957e000000017595c30b60831','0x84ddab9c3ed0f800000017590faa517653','0x863fa81adcedd000000017df29ba9c1c96','0x86a76d326cf45800000017770604841dcb','0x86a3234912cf600000001729e02cdc2d0e',
+'0x86910d848c0c080000001760b7ea6243c6','0x8696fe7a05f280000000175f8179fcac55','0x86809e2bb218c0000000176313cf754bee','0x868d9aa6da524000000017a7b1bc520120','0x864e04396e625000000017b251ff31fb77','0x86717a052093400000001735ab232f617f',
+'0x8662615d0d34000000001773232f9e66a0','0x866339f98042080000001748f65dbf34ed','0x86609bdb8f5d68000000172a7c10e97df6','0x86600b027fa698000000172da9ffd7357d','0x86069a5eec4d9800000040a50da6691074','0x85fa84f8ceb840000000173d744ec56b64',
+'0x8619822c2ae410000000175d299b1b8790','0x8601e36c551ae8000000172f7583fe117a','0x860e29e851100000000017c78ba5b8918f','0x85e9b4cb4eb5f0000000174982e12bbd5f','0x85c4eba076e270000000179ad29688e77f','0x85a8e5ae1a56f000000019067639011687',
+'0x85b128b56d599800000017459749e9fb25','0x8570ad4474fa780000001805b1b6363bc2','0x85701aaba1bc50000000179540711194e6','0x856b29982a5d60000000173f1c90b70c14','0x856425905e52c000000017c9b3516c9b4c','0x8564f2be4756c8000000173d2e1a27880c',
+'0x854355e86ef8e000000017d5ff2580802f','0x84f66ce06081e80000001e850b7cd2659c','0x851d6e3add3a500000001757a8418e1d9f','0x85248c5ad2cd30000000175a2ac9b0f4e2','0x85272d5fea4eb800000017b8dd14187271','0x8514f74e1e1b600000001922499bf3ed54',
+'0x851d3abb5a448800000017840014014ef5','0x8507e9dcd5bbb00000001755b57d32a7bd','0x84e60ec34d1ae000000017a7546deabae3','0x84f06f70263fd000000017e10dc4bd0a02','0x851239e3876b00000000173d25e5186943','0x850bc3482f32f8000000173834d1a5ce93',
+'0x84f159d517fe900000001754e7b29c9fee','0x850940cebd15e800000017389045eabb57','0x84fcedb3b80010000000172afb1fdc4d66','0x84ebf60ad053a00000001743a4e2f6982d','0x84f622696113200000001746e0fd99912d','0x84ed36c0afacc80000001848d95ef6266f',
+'0x84c2e4c08d52000000001819abb472950f','0x84d72f9b3f43b0000000174457a4d31070','0x84ac3700d42bf0000000178878e903be78','0x84aef8ba277fc8000000179d6b836ce721','0x82f3500d533bc0000000178f234b10cc31','0x846f85b3c227a00000001743c64e47b2c6',
+'0x848363104ac900000000177c3d000ef00d','0x847f88546f8e3000000017f67f5cb5db5e','0x84692982514ca00000001751fa06f97093','0x845469ec2f9080000000174f4874f537e3','0x8427684dfeaa2000000017b30216238933','0x842f750052867800000017366ff3895472',
+'0x841746bf413a20000000188adb00fa725e','0x841de5f1eec0600000001749c40f9817ab','0x840660ee569e300000001782438b2f6015','0x83efb5a9ff1cc800000017ba33b6a78b26','0x83e72f34400600000000176ce997a55677','0x83dce3badf9f6000000017d001fd8d1870',
+'0x83c2df7bb469b00000001790d6d8d8093e','0x83e27c19cf9fa000000017725d2ea105a5','0x83c47a3d3f4f800000001737f7e15cf81b','0x83c36398fb851000000017635af0abda55','0x83d12afa0b12e800000017e49db69dce51','0x83d748ca436e0000000018218d1e9dfedb',
+'0x83cfda5d758a38000000173d5b10e2a118','0x83c99271fa610000000017e199fcb121ac','0x83b35b289fe4e80000001751dc5895b531','0x83d54fa47b9290000000188726500029f5','0x83e452f864064000000018e06f757eeb3b','0x83dd84e5fdda0000000017ac5e76040692',
+'0x83d8e27c974a800000001749cb561c80bf','0x83d756f46158d00000001ed6095f2a26ab','0x83d77ebb642c480000001739f9fdee8dba','0x83c46c55003af0000000175b9d35dd3b54','0x837ee841891a30000000173d8538e984eb','0x838b6c5b26dbb800000017788b1f128dce',
+'0x837ce3bb284c20000000182356d85f13a6','0x8388e31964cc58000000180614bbb977d8','0x8362b95ed34a10000000176f7f8b08b483','0x83489afa3c2aa8000000173e01bc6aab3d','0x835dc9f5c9fa50000000175164ceb3405d','0x8360a0c54eb3d80000001789d8c14bb9b4',
+'0x8347c560216c68000000177c4465eb313f','0x833dc4769521b80000001760cef3bf0fb8','0x834343f9d4ace000000017347bc1faea0c','0x833793b56ff0900000001742fbbcee0767','0x831ca6962e4fc000000017b8a3dd2f7b19','0x8327866f83d16000000017432ff548c5cd',
+'0x8322478faee4f0000000176e0d1bd477da','0x82b194030417f00000007f0f7c6ec04458','0x82ad13099248d0000000176f48f0847107','0x82ebaaa4d745a000000017396b9a30cacb','0x82e56bd573f2b800000017800a46736a74','0x811db4e6000a2000000017bf5b0ca1e797',
+'0x82bfd865e89d18000000174f9c84fdd2a9','0x82db51ffc7b94000000017af8b1b49917b','0x82e0d25dd94530000000175bd088d15c38','0x82d32f414cd388000000174a84dee3f62e','0x82d36d9d870ef0000000174fb26672565d','0x82d0f7020e7768000000177aa39efa6bac',
+'0x82cfeadb391930000000174648847f87c0','0x829ef8412a968000000017583f3db05982','0x82b5068e3de330000000173a6113177592','0x82ade4d8a82ec00000001885fba63bd901','0x82bde2e616ed10000000174e1d284ebf31','0x82542f1924bd700000001773551457920e',
+'0x8227339bc3a5f000000019942724844612','0x825c844d0d83c0000000189fb9790623a9','0x825a5f08241820000000174109fc954e2b','0x823d9014813b900000001750b510cbe36a','0x8265bc3aaede3000000018588fe983fd19','0x8251c562345150000000176a01e17a0c87',
+'0x8266d740350dd0000000178d382cddec45','0x8254eb30e7eb4800000017435e229c6937','0x825c5cb3292960000000174f8f5aacaaed','0x823b6ec4f9ce3000000017bdd2d37aff63','0x82354c95ef2a780000001826ee20c4a703','0x822de07373d5a0000000178c247dca906a',
+'0x822ff3fbdcf500000000180ab262197dbd','0x821caae85dfa000000001850e823e67a95','0x82058aa069fc40000000174a96e6555df9','0x81ffa6dd5d98f00000001748ac41ceb815','0x81f83dc5443b2000000017e2bc679ce3d5','0x820f687a9491d800000017469ec1ef5a51',
+'0x81f5e15e3694f00000001757eafe0da4a0','0x82023dca6897e0000000175104c0de57b1','0x81fb6e8a695170000000175695829b4b3f','0x81ebbeb3af709000000017423b691b6c71','0x81d907b4cf40b000000024af5fbcd866ba','0x81de1ec429cb4800000018ee7bbd3fe23c',
+'0x81e3c54b40d26000000017955f8b20d45c','0x81cdf3cf60576000000017a7453ca72dad','0x81c5b591694090000000182e9e07893c48','0x81b564ca726ae8000000173eac31e77083','0x81bf409762b9d80000001783aeeb84bd18','0x81a4217d1a0e70000000173d81ce0a16dc',
+'0x818b345505fd5800000017681358e7daa8','0x81a3e85fb20ec000000017bffeb940d14c','0x81a0432d5374400000001742538e83e468','0x81a5d04faf4c10000000174ee4a600aa37','0x818d8ffbc5ade00000001754a690788b4f','0x81890f87c7c3900000001757732bbd6f0f',
+'0x8172d1bbf3b68000000017724b96ecd0ff','0x8170b71e31f928000000174f9c051b8462','0x8190716090ba2800000017b88820384c2c','0x8182e4048278c0000000174777e09cccbf','0x818a0302e66158000000174cbb62dd500a','0x81853fa04fd0600000001748340046ae68',
+'0x81758a4245c8b80000001743fe30c73092','0x8173b369057868000000174a94abf9ece7','0x817c0f0f8cf59800000017439ba3f0e3c4','0x816ee4fb9989300000001777a1899bc980','0x816785a6349c40000000178c4e7b657530','0x815a8417e2e7600000001865547d7b7b17',
+'0x7fae93a9bd84800000001751ccef9c1432','0x7fbb7c3ee2640400000017551c004eef18','0x7f9cc2760de5a80000001780631f8a5909','0x7fb8a35b1ea2f4000000175079c8ed493a','0x7faea53f15068800000017519dfd0537cc','0x7fa5879ffb4f6400000017693c1c0f788f',
+'0x7fa4ba83d751f4000000191c1e700a1815','0x7fa9f860718ec00000001741e01ab856a7','0x7f9a23b3d083c0000000175f5fd5615289','0x7f96223aeceeb80000001754b4b988634e','0x7f7d62e4d38200000000183608393e993e','0x7f641d4db8025000000018e9e8f43b6e83',
+'0x7f6fcc97bb9ebc00000017c531c47db3db','0x7f63c29e3438280000001750470183dfc7','0x7f968218528d780000001770677720bba5','0x7f852d3314a48c000000174acf631f445d','0x7f6aaba713e2cc0000001740ab8c1c2649','0x7f51446abc9a9c000000174e9371d9ed78',
+'0x7f861d4982a8a00000001756d6fd4659bc','0x7f8b2c05b08618000000175f9351d1a07e','0x7f7a08f2be6c6c0000001752a178346004','0x7f77153410df7c000000174a32696335e4','0x7f6c1c05d7cab000000017641a83eee940','0x7f641ed85012c400000017b2f5cb4261f6',
+'0x7f69df9280f4580000001744e7af3220f0','0x7f65838fd2fa180000001750f53bc805f9','0x7f65e3abefa66c000000175eb53bba49bb','0x7f3e8932d73aa4000000175f78aabb0ef1','0x7f37ee7a880e28000000177414200c7d60','0x7f43fa6225f5780000001746f6fc685d58',
+'0x7f3104a69c85900000001749da51f9c2d6','0x7f3c4956ac1ae4000000178548607ececa','0x7f5bae8a30ed38000000178d931718c6b7','0x7f600da17359b00000001787f7d57497c7','0x7f7965b91cadf40000001777cf55697304','0x7f7209b8d35190000000176439ffe27784',
+'0x7f74e965d5bfb4000000176affe7208164','0x7f6f34a0920ddc000000177ed2d9a2cdeb','0x7f5e6f7b198348000000178d936c3e5856','0x7f666c55cec47400000017786060d867e6','0x7f6580c3ef204400000017d2f99449d60a','0x7f5e0d0a3eac440000001a0eec00a61690',
+'0x7f4cd5f5618118000000175d0482add75e','0x7f36e5b80b6b780000001755ba27e676d4','0x7f2e9fa2e9b74c00000017f69f5f7a6e67','0x7f222971ace18c000000174f4068c65155','0x7f3938581ed54c0000001776f1a09dbed0','0x7f01a5fcffcda0000000179160fb8f20fe',
+'0x7f3440a157fdac000000177bb707cfef60','0x7f0f05eeca88f400000017b04206580ac3','0x7f03895924ec400000001784744addb68a','0x7f0a651ec68e14000000183ef5b4d139ff','0x7efc16f9c8b8ec0000001745f37c3b1563','0x7f04f58ff3d89c000000174ff7d78aeb12',
+'0x7ee091950a17d8000000174c94e7e0b9fd','0x7f049b323edf20000000179a8a41372856','0x7ee4ffa0468c70000000175173224775cf','0x7ef32247e197700000001762fd06344d48','0x7ee3ad8400a6b800000017ad873edce9fe','0x7ef9d6ef8e159c00000017968739a5e4d8',
+'0x7efd9e0f80b3f000000017478e78082c87','0x7ef3bcfc1c8b0c0000001786a811ce7ca9','0x7f08b4ae8bcd48000000175de63b2d8adf','0x7ef784ce5e0ebc000000176564fc41dfe6','0x7edfe7a8c92a2000000020d29057ad1678','0x7e9b5ce0ca21080000001758b59f91beb7',
+'0x7ea3fff84f3778000000175da3c5d9d9a4','0x7ee45ea1c438540000001761b487bbc85f','0x7ee1450dbcfeb4000000177efb590e6d53','0x7ee5532ca48eb0000000177e0f2aaba781','0x7eec6fa45a212c000000175d45a78f968e','0x7ef7817de2cfbc000000177eb849babaa9',
+'0x7ecce48ffb4d140000001a0ce40edf8de7','0x7ecce48ffb4d140000001a0ce40edf8de7','0x7ec3df910767880000001770d516fdfe68','0x7eb57f01bb707800000017d008f73e5961','0x7eb57f01bb707800000017d008f73e5961','0x7ec647fbffef54000000177e5230c66eec',
+'0x7eaff174af8a08000000184acb508c6bed','0x7eab47b5ab07500000001757ec4bf444b8','0x7eab47b5ab07500000001757ec4bf444b8','0x80402fa746b2400000001755c5b5411a26','0x803f447a5eda00000000175ed6e922a627','0x80400fd66a2068000000177d1ed2f30529',
+'0x80428682b2e5a000000017709a1e032952','0x802ece477a8f4800000017c8c19818a85b','0x8018ca7604d268000000175263d7dea9e3','0x7fe3f30089c264000000175e90032f0f09','0x7fbdf3ccb055ec00000017773df77d2921','0x80177fbb65b2a8000000179a4dfdd54dd5',
+'0x801dd3149dd690000000178ac6c8246e6d','0x80152fe185d0b0000000177a6de8ceb6f3','0x800289505870a800000017eaac7631021a','0x7fb8f76360dcb000000017dacb8ec84989','0x7fcb73f3732fa4000000178351e3ba1617','0x7fe7994502178c000000176f2ff3be1343',
+'0x7fada344b41d5c00000017853999e7e84f','0x7f752205618280000000175b2078fcdb50','0x7f7447b028ae80000000177599bbae2509','0x7f64fafb521918000000176bf083093cf0','0x7f6a6208370270000000177713abb6dd52','0x7f6a6208370270000000177713abb6dd52',
+'0x7f25572ea19e380000001770f79ee39401','0x7f3587f2e532b4000000174dcff15c5f6c','0x7eba299acec4d800000017622f6b1856d4','0x7ef253656ef83c0000001761ff141be9aa','0x7efd48719b21140000001761929bcf785f','0x7ebdded3be640c00000017676c2f718ebd',
+'0x7ee04a81877f5c00000017bed40836e8ca','0x7ed5665d620a1400000017945ab42ba18f','0x7edd2c3b77c768000000176bba30613027','0x7ee866982c1954000000176593522e893b','0x7ef0934a25d5f80000001786e3d4a698c5','0x7eec2557f2e7f400000017625a3376b7b9',
+'0x7ee588d73b77340000001791ce69c386d1','0x7eedb5e3fd82c8000000180279ad7f63b2','0x7efa410e4b1bfc00000018118a872dbe49','0x7ec353ce44892c00000017a8a25cb8ba46','0x7f099206c821d400000018140bf1f3113d','0x7efd8c60d410dc00000017afb6f27fac80',
+'0x7ecf8d8447b9200000001772a47bd2d54e','0x7eebf984fe3b68000000176ff01ca6bcf4','0x7ef028b653533c00000018eb350e4e95e9','0x7ef75f3ba8b24c00000017a0d597c0f651','0x7ef354a978281c00000017a721eb220079','0x7ef4d24310b45400000017c950078850ac',
+'0x7ef9ce0bd98d3800000017820964cd50a5','0x7f09c5fd41b9540000001861e25d68cea5','0x7f00f5c842ecb4000000177407e00a299d','0x7f018b3a8745580000001771aabe92bad7','0x7ef70f23e9390c000000175cbb8f3737c4','0x7edd89a612a3280000001787cbf58019d0',
+'0x7ee5ea6c9dbe2400000018a0ec3f220f08','0x7edf24e37d1300000000177a6701c39624','0x7eb5e34535432c000000176e593bda20ef','0x7ec2ffc37d9e3c000000177f89a7059490','0x7eb836bf1fa3d0000000176dfb61d45c6a','0x7eca3d248a76340000001883b9f2130f0d',
+'0x7eccd2ec0a6e3000000017d6e66c5b219f','0x7ec19b14efb6a400000017778be083cdd3','0x7eab5e640deb240000001771aeffadea95','0x7e9762c0449ad4000000178b1313ca759b','0x7e930cc8ea633c000000181d1083d01d60','0x7eb4598e5667bc0000001780b756b0c4bb',
+'0x7eafe94d6f38d000000017a8de2adfcc0e','0x7ea84f724a839000000017872934497017','0x7e89667b802d98000000175ba158e380eb','0x7e89def284ab90000000185aa1b0e85b15','0x7e74a4ecbba5f400000017d9d7c65413ee','0x7e7a5917d6b5140000001779c0fbbc7a4f',
+'0x7e40a7bd365bd40000001929391a0929f7','0x7e44e19bf5b330000000176d7e451f8c76','0x7e52a69fb2b094000000177435edb21221','0x7e75f6ee7aba3c000000179efe6a36f1db','0x7e4a7b351a8f24000000188e3f2ae26f2b','0x7e499aa7ffb4e000000018965ac8151e1e',
+'0x7dfa510e19c4f000000018e3ee7ecccb89','0x7dfa510e19c4f000000018e3ee7ecccb89','0x7e167d495e87d80000001791ee9ef4e037','0x7e0978cfc97f5800000019e0e2d28c4c9a','0x7e19da29dd308400000017789e0d8ddfcb','0x7e14756ea3b3dc0000001777cb3ff46660',
+'0x7dfe5a090e971400000017bbec945e193a','0x7dc40f9e8a14d800000019106b51bc8e53','0x7d6e11cf6a418c000000192712e7fd2f5f','0x7d3189addda1e40000001d621b6ed9ca47','0x7ce0ca8f976f200000001939c6e1ca970d','0x7c976128c017fc00000019e96853b9e301',
+'0x7c60b9b4073538000000193b0ac6029bba','0x7c60b9b4073538000000193b0ac6029bba','0x7beab3a13a48a000000017b1487ffe5ba4','0x7bd62ae4514dd000000018ab9c2495d5ef','0x7be86b1511373400000017bf3262aa1122','0x7bd3b52a21111c0000001785626b49c24e',
+'0x7bd0ebb5ca0e0400000018a5c127886968','0x7ba2f40a57e95c00000017a184d800f8e2','0x7bad287585d1c40000001b66c41e4d9b39','0x7ba3b7eb58012c00000018329cd1a6d6cd','0x7a15cea902b4cc0000002dd00a453c1366','0x7a15cea902b4cc0000002dd00a453c1366',
+'0x79f5c4ae149028000000178c567185d140','0x79e9e7841acfa800000018e26162f96c52','0x79d8f4008a0da4000000177a7b88675062','0x79cf6c88da35f000000017b6e21ae0eded','0x79a6273c5eb6c80000001770414cef5483','0x79d4cea7b375dc000000178688b257e834',
+'0x79ceca6061c8bc0000001804d8f08df95f','0x79956c51083cb8000000192a42f049a862','0x79c496b2904d8c000000181e41018ea12b','0x79ba49e4fd0fe400000017bfce608fdc49','0x7984658365e6c000000017783169fea047','0x79cf18f27c5cc400000018171fc14200a7',
+'0x79d711ad1e520800000018186499dab7e9','0x79d5a2e999e94800000017ca01fb94e21a','0x799fdea487fad800000017a68e55a72b26','0x799fdea487fad800000017a68e55a72b26','0x79884f05e53aec000000188e222a1fc512','0x79884f05e53aec000000188e222a1fc512',
+'0x796bc0615f3c8400000017ab17ee71d8bc','0x79509dc0aa8d20000000182f40e617c434','0x796717cc5e3ad400000018227564d078b8','0x796717cc5e3ad400000018227564d078b8','0xffc00a665302e000000018866c662bf6e9','0xffe720da359e9000000017ad13182dfc26',
+'0xffe720da359e9000000017ad13182dfc26','0xffb8fc705a1a8000000018516284c2d54b','0x1d377afdbc8e40000000017d5c37c135842','0x1d377afdbc8e40000000017d5c37c135842','0x1e4b5672cc5890000000017f55eb999908e','0x1e9331fa69da1400000001859d7e31549b3',
+'0x1e90b8334a0031000000017b01a0db0a6b6','0x1e8eb3480b9adb000000017b248926d8946','0x1e8d50b4d1e7cc00000001792d4ff769a96','0x1e8d50b4d1e7cc00000001792d4ff769a96','0x1e8a2e752f1b9500000001780dbf7751ee1','0x1e8894ca927836000000017b3fba66f4c39',
+'0x1e8931ccb8ca9b000000017a304db0753ab','0x1e8907ae6a5776000000017740a84cfb148','0x1e884d68aeec4200000001780064c9b0d67','0x1e8661daa903e5000000020eeba4c7227cc','0x1e8504dd517c90000000017a80197d7dda6','0x1e8504dd517c90000000017a80197d7dda6',
+'0x1e7a678f9d8823000000019fa1e38418ada','0x1e906ef986f23b000000017cd010ca42ef5','0x1e8a60eee3ef690000000177d916693c906','0x1e8a60eee3ef690000000177d916693c906','0x1e88ebd75393a5000000017a89a1a735708','0x1e88411900691e000000017972aa623a483',
+'0x1e875afd28f37d0000000181a46747747dc','0x1e875afd28f37d0000000181a46747747dc','0x1e87d421a2625e00000001786519247ca65','0x1e87443858fbf90000000179a660ec2788a','0x1e86b21a54241f00000001883550112ce0e','0x1e85e92dccc6c4000000017d3726e03cc30',
+'0x1e85b8619a4851000000018dd76d187b1cf','0x1e854a6906f5200000000179492d61b3931','0x1e844f2368623a0000000185c160241eb48','0x1e82ab2a281654000000017b5971a2c423d','0x1e83b0a1aa927c0000000179488ec04876b','0x1e83b0a1aa927c0000000179488ec04876b',
+'0x2661bacfcc03ca000000019cd2f2e71766c','0x2663e655a8e594000000017caa1bd638846','0x266215b87555420000000187cf8f678fbb3','0x266297e5fb81a200000001795eb4f35241c','0x2661bc6d6ae7740000000179db0d6636c93','0x266165194143e40000000188cd03449620f',
+'0x2660222654b5b800000001903bb4ec702f1','0x265d0d42861da000000001a2df50807d75a','0x265c1f87922ee4000000017e6775884d765','0x265d1bd3d6f61c0000000178a31f7e221a1','0x265c0516f536480000000186524fd0f95fd','0x2658b09a8c730c00000001a7089e875a8ed',
+'0x2657cea33a5466000000017fa6b6c3dcf4d','0x265793984c82c6000000017bff96f863fdc','0x265698757e7a94000000017b4f122fcce7e','0x265698757e7a94000000017b4f122fcce7e','0x2652d68f69dad400000001786f07a778e09','0x2652d68f69dad400000001786f07a778e09',
+'0x2651ab228632300000000178e0d79832a27','0x2651ab228632300000000178e0d79832a27','0x264ce9c0082f7e000000018958d89cf3e28','0x264ca1bab8013000000001df78f4d30b8cc','0x264b673692ef5400000001dec35a050926d','0x2649226f59ae3c0000000178778e0bde0c8',
+'0x2649226f59ae3c0000000178778e0bde0c8','0x264ac470664c84000000018583fae28aa06','0x2649f6f8bd06fc000000017a33c28584181','0x264882be245e6c000000019c7a40ed93a3a','0x2646ba1abdbe0c0000000187fd70bf2222f','0x2647e54afc74ac000000017cff344dcae2d',
+'0x2646ed533114800000000179b140058ca6b','0x26465bdaa8c0f2000000017b896ab41906e','0x26465bdaa8c0f2000000017b896ab41906e','0x2644c5e9b1eb420000000191543da7ba25d','0x26441507d192ac000000017ecc35c199975','0x2642abc0be879000000001820846ae6dcb8',
+'0x2642abc0be879000000001820846ae6dcb8','0x263ecec7597e3c000000017d4c569b2f7d3','0x263fbb9ee7359200000001aa45c8b3ecd81','0x263eb8a2b10f48000000017a54eb1c42d40','0x263e2c992104f8000000017df8f6af66e11','0x263e2222e5dccc0000000179f4f5f911e28',
+'0x263e21b2a4bec8000000017e4e8c2119840','0x263e7a51201f6a000000017cbae8675b6b9','0x263e7a51201f6a000000017cbae8675b6b9','0x263d0651e651b40000000182286fb87ff66','0x263ba9f07ac360000000017bc384149724a','0x263ba9f07ac360000000017bc384149724a',
+'0x2637b02d9f4c30000000017cd61db5db998','0x2636455f7dd290000000018f74ce641f376','0x2635eadab2092c0000000188b893b25a152','0x263455e8961f3200000001796609e21da69','0x263448af1a7c3400000001793d94e5a286d','0x26335462277c78000000017ba5ee7e9168a',
+'0x2632f083e6cae0000000017c7f8732a881e','0x2632bbd84534a40000000179d6c54bde47e','0x26331ae3df94ac0000000188a877e6a9f31','0x26321e0c054b40000000017aa5c8481a5fb','0x26323c5875fa82000000018d1d262cf00af','0x26324bb2c4a45400000001799718ea704fd',
+'0x2632273ccf91d4000000017b66903f03196','0x2630f97106b69400000001797e967424e07','0x26302a09c9961a000000017b38100d05e40','0x263046a2a1883c000000017c06bab695fe3','0x262f9f5a4403dc00000001838af50641434','0x26306548bb52cc0000000183892135605a3',
+'0x262fbeeea217b800000001947da6727ad13','0x262fe92fd615d000000001822d16524b480','0x262fbae632470400000001793fb22ededdc','0x262ef63287fcc0000000017986eba5ca92e','0x262d212940521e00000001b0cfdf928815d','0x262d353c35565000000001798a368529624',
+'0x262bca7be4645c000000017c7960f50cf71','0x262c1cc337bd04000000017acd42da15bd5','0x262cadffe9a106000000017e2629e81046d','0x262bcce11c11da000000018222916b8ea66','0x262a0356a8f62c000000017dcdb4610b2cf','0x2629d29e5dc01c000000017a2e28b499a17',
+'0x2629095cc96bb4000000017a35cb3d62cee','0x2628fc05de531c00000001791ad32cec095','0x2629ba5a18b1f4000000017bcdaf8cf32dd','0x26298ed59906c4000000017bc1b9f24d5e9','0x2628b5eda7d416000000017acb353bb58a8','0x26286337bb7c3c0000000179dfedf6f5c54',
+'0x2627f7df5a8f7a000000017a27bfffc646a','0x26272f772f1814000000017b9a2eb9348d2','0x2627ab300c3556000000017c19cff5d2178','0x26277a5949ffc60000000179e6dcfc8d967','0x26273b23646f400000000181d9202713aee','0x2626f3de2676b60000000190b738b56e203',
+'0x2626b22d2c4334000000017a4ff4d4a3c37','0x2625ddd696940000000001828d6dd4c2100','0x2625b101380980000000017aad8115a3d53','0x2624dcb4412358000000018a461fd1cda3e','0x262505ecae8ce40000000194b50ca752431','0x2623c770d2db480000000182bc5a6def808',
+'0x262480963593ba000000017d188cc6b29dc','0x2624271797ef6e0000000180b9504c201bf','0x2623ceb412385c000000017ad1c98134bf3','0x2622936f816168000000017d13dbefe1168','0x2624385e6d42cc000000017c7d5da4060ff','0x2623ce5cd95b200000000179d4c1f488744',
+'0x26232e593a2338000000017a7db342f968e','0x262319c3b5d394000000017b40e118d1e29','0x262268965003fe000000017c9064f2200a0','0x262238902ce4180000000185c10e0e49a3a','0x26206d6bb19004000000017ee19d3ded93c','0x261db745f613dc000000019e18242afb93d',
+'0x261e840252f0c4000000017dd053476f9ae','0x261e2bf0979a440000000180c9f8b6380e1','0x261f1ff5876af8000000017a58fe56c273a','0x261e483d946312000000017de32ef994479','0x261dc37ffc361c000000017a43f65088793','0x261e3d23642c02000000017cbbdca8fc26e',
+'0x261e5cbbc4cff800000001816ee7c13fd90','0x261e04b4a80c5e000000018e81aff6c0bf4','0x261cfeeb67c25c000000017e28f59e40368','0x261c2102940d9800000001824d03dc2230c','0x261b4f96cfef54000000017acf440b03a5f','0x261b4f96cfef54000000017acf440b03a5f',
+'0x261b5d060256900000000179d214cc203fd','0x261a04dacbf574000000017ad4486341df3','0x261b910615bae800000001799002d29de4b','0x261ba8db0f62f8000000017eba17eefb7c5','0x261aecbebfdda4000000017bd6ea83c065a','0x2619dd2c153fa000000001a4ea087d1a572',
+'0x2619c4e26822e0000000017ff303af20519','0x261a39956abad8000000017fb50185b9a86','0x261a5e3ca68ed8000000017ac3e9b36d605','0x26195cbdd75244000000017e51c488beb48','0x261909c7680958000000017ca98959e23a6','0x2618942df4f3b4000000017f8db1ac219dc',
+'0x26162f6ad3be2c000000017ca844e45a18f','0x261625785830a00000000214c768a093eec','0x26004ff5298dbc0000000284e72fb7803a4','0x260038badd5c00000000017d12ed902ebcc','0x25fe6180a3f5bc000000017ecd89226886a','0x25fe2c59b42bae000000017dd7ea2640fdb',
+'0x25fe884d1751d400000001817cc560ab057','0x25fc0def3404e40000000181b2fca729c66','0x25fad95814db700000000180ae589054222','0x25fa43da2f0200000000017dbc72924b15e','0x25fb36fa58af80000000017c829dad31863','0x25facd8450bacc000000017d5f5f689df57',
+'0x25fa9db92706e80000000182b10b944a173','0x25fa26ece8fb46000000017f514cebcd1f1','0x25fa64adccb0c4000000017bfbd2c3d7b87','0x25fa9f6423e360000000017cde50b2524d4','0x25fa8acaf88a84000000017ae62df8ae732','0x25f855a6610f64000000018bcf9e65c7c9a',
+'0x25fa43f72ff1c80000000180ccc4be40e1d','0x25f8c6ad93d10c0000000181fb5270e6841','0x25f929e80aeb8c000000017aef7a02017f3','0x25f8d56248113e000000017aa747cee05e4','0x25f8d56248113e000000017aa747cee05e4','0x25f88088cd1cf4000000018091d50ef389f',
+'0x25f7bd3562a118000000017f80e34457a90','0x25f7c2ab7e119e00000001ab4a4628dc89f','0x25f749555458da000000017a0068b752b01','0x25f6bad473631c000000017d830105efc3c','0x25f689d7e97a960000000183a08f535f1e8','0x25f654bcbea92a000000017d48c3c746a2e',
+'0x25f6ad62d446d4000000017fd71efdc4ac5','0x25f64c72dab0c0000000017c4d36533118f','0x25f5e52c067d2e0000000181220ebce3900','0x25f519141e9014000000017fe98310c4d93','0x25f55fa33d3490000000017c9afd4d141ce','0x25f31060e41ada000000017bbc8b4afb949',
+'0x25f2a105345b2200000001c3f198fa0d1e4','0x25f13ce7a69cd4000000017e7e1447e582a','0x25f26840bb7270000000017b12864635120','0x25f1e524c28cbc00000001890a6f42e658b','0x25f2007f3f4344000000017be7f25ffc0bc','0x25f1485b35ecda000000017f6cec16a5b10',
+'0x25f0d6befce704000000017b740bb022ee0','0x25f0855e9fddfe000000017c6c3b40dc8e2','0x25f038f8502b48000000017cb5eb499bf2d','0x25f067e9e19124000000017a14b9d20f4ef','0x25f010e5a80dfc000000017e58145ba4128','0x25ede3d0fa19a0000000017fc953b4a9a1f',
+'0x25efcc1f5b25de000000017b4b3e5cf9b43','0x25eef264b2206e000000017cfea267ad758','0x25ee38def545c6000000018305355abe4c5','0x25eecec77f44c4000000018241d75648678','0x25ee75db17e8a000000001aafc1e2111d9c','0x25ee46cc11a276000000017cf87c1da40b1',
+'0x25ed1852fd2a8e000000017ca426c76c7e5','0x25eda507d64598000000017a0fc7b1b45e3','0x25eb90b8ab338e000000017b3e25783d93c','0x25eab70bfb89280000000187218ee6bf634','0x25eb47152fae4c000000018445236d197a6','0x25ea9c1478059c00000001b8bfc581b5072',
+'0x25ea9c1478059c00000001b8bfc581b5072','0x25ea5aa0a47a10000000017bcda7a40a041','0x25ea4bb4366b76000000017b08ce0deb15b','0x25ea4bb4366b76000000017b08ce0deb15b','0x25e888a6dec824000000017d2b4e51504bc','0x25e8bf1809f41c0000000179f0111ac6fec',
+'0x25e8967ee8b764000000017de80039e82d6','0x25e765734eeffa000000018148e0578e423','0x25e631591f601a000000018b8a8ea54e9ed','0x25e5896f3715140000000186eba0aab36a5','0x25e574e4e8432c0000000195066bd0f38be','0x25e4ed320664b8000000017b83ca55410ee',
+'0x25e48a5cd39d1c0000000183c2f8d9b0ba1','0x25e245c9f09fc4000000018f287e8367a70','0x25e3bd8d44c02400000001866fdf1d7d8c7','0x25e3cb8d9a9560000000017d8193a5458cc','0x25e2ac34679424000000017bf50dae91aa8','0x25e2a50e95b0900000000180dc20616d95a',
+'0x25e12a5436fd78000000017a508dff96c9e','0x25e16a9a53cd72000000017b4db639e11e8','0x25e036190795c6000000018cef20b94b61b','0x25df9649dcb420000000017a858e062a17a','0x25df9ef98aa3d2000000017fdbed896b48e','0x25df53bf2f739e000000017ab539dcac77b',
+'0x25ddcd86c2b6ce000000017b346ffde9071','0x25dda7c3c49520000000017ca8f9c01ff32','0x25de13d81308720000000186ee1271748d0','0x25de9249e3a75c000000017bc5ae0cf72a4','0x25dd3203e29ba8000000017e32450e3b891','0x25deb15f7d3a20000000017a6757f4e58ef',
+'0x25dd8b0aad2596000000017d363cd83ddcb','0x25dd39f16d6994000000017b026dd6a458e','0x25dcb0f09e9610000000017bd4be8993c7f','0x25dcc0d7bb46f0000000017a668fd214397','0x25dc62e9d4410400000001850ee350e11da','0x25dd39f2675ad6000000017ad52d6f2bbf5',
+'0x25dcdef06844fc000000019d1bdedf64ea1','0x25dbf4536d2af6000000018e80e9ac87a0d','0x25dbbb7fe4ada8000000017ba38e28359cc','0x25d9f1562c53ea0000000186b0a5d111bea','0x25da9b4519a0ba000000018ba54a437f59c','0x25d9a1e422cf38000000017bd5791a97743',
+'0x25da8cf302ac20000000017b22a467a10b0','0x25d7348f8ab0a400000001a5fdf31ec0c35','0x25d71d14540dd0000000017c01b1c920cbf','0x25d276c1bb1040000000017ba7c3732c2fc','0x25d43e824ec45c000000017b1f45c839dc8','0x25d2b6027217c20000000180e801185e0d2',
+'0x25d1a445224cdc00000001daeb768e89668','0x25cafda2ec8bdc00000001b40e2b2cd0387','0x25caa1b09f0b6000000001870bfc99e3327','0x25c987d29fdef4000000018de232e81ab12','0x25ca7df6b385e8000000017d0ce9c0c438c','0x25ca3a07a54500000000017bb8637596821',
+'0x25ca30a5125e8c000000017a631b73a6c7f','0x25c9faa95c481e00000001960533a6f13f4','0x25c9c6915e7ca8000000017e853988a32df','0x25c94106d7aaa600000001a7db8ea1227bd','0x25c90110f28d5e000000017d31404b44ac8','0x25c867a8f34af2000000017eabe1683514b',
+'0x25c74fbb1f3f8600000001805fd11f91801','0x25c88e984b7e940000000184ad23d6c7d29','0x25c8da98141788000000017bd0d6c85a5ab','0x25c891584bff62000000017dc22de55a6e8','0x25c7cc9b9e6044000000017f8725715cfc0','0x25c7c5355b3bd8000000017cabe846cb4cb',
+'0x25c676aeb31dc60000000181855395f9319','0x25c57ffa6312ac000000018b915e412e118','0x25c358676b77d600000001f54691559d499','0x25c1c2e89e592000000001ae6187ba9c5dd','0x25c396cbc60f4c00000001820fabc9639b6','0x25c33a89b44558000000017f486bcbd85ea',
+'0x25c2f2f6575098000000017b11129f0436a','0x25c2a6159d298c000000018d6d95aa65fc2','0x25c22c75311ed4000000017d17a407a53aa','0x25c0baab695bfa000000018babc3911319c','0x25c17b1607ce740000000189cdf1bd2e473','0x25c18b1d53dfe8000000017fb478d76a6b8',
+'0x25c0ce2b077caa000000017f7a072f793a4','0x25c02c2b1bf99e0000000187ef02887664b','0x25bf608ba8d468000000017b97351f0ccc1','0x25bfdaceddeb620000000182aee28f3b7b1','0x25bda73005c26a0000000180f83d22eb390','0x25bfe54153e0be0000000180f10d883bc2c',
+'0x25bee978a6f338000000017f911a9e0091c','0x25bec2d42f0a50000000017d088d1e96175','0x25beb2a29a5214000000017b4c9a19418a6','0x25bdbed1d456e00000000182b4e2d824f58','0x25bd92a2eeffa20000000193a18070979b6','0x25bd07939be26000000001d09941bfaf49a',
+'0x25bd06a38312a0000000017cf9a5a5db76b','0x25bc3d1a0d49340000000187d0262174e2e','0x25bc3848a8b7a0000000017df3f8e62479f','0x25bbd1c7b5eba0000000017b1aea563e866','0x25bbad0c4e0136000000017f72e3ade70f2','0x25b6c0279db6a0000000019bfb66d85f14d',
+'0x25b6be65f8a1ba00000001a63e8ef3a99c1','0x25b2461b903b300000000237ca5cccf27f8','0x25ae4bfe3c0ae6000000019a6f6be9bff61','0x25ac73cf47847a000000017d1d2dfa64cdf','0x25a80c37c03a4a00000001991f8c1e1bcbf','0x259a39732df91600000002fd7f9c045254a',
+'0x2597e210dcfa7000000001995fc6fde28df','0x2599117817bd480000000182a54fc6c6747','0x259998cc3deb88000000017d5f1fe295a6c','0x2599c3eaea6f3c000000017d27bdc02ab95','0x2598f03b72bbc8000000017f81022f706d0','0x259619481d298c0000000184f6e99a953cb',
+'0x25971d5961551c000000017f97a7478eb90','0x2597335f738df0000000017d4e70a93e229','0x259666179f84ca000000017c12c9ab7e113','0x2595a4e0206eb40000000184dbfcfe299d6','0x2595afabb673c8000000017fc85505a9d71','0x259531262fe37e000000017bf9425a61f3f',
+'0x259508cc0897cc00000001861164c710e79','0x25956448156c84000000017b55d2aff6619','0x259537bfaed9ba000000017eb3c5583356e','0x2594a3084016c0000000018ca65f1c00316','0x25947454403b38000000018f56507a9ad94','0x259472d6798e1c000000017b6c0ec4d913a',
+'0x25946118fae7e0000000017e5d9da2bde82','0x2594610ea61844000000017bfbafe25dbf4','0x2593f3de4d86a60000000180667a4ec6119','0x25931725d9a284000000017e4195f0090c1','0x25933d412240a6000000017d23f6aba2ff3','0x2593000eb392b8000000017bd23b6872df0',
+'0x2591e5a5894260000000017b5d03114938b','0x25909becb6ec1a00000001e5fb209c899a8','0x259075b126a066000000017bd44e2a5bddd','0x258f8f39d9a39a00000001862c2837b405d','0x258e566e29047200000001aa3d993f545a0','0x258f35c99036f0000000017f351908731fc',
+'0x258f267cd46e3c000000017d2ad9e21ac61','0x258ec4f0f1abf400000001808ebbdeadd32','0x258c0959931e5a000000017d8b013d5fb3d','0x258b6bcc02fa0c000000017cadd87388ac1','0x258cf2b787642a000000017d1fdb9dacd05','0x258d5af5ce3988000000017d42a280aeb33',
+'0x258d21b9bac2e8000000017efc4ba9eb269','0x258c96af935830000000018c676570e03d4','0x258b7be0394aba00000001826ed916b84da','0x258c2217a82e6c000000017be7f5eda3cb5','0x258ca387a01820000000017b2b5745ce9c7','0x258c719b7aa0d0000000017b66adfdc818a',
+'0x258c84a30b5556000000017c2fb978f650d','0x258ce4244596e00000000183ff9ee75289d','0x258cbacafa83be000000017b673b593c903','0x258c297ddc5908000000018faac88d7801c','0x258c925ddd41ec0000000185f0f2bebda0e','0x258c5dff9878040000000183c18c7fc65fd',
+'0x258c225bade09800000001855011b66eace','0x258b97ad97d69c000000017c43a630809a6','0x258bb6017e1aa0000000017ba8babf92260','0x258bcfa780f052000000017b58c0fd9cdb4','0x258b5c90ab469200000001c131e2c65c073','0x258b5aa866d628000000017c07091a8fdc3',
+'0x258adaf3dedfc200000001807060111d677','0x258aba979fecac000000017b88add0bc4a5','0x2589e91f2fb670000000017ce2717a032a9','0x2589b8033376a0000000018c90d4e4a331a','0x2589db4a52d364000000017df84030e9a43','0x258a125b79f158000000017c64661744d47',
+'0x258aed008653840000000182685991d80b4','0x258ad8ffe521fe000000017daccf219e0e0','0x258a38844bbcb0000000017bf25e637f84c','0x25863e1146e4ca0000000353312d0f7245c','0x2586e83fec6e58000000017c7acc06560f4','0x258573da1cf484000000018327d50db4244',
+'0x25852f02fee9a2000000018ad43a0622058','0x2585a248731a86000000017d6d5e8afb082','0x25858a0a9aa93e0000000182ab5d0ebec83','0x2583ebd62802ac000000017d8a35b9e9ff9','0x258445dbb07912000000017e772ef93ede9','0x25b667ceb8584600000001823daa3602c69',
+'0x24cc24b646301e000000017e27789b1f430','0x24cbd452054d54000000017c246405bb4b5','0x24cc3e6dfe5ab0000000017eb339c717ced','0x24ccaa6d559be2000000017d03b0262c358','0x24d5efb936c2d4000000017f0640d984f7b','0x24d6842a70eaee000000017cbe7107469cb',
+'0x24d67a8f7caf2200000001873ef3588433a','0x24d6487a6e9074000000017cbf5950a0cbf','0x24d63b8b0bf9bc0000000181c8597f12f03','0x24d5f7a1294be2000000017dcdaeadd3c4d','0x24d607bfdf8906000000017e0ea32da3470','0x24d6026d54e374000000017c375df0e94de',
+'0x24d466a20a3fda000000018bc1cdc579e35','0x24d54b18e905bc000000017ed6aab2e682b','0x24d59ff6160450000000017b7be4e91bec9','0x24d524cfdccc32000000017ba23950a64cf','0x24d5b39af2d70e000000017b901070b2173','0x24d5aeee81a5c2000000017b7e7e4ba2b56',
+'0x24d3250237b832000000019a16220d60a67','0x24d2607095500c000000017f14dae22b3a1','0x24d2607095500c000000017f14dae22b3a1','0x24d2a607e27b62000000017d4ba29c19144','0x24cfb04a559f24000000017ce5bf6f29d11','0x24d1ed02eba42a000000017d03f2b0afa1d',
+'0x24d15932107b04000000017d9563a366ab6','0x24d161d6fcb5ae000000017bb8e8547e3a3','0x24d1172408b12c000000017d6a4233991ef','0x24d00321efd6f200000001826ca166bf3fe','0x24d0fb0048fc2000000001844532b412e4a','0x24d0ae610521f6000000017d744f3b65d76',
+'0x24cbd07f8c9f4800000004a882cdcfa8d5c','0x24cba90ea1d43c000000017c43226f057ba','0x24cba177750b5a000000017bd76f38a4439','0x24cba177750b5a000000017bd76f38a4439','0x24cbd1c4cf0f56000000017c664459e0106','0x24cb2d1aea75f2000000017da46b5a24e44',
+'0x24cb20ef2a8060000000017d74b85b7f48c','0x24ca5c814e9278000000017d5dc2b6c1634','0x24ca470f5e8fc2000000018019c4ba2407c','0x24c9f15fcbdb50000000017c97ea8e6ab9e','0x24ca37d974b872000000017e5a3d003325f','0x24c9fdff4ecce800000001879cfc52a9a1b',
+'0x24c9da8e7760e40000000181e78a923dc79','0x24c9b1aa6f09ae000000017d2020dac325f','0x24c9396894cc80000000017c091b18f672e','0x24c70ee656fac8000000017c15d12100ccf','0x24c4d52725cda0000000018f4f5cef73a12','0x24c33522106558000000017cd14075f9bca',
+'0x24c1fe67acf7ca00000001bd58358620f96','0x24c2681a1bbddc000000017c0470369f0b4','0x24c1b76a423d6c0000000181beaa4d24fe9','0x24c33209516d98000000017fabeeb84bddb','0x24c2bb9ac462e80000000189daf5b2d1e0a','0x24c2050ae5b0580000000189b93e292af14',
+'0x24c1f1c89426e4000000017f6552b355880','0x24c21729a4c79a000000017c743239fac6c','0x24c1b4ea84da9000000001830e30e864eb2','0x24c1acba02bc9a000000017c8f7883f2826','0x24c1a4bdabe990000000017f8ab35494c5b','0x24c140447f6ee8000000017cef8fc099320',
+'0x24c180a0dcb764000000017f079a37cfc4e','0x24c1a21aa4f398000000017dc27033a6810','0x24c1a21aa4f398000000017dc27033a6810','0x24c1e6597832b0000000017d367f4551b48','0x24c1e66e985824000000017ca5ef8152e21','0x24c1673eeb4b0800000001832f67efcaafb',
+'0x24c19039efdd14000000017cd8e9cbd9d69','0x24c151e731abd6000000017d111f482c093','0x24c0f0852a0698000000017d0627015bb99','0x24c14005ab1f2c000000017ceaa74abdff6','0x24c11bc8c9b7e8000000017eb1c0585f584','0x24c0ba2b7507b200000001821d246faf09f',
+'0x24c104fc0251f400000001820f25c977d15','0x24c0e75d20ae84000000017d90a3b829b68','0x24c0de9c67b2c4000000018cad68dfe7fd4','0x24bf457ba00dfe000000017cb8cb64e839b','0x24bfd609f3795c000000017c9fc451ff896','0x24bf71e0eed5dc000000017c556087d6f3c',
+'0x24bf67ce1eb298000000017f4ddf4f79d56','0x24c06f0adad438000000017e8c66ac8667b','0x24ab776e29d4d80000001062f89d93077c0','0x249f87c5b8474800000007d6c61d544a2c0','0x249e8cc753dac80000000181a5fdacb4b61','0x249f39942b6cee000000017e8a201cde25f',
+'0x24a0a63a92efa2000000017f6d4de3b8c6a','0x24a4111e720b2c000000017e1423eecbaa9','0x24a41926a00ef4000000017e26e942382c8','0x24a3f5f6a95e70000000017d6bc6374b579','0x24a3b7ab57a1bc000000019c16e4671d4e5','0x24a3a4e0cef600000000017ef5aff944601',
+'0x24a26b92386790000000017d63b68804751','0x24a32e98a2a33c000000017e98576d90dc7','0x24a356e51819340000000182fb8368c2c1c','0x24a32601b4f60e000000017fb3f746e3622','0x24a3197c4e5b5e000000017e2cfe26c2cd5','0x24a313485ba880000000017dc4eea4ad373',
+'0x24a21bf4957a3c000000018500372e0e892','0x24a25731705bb800000001803250c2890bc','0x24a299b2f61e38000000017d81a2e84d80b','0x24a2627ecdc990000000017efa751dd3440','0x24a2a8b11ad5ba000000017db1f7f7204e7','0x24a298cca47c8c000000017e79a4c6adf16','0x24a26578f22412000000017dce9e9848132','0x249f9b8fb89678000000017d5f29f2c975e','0x24a1ecdee0a4a4000000017eec590b710e5','0x24a1bee6b439fc000000017da567dda88d2','0x24a026b331a69a000000017d3928df8e9ad','0x24a13ac7a72b84000000017ea1e80ff3dc8','0x24a1081cd3204e000000017e4095e262452','0x24a07fcffe670600000001824a1f50ca02c','0x249ffd98bbde16000000017e98715ca4c04','0x249ffd09bba29400000001806a086924b45','0x249fa026fb71bc000000017f45dea2402a6','0x24a03b6a155a24000000017df51754a0b8f','0x249f5427f2fe0c0000000189f62e5671203','0x249eb43c8aca640000000188e38577594c0','0x249ecaa3f3d6a4000000017db6deb781004','0x249e48d1a61cfc000000017e6503f333df6','0x249e8969aad864000000017f467843e1da4','0x249e3eaee56cee000000017df8302b1cb47','0x249e058222ad74000000017eb012370e30c','0x249e1a04106d2a000000017e149c433a252','0x249caa34042af000000001b5639ea1a1588','0x249afb8801d96e000000019d6fa0677a7e0','0x2496a70f13ecbe00000001cc396e1bd60b2','0x2497101e4366f8000000018daefd05065b1','0x249636f47bbb040000000180ca3c2024994','0x24969125ee3d98000000017e2f6d85ce5c2','0x2496b7b425cc9000000001808a82d051d09','0x24963dd92bef040000000183abbfce3a0f5'].map(BigInt);
+function staticDailyData(chain){return chain==='eth'?DAILY_DATA_EHEX:DAILY_DATA_PHEX;}
+
+// Look up price from tables with nearest-day fallback for gaps
+function tablePrice(day,isPLS){
+  const map=isPLS?PHEX_MAP:EHEX_MAP;
+  if(map.has(day))return map.get(day);
+  // Search nearby days (±30) for gaps in data
+  for(let d=1;d<=30;d++){
+    if(map.has(day-d))return map.get(day-d);
+    if(map.has(day+d))return map.get(day+d);
+  }
+  return null;
+}
+
+// ── Price fetching — table lookup first, CoinGecko fallback for any gaps ──
+// For each (day, chain) pair we first check the static price tables (no network).
+// If a day is missing (table stale, or day not yet published by HEXDailyStats), we fall back
+// to CoinGecko's market_chart/range endpoint per chain. One request per chain covers all gaps
+// of that chain. Free-tier: 10-30 req/min, far more than we need (≤2 requests per analysis).
+// pbd is keyed by composite key "chain:day" to avoid collisions (eHEX day 100 ≠ pHEX day 100 — different prices).
+function pbdKey(day,chain){return(chain||'pls')+':'+day;}
+function priceForStake(s,day){
+  const k=pbdKey(day,s.chain||'pls');
+  if(pbd[k]!=null)return pbd[k];
+  // Last resort: use live price — better than showing nothing
+  const ch=s.chain||'pls';
+  if(livePrice[ch]>0)return livePrice[ch];
+  return null;
+}
+async function fetchPrices(stakes){
+  // Pass 1: static table lookup. Same-process, instant.
+  const reqs=new Set();
+  stakes.forEach(s=>{
+    if(s.lockedDay<=hexDay)reqs.add(pbdKey(s.lockedDay,s.chain));
+    if(s.unlockedDay>0)reqs.add(pbdKey(s.unlockedDay,s.chain));
+  });
+  reqs.forEach(k=>{
+    if(pbd[k]!=null)return;
+    const [chain,dStr]=k.split(':');
+    const day=Number(dStr);
+    // Ethereum chain → always use eHEX table.
+    // PulseChain → use pHEX table; pre-fork days (< PLS_DAY) shouldn't exist here, but fall back to eHEX if so.
+    const isPLS=chain==='pls'&&day>=PLS_DAY;
+    pbd[k]=tablePrice(day,isPLS);
+  });
+  // Pass 2: CoinGecko fallback for any (chain, day) still null. Batched per chain.
+  await fillMissingFromCoinGecko(reqs);
+}
+
+// Fetch any still-missing (chain, day) pairs from CoinGecko's market_chart/range endpoint.
+// Strategy: per chain, find the day-range [minDay, maxDay] that needs coverage and ask for
+// that whole range in ONE request. Bucket the response into per-day prices and populate pbd.
+// Failure mode: leaves pbd[k] as null, which downstream code already handles (Cost cell dashes).
+async function fillMissingFromCoinGecko(reqs){
+  // Group missing days by chain
+  const byChain={pls:[],eth:[]};
+  reqs.forEach(k=>{
+    if(pbd[k]!=null)return;
+    const [chain,dStr]=k.split(':');
+    byChain[chain].push(Number(dStr));
+  });
+  // Fetch each chain in parallel
+  const tasks=[];
+  for(const chain of ['pls','eth']){
+    if(!byChain[chain].length)continue;
+    tasks.push(fetchCoinGeckoRangeForChain(chain,byChain[chain]));
+  }
+  if(!tasks.length)return;
+  await Promise.all(tasks);
+}
+
+async function fetchCoinGeckoRangeForChain(chain,days){
+  const cgId=chain==='eth'?'hex':'hex-pulsechain';
+  const minDay=Math.min(...days),maxDay=Math.max(...days);
+  // Day d corresponds to UTC midnight at HTS + d*86400. Pad each end by 1 day so day boundaries are covered.
+  const fromTs=HTS+(minDay-1)*86400;
+  const toTs=HTS+(maxDay+1)*86400;
+  const url=`https://api.coingecko.com/api/v3/coins/${cgId}/market_chart/range?vs_currency=usd&from=${fromTs}&to=${toTs}`;
+  try{
+    const r=await fetch(url);
+    if(!r.ok){console.warn(`[${chain}] CoinGecko fallback HTTP ${r.status}`);return;}
+    const j=await r.json();
+    const prices=j.prices||[];   // array of [timestamp_ms, price]
+    if(!prices.length){console.warn(`[${chain}] CoinGecko returned no prices for range ${minDay}..${maxDay}`);return;}
+    // Bucket: for each price point, compute the HEX day it falls in and remember the LATEST price seen for that day.
+    // (Within 90 days CoinGecko returns hourly resolution — taking the latest tick of each day approximates a daily close.)
+    const byDay={};
+    for(const [ms,price] of prices){
+      const ts=Math.floor(ms/1000);
+      const day=Math.floor((ts-HTS)/86400);
+      if(day<0)continue;
+      // Keep the most recent (highest timestamp) value for that day
+      if(!byDay[day]||byDay[day].ts<ts)byDay[day]={ts,price};
+    }
+    // Populate pbd for any days still null
+    let filled=0;
+    for(const day of days){
+      const k=pbdKey(day,chain);
+      if(pbd[k]!=null)continue;
+      const hit=byDay[day];
+      if(hit&&hit.price>0){pbd[k]=hit.price;filled++;}
+    }
+  }catch(e){
+    console.warn(`[${chain}] CoinGecko fallback failed:`,e.message);
+  }
+}
+
+// ── Live price: per-chain DexScreener fetch, CoinPaprika fallback, CoinGecko last resort ──
+// pHEX from PulseChain DEX (PulseX). eHEX from Ethereum DEX (Uniswap).
+// Same HEX contract address on both chains, queried via DexScreener's per-chain endpoint.
+async function fprChain(chain){
+  const dsChain=chain==='eth'?'ethereum':'pulsechain';
+  const cpId=chain==='eth'?'hex-hex':'hex-hex-pulsechain';
+  const cgId=chain==='eth'?'hex':'hex-pulsechain';
+  // Primary: DexScreener (highest-liquidity HEX pair on the chain)
+  try{
+    const r=await fetch('https://api.dexscreener.com/tokens/v1/'+dsChain+'/'+HEX);
+    if(!r.ok)throw new Error();
+    const pairs=await r.json();
+    const best=pairs.filter(p=>p.priceUsd&&Number(p.liquidity?.usd||0)>0).sort((a,b)=>(b.liquidity?.usd||0)-(a.liquidity?.usd||0))[0];
+    if(best){
+      livePrice[chain]=parseFloat(best.priceUsd)||0;
+      priceChange24h[chain]=Number(best.priceChange?.h24||0);
+      if(hexPerTShareBy[chain]>0)tsharePriceBy[chain]=hexPerTShareBy[chain]*livePrice[chain];
+      return true;
+    }
+  }catch(e){}
+  // Fallback: CoinPaprika (better volume/market data than CoinGecko)
+  try{
+    const r=await fetch('https://api.coinpaprika.com/v1/tickers/'+cpId);
+    if(r.ok){
+      const d=await r.json();
+      livePrice[chain]=d.quotes?.USD?.price||0;
+      priceChange24h[chain]=Number(d.quotes?.USD?.percent_change_24h||0);
+      if(hexPerTShareBy[chain]>0)tsharePriceBy[chain]=hexPerTShareBy[chain]*livePrice[chain];
+      return true;
+    }
+  }catch(e){}
+  // Fallback 2: CoinGecko
+  try{
+    const r=await fetch('https://api.coingecko.com/api/v3/coins/'+cgId+'?localization=false&tickers=false&market_data=true&community_data=false&developer_data=false');
+    if(r.ok){
+      const d=await r.json();const md=d.market_data;
+      livePrice[chain]=md.current_price?.usd||0;
+      priceChange24h[chain]=Number(md.price_change_percentage_24h||0);
+      if(hexPerTShareBy[chain]>0)tsharePriceBy[chain]=hexPerTShareBy[chain]*livePrice[chain];
+      return true;
+    }
+  }catch(e){}
+  return false;
+}
+
+// ── Live HTT prices: PulseX v2 subgraph, one batched GraphQL call for all discovered HTT contracts ──
+// derivedUSD is the subgraph's routed USD estimate for the token. Thin-liquidity HTTs may return 0/null.
+// No auth, CORS-open, GitHub-Pages-safe. Silent on failure.
+async function fprHTT(){
+  if(!httContractInfo||httContractInfo.size===0)return false;
+  const idToDay=new Map();
+  for(const [day,info] of httContractInfo){
+    if(info?.contract)idToDay.set(info.contract.toLowerCase(),day);
+  }
+  if(idToDay.size===0)return false;
+  const ids=Array.from(idToDay.keys());
+  try{
+    const q='{tokens(where:{id_in:'+JSON.stringify(ids)+'},first:1000){id derivedUSD}}';
+    const r=await fetch('https://graph.pulsechain.com/subgraphs/name/pulsechain/pulsexv2',{
+      method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({query:q})
+    });
+    if(!r.ok)return false;
+    const j=await r.json();
+    const toks=j?.data?.tokens||[];
+    for(const t of toks){
+      const day=idToDay.get((t.id||'').toLowerCase());
+      if(day==null)continue;
+      const p=parseFloat(t.derivedUSD||'0');
+      if(isFinite(p)&&p>0)httPriceByDay.set(day,p);
+    }
+    httPriceUpdatedAt=Date.now();
+    return true;
+  }catch(e){return false;}
+}
+
+// Convenience: USD price for an HTT series day, or 0 if unknown / no route.
+function httPriceFor(day){return httPriceByDay.get(day)||0;}
+// USD value of `hearts` (BigInt, HEX-decimals since HTT uses HEX's 8 decimals) for series `day`.
+function httUsdOf(day,hearts){const p=httPriceFor(day);if(!p||!hearts)return 0;return Number(hearts)/1e8*p;}
+// Format an HTT per-token USD price — significant-digit style for sub-cent numbers, tight for readable ones.
+function httFmtPrice(p){if(!p)return'—';if(p>=1)return'$'+p.toFixed(2);const m=Math.floor(Math.log10(Math.abs(p)));return'$'+p.toFixed(Math.min(Math.max(-m+3,2),8));}
+// Format an aggregate USD value — 2 decimals below $1k, compact K/M/B above. Empty → '—'.
+// Tiny positive values that would round to $0.00 show as '<$0.01' so users don't read them as worthless.
+function httFmtUsd(v){if(!v&&v!==0)return'—';if(!isFinite(v))return'—';if(v===0)return'$0.00';const a=Math.abs(v);if(a>=1e9)return'$'+(v/1e9).toFixed(2)+'B';if(a>=1e6)return'$'+(v/1e6).toFixed(2)+'M';if(a>=1e3)return'$'+(v/1e3).toFixed(2)+'K';if(a<0.005)return v>0?'<$0.01':'>-$0.01';return'$'+v.toFixed(2);}
+// USD value of a series' EXTRACTED amount, using borrowed-series prices for the borrowed portion
+// (a series with an entirely borrowed extraction — e.g. HTT-5001 minted against as HTT-5000 — otherwise
+// prices at $0 whenever the native series has no routed USD on the subgraph).
+function httUsdExtractedForSeries(s){
+  if(!s||s.outstanding===0n)return 0;
+  let u=0,borrowedSum=0n;
+  if(s.borrows&&s.borrows.length>0){
+    for(const b of s.borrows){u+=Number(b.amount)/1e8*httPriceFor(b.tokenDay);borrowedSum+=b.amount;}
+  }
+  const nativePart=s.outstanding-borrowedSum;
+  if(nativePart>0n)u+=Number(nativePart)/1e8*httPriceFor(s.day);
+  return u;
+}
+
+let sparkDataCache={pls:[],eth:[]};
+// Redraw sparklines on window resize so they fill new flex width
+let _sparkResizeTimer=null;
+window.addEventListener('resize',()=>{
+  clearTimeout(_sparkResizeTimer);
+  _sparkResizeTimer=setTimeout(()=>{
+    ['pls','eth'].forEach(ch=>{
+      if(sparkDataCache[ch]?.length)drawSparkline(sparkDataCache[ch],'sparkline-'+ch,priceChange24h[ch]>=0);
+    });
+  },120);
+});
+
+// ── Staked % from globalInfo (piggybacked off gShareRate) ──
+const supplyData={pls:null,eth:null};
+function parseSupplyFromGlobalInfo(raw,chain){
+  const hex=raw.startsWith('0x')?raw.slice(2):raw;
+  if(hex.length<13*64)return;
+  const locked=BigInt('0x'+hex.slice(0*64,1*64));
+  const liquid=BigInt('0x'+hex.slice(11*64,12*64));
+  if(liquid<=0n)return;
+  const allocated=locked+liquid;
+  const pctStaked=Number(locked*10000n/allocated)/100;
+  supplyData[chain]={allocated,liquid,locked,pctStaked};
+}
+
+// ── Available HEX: query balanceOf on DEX pool contracts ──
+// eHEX pools span BOTH chains: native on Ethereum + bridged (0x57fd…D225) on PulseChain.
+// pHEX pools are native on PulseChain only.
+const EHEX_BRIDGED='0x57fde0a71132198BBeC939B98976993d8D89D225';
+const DEX_POOLS={
+  ehex_eth:[
+    {name:'Uniswap V2',pair:'HEX/WETH',addr:'0x55d5c232d921b9eaa6b37b5845e439acd04b4dba'},
+    {name:'Uniswap V3 0.3%',pair:'HEX/WETH',addr:'0x9e0905249ceefffb9605e034b534544684a58be6'},
+    {name:'Uniswap V3 0.3%',pair:'HEX/USDC',addr:'0x69d91b94f0aaf8e8a2586909fa77a5c2c89818d5'},
+    {name:'Uniswap V2',pair:'HEX/USDC',addr:'0xf6dcdce0ac3001b2f67f750bc64ea5beb37b5824'},
+  ],
+  ehex_pls:[
+    {name:'PulseX V2',pair:'eHEX/WPLS',addr:'0xf0ea3efe42c11c8819948ec2d3179f4084863d3f'},
+    {name:'PulseX V2',pair:'eHEX/pHEX',addr:'0x922723fc4de3122f7dc837e2cd2b82dce9da81d2'},
+  ],
+  phex_pls:[
+    {name:'PulseX V1',pair:'HEX/WPLS',addr:'0xf1f4ee610b2babb05c635f726ef8b0c568c8dc65'},
+    {name:'PulseX V2',pair:'HEX/WPLS',addr:'0x6f1747370b1cacb911ad6d4477b718633db328c8'},
+    {name:'PulseX V2',pair:'HEX/eHEX',addr:'0x922723fc4de3122f7dc837e2cd2b82dce9da81d2'},
+    {name:'Forked Uni V3',pair:'HEX/USDC',addr:'0x69d91b94f0aaf8e8a2586909fa77a5c2c89818d5'},
+    {name:'9mm V3',pair:'HEX/WPLS',addr:'0x8c357be2cf2c1de1c4dca8aea0af1529f789976b'},
+    {name:'9mm V3',pair:'HEX/DAI',addr:'0x6ace474a9fde57e663e47a4c7965964440b35f71'},
+  ]
+};
+const dexData={ehex_eth:null,ehex_pls:null,phex_pls:null};
+async function fetchDexLiquidity(){
+  const fmt=v=>{const h=Number(v)/1e8;return h>=1e9?(h/1e9).toFixed(1)+'B':h>=1e6?(h/1e6).toFixed(0)+'M':h>=1e3?(h/1e3).toFixed(0)+'K':h.toFixed(0);};
+  // eHEX on Ethereum — query native HEX contract via ETH RPCs
+  let eeTotal=0n;const eeDetails=[];
+  for(const p of DEX_POOLS.ehex_eth){
+    try{const bal=await gbal(p.addr,'eth');eeDetails.push({name:p.name,pair:p.pair,hex:bal});eeTotal+=bal;}
+    catch(e){eeDetails.push({name:p.name,pair:p.pair,hex:0n});}
+  }
+  if(eeTotal>0n){dexData.ehex_eth={total:eeTotal,details:eeDetails};}  // eHEX on PulseChain — query BRIDGED eHEX contract via PLS RPCs
+  let epTotal=0n;const epDetails=[];
+  for(const p of DEX_POOLS.ehex_pls){
+    try{const bal=await gbalOf(EHEX_BRIDGED,p.addr,'pls');epDetails.push({name:p.name,pair:p.pair,hex:bal});epTotal+=bal;}
+    catch(e){epDetails.push({name:p.name,pair:p.pair,hex:0n});}
+  }
+  if(epTotal>0n){dexData.ehex_pls={total:epTotal,details:epDetails};}  // pHEX on PulseChain — query native HEX contract via PLS RPCs
+  let ppTotal=0n;const ppDetails=[];
+  for(const p of DEX_POOLS.phex_pls){
+    try{const bal=await gbal(p.addr,'pls');ppDetails.push({name:p.name,pair:p.pair,hex:bal});ppTotal+=bal;}
+    catch(e){ppDetails.push({name:p.name,pair:p.pair,hex:0n});}
+  }
+  if(ppTotal>0n){dexData.phex_pls={total:ppTotal,details:ppDetails};}}
+let dexTipTimer=null;
+function showDexTip(e){
+  clearTimeout(dexTipTimer);
+  const tip=document.getElementById('dex-pool-tip');
+  const btn=e.currentTarget;
+  const r=btn.getBoundingClientRect();
+  tip.style.display='block';
+  const tipH=tip.offsetHeight;
+  let top=r.bottom+8;
+  if(top+tipH>window.innerHeight-10)top=r.top-tipH-8;
+  let left=r.right-340;
+  if(left<10)left=10;
+  tip.style.top=top+'px';
+  tip.style.left=left+'px';
+}
+function hideDexTip(){
+  dexTipTimer=setTimeout(()=>{document.getElementById('dex-pool-tip').style.display='none';},150);
+}
+function keepDexTip(){clearTimeout(dexTipTimer);}
+function releaseDexTip(){hideDexTip();}
+function renderDexSupply(){
+  const s=n=>document.getElementById(n);
+  const fmt=v=>{const h=Number(v)/1e8;if(h<=0)return'—';return h>=1e9?(h/1e9).toFixed(2)+'B':h>=1e6?(h/1e6).toFixed(0)+'M':h>=1e3?(h/1e3).toFixed(0)+'K':h.toFixed(0);};
+  const pp=dexData.phex_pls, ep=dexData.ehex_pls, ee=dexData.ehex_eth;
+  // Per-asset amounts
+  if(s('cmp-supply-pls-phex')&&pp){s('cmp-supply-pls-phex').textContent=fmt(pp.total);s('cmp-supply-pls-phex').classList.remove('dex-loading');}
+  if(s('cmp-supply-pls-ehex')&&ep){s('cmp-supply-pls-ehex').textContent=fmt(ep.total);s('cmp-supply-pls-ehex').classList.remove('dex-loading');}
+  if(s('cmp-supply-eth-ehex')&&ee){s('cmp-supply-eth-ehex').textContent=fmt(ee.total);s('cmp-supply-eth-ehex').classList.remove('dex-loading');}
+  // Total available across all 3 buckets
+  const totalAvail=(pp?pp.total:0n)+(ep?ep.total:0n)+(ee?ee.total:0n);
+  if(s('cmp-supply-total'))s('cmp-supply-total').textContent=totalAvail>0n?fmt(totalAvail)+' HEX':'—';
+  // Populate info tooltip breakdown
+  const tipEl=s('dex-tip-breakdown');
+  if(tipEl){
+    let html='';
+    const groups=[
+      {key:'phex_pls',label:'pHEX on PulseChain',color:'#FF00CC'},
+      {key:'ehex_pls',label:'eHEX on PulseChain',color:'#00CFFF'},
+      {key:'ehex_eth',label:'eHEX on Ethereum',color:'#00CFFF'},
+    ];
+    groups.forEach(g=>{
+      const d=dexData[g.key];
+      if(!d)return;
+      html+=`<span style="color:${g.color};font-weight:600;">${g.label}: ${fmt(d.total)}</span><br>`;
+      d.details.forEach(p=>{
+        const h=Number(p.hex)/1e8;
+        const pFmt=h>=1e6?(h/1e6).toFixed(1)+'M':h>=1e3?(h/1e3).toFixed(0)+'K':h.toFixed(0);
+        html+=`<span style="opacity:0.75;margin-left:8px;">• ${p.name} (${p.pair}): ${pFmt}</span><br>`;
+      });
+      html+='<br>';
+    });
+    tipEl.innerHTML=html||'No pool data yet';
+  }
+}
+
+async function fpr(){
+  if(!hexDay)hexDay=chd();
+  const now=Math.floor(Date.now()/1000);
+
+  // Sparklines: start fetching immediately in background, draw as they arrive
+  const fetchSpark=async(chain)=>{
+    const cgId=chain==='eth'?'hex':'hex-pulsechain';
+    // Try DexScreener chart data first (faster, same source as price)
+    try{
+      const r=await fetch(`https://api.coingecko.com/api/v3/coins/${cgId}/market_chart/range?vs_currency=usd&from=${now-30*86400}&to=${now}`);
+      if(r.ok){
+        const j=await r.json();
+        const data=(j.prices||[]).map(p=>p[1]);
+        if(data.length){sparkDataCache[chain]=data;drawSparkline(data,'sparkline-'+chain,priceChange24h[chain]>=0);return;}
+      }
+    }catch(e){}
+    // Fallback: shorter 7-day range if 30-day fails
+    try{
+      const r=await fetch(`https://api.coingecko.com/api/v3/coins/${cgId}/market_chart?vs_currency=usd&days=7`);
+      if(r.ok){
+        const j=await r.json();
+        const data=(j.prices||[]).map(p=>p[1]);
+        if(data.length){sparkDataCache[chain]=data;drawSparkline(data,'sparkline-'+chain,priceChange24h[chain]>=0);}
+      }
+    }catch(e){}
+  };
+
+  // gdd tail for yesterday payout — fetch only the last 2 days needed
+  const fetchGddTail=async(chain)=>{
+    if(gddBy[chain]?.data?.length>=2)return;
+    // Try up to 2 times — ETH RPCs can be flaky on page load
+    for(let attempt=0;attempt<2;attempt++){
+      try{
+        await lgdd(hexDay-2,chain);
+        if(gddBy[chain]?.data?.length>=2){renderComparison();return;}
+      }catch(e){}
+      if(attempt===0)await new Promise(r=>setTimeout(r,1500));
+    }
+  };
+
+  // Launch ALL fetches simultaneously — don't wait for prices before starting sparklines
+  const sparkPls=fetchSpark('pls');
+  const sparkEth=fetchSpark('eth');
+  const gddPls=fetchGddTail('pls');
+  const gddEth=fetchGddTail('eth');
+
+  // Prices + share rates in parallel (HTT prices too, if any HTT contracts have been discovered)
+  await Promise.all([
+    fprChain('pls'),
+    fprChain('eth'),
+    fprHTT(),
+    gShareRate('pls').then(({shareRate})=>{
+      if(shareRate>0n){
+        hexPerTShareBy.pls=Number(shareRate)/10;
+        if(livePrice.pls>0)tsharePriceBy.pls=hexPerTShareBy.pls*livePrice.pls;
+      }
+    }),
+    gShareRate('eth').then(({shareRate})=>{
+      if(shareRate>0n){
+        hexPerTShareBy.eth=Number(shareRate)/10;
+        if(livePrice.eth>0)tsharePriceBy.eth=hexPerTShareBy.eth*livePrice.eth;
+      }
+    }),
+  ]);
+
+  // Recalculate T-Share prices and render ticker
+  ['pls','eth'].forEach(ch=>{
+    if(hexPerTShareBy[ch]>0&&livePrice[ch]>0)tsharePriceBy[ch]=hexPerTShareBy[ch]*livePrice[ch];
+  });
+  renderTicker();
+  renderDexSupply();
+  // Fetch DEX pool liquidity (delayed to avoid rate limits on first load)
+  setTimeout(async()=>{
+    await fetchDexLiquidity();
+    renderDexSupply();
+  },2000);
+
+  // Wait for background tasks (sparklines/gdd) — they may already be done
+  await Promise.all([sparkPls,sparkEth,gddPls,gddEth]);
+
+  // Redraw sparklines now that priceChange24h is confirmed — fixes color on up/down days
+  ['pls','eth'].forEach(ch=>{
+    if(sparkDataCache[ch]?.length)drawSparkline(sparkDataCache[ch],'sparkline-'+ch,priceChange24h[ch]>=0);
+  });
+}
+
+// Render the ticker. Updates per-chain price blocks directly via element IDs.
+function renderTicker(){
+  const tu=document.getElementById('tu');
+  if(tu)tu.textContent='Updated '+new Date().toLocaleTimeString();
+  ['pls','eth'].forEach(chain=>{
+    const p=livePrice[chain];
+    const chg=priceChange24h[chain];
+    const price24hAgo=p>0?p/(1+chg/100):0;
+    const estHigh=Math.max(p,price24hAgo);
+    const estLow=Math.min(p,price24hAgo);
+    const isUp=chg>=0;
+    const chgCls=isUp?'up':'dn';
+    const chgTxt=(isUp?'+':'')+chg.toFixed(2)+'% 24h';
+    const dotColor=isUp?'#00FF66':'#ff5c5c';
+    const priceEl=document.getElementById('t-'+chain+'-price');
+    const chgEl=document.getElementById('t-'+chain+'-chg');
+    const hiEl=document.getElementById('t-'+chain+'-hi');
+    const loEl=document.getElementById('t-'+chain+'-lo');
+    const dotEl=document.getElementById('t-'+chain+'-dot');
+    if(priceEl)priceEl.textContent=p>0?'$'+fp2(p):'—';
+    if(chgEl){chgEl.textContent=chgTxt;chgEl.className='t-chg '+chgCls;}
+    if(hiEl)hiEl.textContent=p>0?'$'+fp2(estHigh):'—';
+    if(loEl)loEl.textContent=p>0?'$'+fp2(estLow):'—';
+    if(dotEl)dotEl.style.background=dotColor;
+  });
+  renderComparison();
+  // Update T-Share price card if visible
+  const tspEl=document.getElementById('tsp-val');
+  if(tspEl){
+    if(chainMode==='both'){
+      const showPLS=tsharePriceBy.pls>0,showETH=tsharePriceBy.eth>0;
+      const bdEl=document.getElementById('tsp-breakdown');
+      if(bdEl&&showPLS&&showETH){
+        bdEl.innerHTML=`<div class="wb-row"><span class="wb-tag" style="color:#FF00CC;">⬡ pHEX</span><span class="wb-amt" style="color:#FF00CC;">$${tsharePriceBy.pls.toFixed(2)}</span><span class="wb-usd">${Math.round(hexPerTShareBy.pls).toLocaleString()} HEX</span></div><div class="wb-row"><span class="wb-tag" style="color:#00CFFF;">◆ eHEX</span><span class="wb-amt" style="color:#00CFFF;">$${tsharePriceBy.eth.toFixed(2)}</span><span class="wb-usd">${Math.round(hexPerTShareBy.eth).toLocaleString()} HEX</span></div>`;
+      }else if(showPLS)tspEl.textContent='$'+tsharePriceBy.pls.toFixed(2);
+      else if(showETH)tspEl.textContent='$'+tsharePriceBy.eth.toFixed(2);
+    }else{
+      const tp=tsharePriceBy[chainMode];
+      if(tp>0)tspEl.textContent='$'+tp.toFixed(2);
+    }
+  }
+}
+
+function renderComparison(){
+  const pp=livePrice.pls,ep=livePrice.eth;
+  const pc=priceChange24h.pls,ec=priceChange24h.eth;
+  const pts=tsharePriceBy.pls,ets=tsharePriceBy.eth;
+  const phts=hexPerTShareBy.pls,ehts=hexPerTShareBy.eth;
+  if(!pp||!ep)return;
+  const s=n=>document.getElementById(n);
+  // Price ratio — dynamic based on which chain is currently more expensive
+  const ratio=pp>ep?pp/ep:ep/pp;
+  const parity=(ratio-1)*100;
+  const higherChain=pp>ep?'pHEX':'eHEX';
+  const ratioColor=pp>ep?'linear-gradient(90deg,#FF00CC,#ff6ec7)':'linear-gradient(90deg,#8a92b2,#c0c8e0)';
+  const parityLower=pp>ep?'eHEX':'pHEX';
+  if(s('cmp-ratio')){const el=s('cmp-ratio');el.textContent=ratio.toFixed(2)+'×';el.style.background=ratioColor;el.style.webkitBackgroundClip='text';el.style.webkitTextFillColor='transparent';el.style.backgroundClip='text';}
+  if(s('cmp-ratio-lbl'))s('cmp-ratio-lbl').textContent=higherChain+' Price Premium';
+  if(s('cmp-ratio-sub'))s('cmp-ratio-sub').textContent=higherChain+' costs more today';
+  if(s('cmp-parity'))s('cmp-parity').textContent='+'+parity.toFixed(1)+'%';
+  if(s('cmp-parity-sub'))s('cmp-parity-sub').textContent=parityLower+' to match';
+  // 24h performance — always available from price fetch
+  const chg24Pls=s('cmp-24h-pls'),chg24Eth=s('cmp-24h-eth'),winner24=s('cmp-24h-winner');
+  if(chg24Pls){chg24Pls.textContent=(pc>=0?'+':'')+pc.toFixed(2)+'%';chg24Pls.style.color=pc>=0?'#00FF66':'#ff5c5c';}
+  if(chg24Eth){chg24Eth.textContent=(ec>=0?'+':'')+ec.toFixed(2)+'%';chg24Eth.style.color=ec>=0?'#00FF66':'#ff5c5c';}
+  if(winner24){
+    const w=pc>ec?'pls':'eth';
+    winner24.innerHTML=`<span class="cmp-pill ${w}">${w==='pls'?'⬡ pHEX':'◆ eHEX'}</span>`;
+  }
+  // T-Share prices — only if available
+  if(pts>0&&ets>0){
+    if(s('cmp-ts-pls'))s('cmp-ts-pls').textContent='$'+pts.toFixed(2);
+    if(s('cmp-ts-eth')){s('cmp-ts-eth').textContent='$'+ets.toFixed(2);s('cmp-ts-eth').style.color='#00CFFF';}
+    if(s('cmp-ts-diff'))s('cmp-ts-diff').textContent=(pts/ets).toFixed(2)+'× diff';
+  }
+  // HEX per T-Share → replaced by yesterday payout per T-Share
+  const s2=n=>document.getElementById(n);
+  ['pls','eth'].forEach(ch=>{
+    const gdd=gddBy[ch];
+    if(!gdd||!gdd.data||!gdd.data.length)return;
+    // Find yesterday's index relative to bd offset
+    const today=hexDay||chd();
+    const yesterday=today-1;
+    const idx=yesterday-gdd.bd;
+    if(idx<0||idx>=gdd.data.length)return;
+    const{pt,st}=ud(gdd.data[idx]);
+    if(st<=0n)return;
+    const ppts=(Number(pt)/Number(st)*1e4).toFixed(3);
+    const el=s2('cmp-ypts-'+ch);
+    if(el)el.textContent=ppts+' HEX';
+  });
+  const yptsSub=s2('cmp-ypts-sub');
+  if(yptsSub)yptsSub.textContent="prior day payout";
+}
+
+function drawSparkline(data,canvasId,isUp){
+  const canvas=document.getElementById(canvasId);
+  if(!canvas||!data||!data.length)return;
+  const ctx=canvas.getContext('2d');
+  const dpr=window.devicePixelRatio||1;
+  // Use canvas's actual rendered width so sparkline fills available flex space
+  const rect=canvas.getBoundingClientRect();
+  const w=Math.max(180,Math.floor(rect.width))||220,h=80;
+  canvas.width=w*dpr;canvas.height=h*dpr;
+  canvas.style.height=h+'px';
+  ctx.scale(dpr,dpr);
+  const min=Math.min(...data),max=Math.max(...data),range=max-min||1;
+  const step=w/(data.length-1);
+  ctx.clearRect(0,0,w,h);
+  const col=isUp?'#00FF66':'#ff5c5c';
+  // Gradient fill below line (draw first so line sits on top)
+  ctx.beginPath();
+  data.forEach((p,i)=>{const x=i*step,y=h-4-((p-min)/range)*(h-8);i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);});
+  const grad=ctx.createLinearGradient(0,0,0,h);
+  grad.addColorStop(0,isUp?'rgba(0,255,102,0.28)':'rgba(255,60,60,0.28)');
+  grad.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.lineTo(w,h);ctx.lineTo(0,h);ctx.closePath();
+  ctx.fillStyle=grad;ctx.fill();
+  // Line on top
+  ctx.beginPath();
+  data.forEach((p,i)=>{const x=i*step,y=h-4-((p-min)/range)*(h-8);i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);});
+  ctx.strokeStyle=col;ctx.lineWidth=2;ctx.lineJoin='round';ctx.lineCap='round';
+  ctx.stroke();
+  // Endpoint dot (latest price marker)
+  const lastX=(data.length-1)*step,lastY=h-4-((data[data.length-1]-min)/range)*(h-8);
+  ctx.beginPath();ctx.arc(lastX,lastY,3,0,Math.PI*2);ctx.fillStyle=col;ctx.fill();
+  ctx.beginPath();ctx.arc(lastX,lastY,6,0,Math.PI*2);
+  ctx.fillStyle=isUp?'rgba(0,255,102,0.25)':'rgba(255,60,60,0.25)';ctx.fill();
+}
+
+function fb(n){const a=Math.abs(n);if(a>=1e9)return(n/1e9).toFixed(2)+'B';if(a>=1e6)return(n/1e6).toFixed(2)+'M';if(a>=1e3)return(n/1e3).toFixed(2)+'K';return n.toFixed(2);}
+function fh(h){const v=Number(h)/1e8;if(v>=1e9)return(v/1e9).toFixed(2)+'B';if(v>=1e6)return(v/1e6).toFixed(2)+'M';if(v>=1e3)return(v/1e3).toFixed(2)+'K';return v.toLocaleString(undefined,{maximumFractionDigits:2});}
+function fts(s){const t=Number(s)/TSC;if(t>=1e6)return(t/1e6).toFixed(3)+'M';if(t>=1e3)return(t/1e3).toFixed(2)+'K';if(t>=1)return t.toFixed(3);return t.toFixed(5);}
+function seaCreature(shares){const t=Number(shares)/TSC;if(t>=10000)return'🐋';if(t>=1000)return'🦈';if(t>=100)return'🐬';if(t>=10)return'🐙';if(t>=1)return'🦀';return'🦐';}
+const SEA_TIERS=[
+  {emoji:'🐋',name:'Whale',min:10000,range:'10,000+ T-Shares'},
+  {emoji:'🦈',name:'Shark',min:1000,range:'1,000 – 9,999'},
+  {emoji:'🐬',name:'Dolphin',min:100,range:'100 – 999'},
+  {emoji:'🐙',name:'Octopus',min:10,range:'10 – 99'},
+  {emoji:'🦀',name:'Crab',min:1,range:'1 – 9.999'},
+  {emoji:'🦐',name:'Shrimp',min:0,range:'< 1 T-Share'},
+];
+function getSeaTier(tshares){return SEA_TIERS.find(t=>tshares>=t.min)||SEA_TIERS[SEA_TIERS.length-1];}
+// ── Moon Math ──────────────────────────────────────────────────────────────
+function openMoonMath(){
+  const plsIn=document.getElementById('moon-pls');
+  const ethIn=document.getElementById('moon-eth');
+  const plsEl=document.getElementById('moon-pls-live');
+  const ethEl=document.getElementById('moon-eth-live');
+  if(plsEl)plsEl.textContent='Live: '+(livePrice.pls>0?'$'+livePrice.pls.toFixed(6):'not loaded');
+  if(ethEl)ethEl.textContent='Live: '+(livePrice.eth>0?'$'+livePrice.eth.toFixed(6):'not loaded');
+  if(plsIn&&moonPrice.pls>0)plsIn.value=moonPrice.pls;
+  if(ethIn&&moonPrice.eth>0)ethIn.value=moonPrice.eth;
+  // Build multiplier buttons for each chain
+  const MULTS=[2,10,100,1000,10000];
+  ['pls','eth'].forEach(ch=>{
+    const base=livePrice[ch];
+    const container=document.getElementById('moon-'+ch+'-mults');
+    const inp=document.getElementById('moon-'+ch);
+    if(!container||!base)return;
+    container.innerHTML='';
+    MULTS.forEach(m=>{
+      const target=base*m;
+      const btn=document.createElement('button');
+      btn.className='moon-mult-btn'+(m===10000?' m10k':'');
+      btn.textContent=m.toLocaleString()+'×';
+      btn.onclick=()=>{
+        inp.value=parseFloat(target.toPrecision(6));
+        container.querySelectorAll('.moon-mult-btn').forEach(b=>b.classList.remove('active'));
+        btn.classList.add('active');
+      };
+      container.appendChild(btn);
+    });
+  });
+  document.getElementById('moon-overlay').classList.add('open');
+}
+function closeMoonMath(){
+  document.getElementById('moon-overlay').classList.remove('open');
+}
+function applyMoonMath(){
+  const plsVal=parseFloat(document.getElementById('moon-pls').value)||0;
+  const ethVal=parseFloat(document.getElementById('moon-eth').value)||0;
+  moonPrice.pls=plsVal>0?plsVal:0;
+  moonPrice.eth=ethVal>0?ethVal:0;
+  closeMoonMath();
+  updateMoonBanner();
+  if(walletData.size>0&&lastStakes.length)renderAll(lastStakes,lastLiquid);
+}
+function resetMoonMath(){
+  moonPrice={pls:0,eth:0};
+  const plsIn=document.getElementById('moon-pls');
+  const ethIn=document.getElementById('moon-eth');
+  if(plsIn)plsIn.value='';
+  if(ethIn)ethIn.value='';
+  updateMoonBanner();
+  if(walletData.size>0&&lastStakes.length)renderAll(lastStakes,lastLiquid);
+}
+function updateMoonBanner(){
+  const active=moonPrice.pls>0||moonPrice.eth>0;
+  const banner=document.getElementById('moon-banner');
+  const btn=document.getElementById('moon-math-btn');
+  if(banner){
+    banner.className='moon-banner'+(active?' visible':'');
+    if(active){
+      // Prices
+      const pricesEl=document.getElementById('moon-banner-prices');
+      if(pricesEl){
+        const parts=[];
+        if(moonPrice.pls>0)parts.push('⬡ $'+moonPrice.pls.toLocaleString());
+        if(moonPrice.eth>0)parts.push('◆ $'+moonPrice.eth.toLocaleString());
+        pricesEl.textContent=parts.join('  ·  ');
+      }
+      // Quick-switch multipliers
+      const multsEl=document.getElementById('moon-banner-mults');
+      if(multsEl){
+        multsEl.innerHTML='';
+        [2,10,100,1000,10000].forEach(m=>{
+          const b=document.createElement('button');
+          b.className='moon-banner-mult'+(m===10000?' m10k':'');
+          b.textContent=m.toLocaleString()+'×';
+          const plsMatch=moonPrice.pls>0&&livePrice.pls>0&&Math.round(moonPrice.pls/livePrice.pls)===m;
+          const ethMatch=moonPrice.eth>0&&livePrice.eth>0&&Math.round(moonPrice.eth/livePrice.eth)===m;
+          if(plsMatch||ethMatch)b.classList.add('active');
+          b.onclick=()=>{
+            if(livePrice.pls>0)moonPrice.pls=parseFloat((livePrice.pls*m).toPrecision(6));
+            if(livePrice.eth>0)moonPrice.eth=parseFloat((livePrice.eth*m).toPrecision(6));
+            updateMoonBanner();
+            if(lastStakes.length)renderAll(lastStakes,lastLiquid);
+          };
+          multsEl.appendChild(b);
+        });
+      }
+    }
+  }
+  const frameEl=document.getElementById('cards-frame');
+  if(frameEl)frameEl.classList.toggle('moon-active',active);
+  if(btn)btn.className='moon-btn'+(active?' active':'');
+}
+function openCreatureInfo(totalTS){
+  const tier=getSeaTier(totalTS);
+  const rows=SEA_TIERS.map(t=>`<tr class="${t.name===tier.name?'ct-active':''}"><td class="ct-emoji">${t.emoji}</td><td class="ct-name">${t.name}</td><td class="ct-range">${t.range}</td></tr>`).join('');
+  document.getElementById('creature-tier-table').innerHTML=rows;
+  document.getElementById('creature-overlay').classList.add('open');
+}
+function closeCreatureInfo(){document.getElementById('creature-overlay').classList.remove('open');}
+function ftsC(rs){const t=Number(rs)/TSC;if(t>=1e6)return(t/1e6).toFixed(2)+'M';if(t>=1e3)return(t/1e3).toFixed(2)+'K';if(t>=100)return t.toFixed(1);if(t>=1)return t.toFixed(2);return t.toFixed(4);}
+function fp2(p){if(!p&&p!==0)return'—';if(p>=1)return p.toFixed(4);const m=Math.floor(Math.log10(Math.abs(p)));return p.toFixed(Math.min(Math.max(-m+3,2),8));}
+function fu(h,chain){const p=priceFor(chain||'pls');if(!p)return'—';return'$'+fb(Number(h)/1e8*p);}
+function d2d(d){return new Date((HTS+d*86400)*1000).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'2-digit',timeZone:'UTC'});}
+// Status classification.
+// A stake's first earning day is its lockedDay. The HEX contract distributes daily payouts
+// at the END of each day, so a stake with lockedDay == hexDay (i.e., today is its first
+// earning day) hasn't accrued anything yet. We classify it as 'pending' until at least one
+// full day of yield has accrued — i.e., until hexDay > lockedDay.
+function sst(s){if(s.unlockedDay>0)return'ended';if(s.lockedDay>=hexDay)return'pending';if(hexDay>s.lockedDay+s.stakedDays+14)return'overdue';return'active';}
+function spg(s){if(s.unlockedDay>0)return 100;if(s.lockedDay>=hexDay)return 0;return Math.round(Math.min(Math.max(hexDay-s.lockedDay,0),s.stakedDays)/s.stakedDays*100);}
+function ssv(s){if(s.unlockedDay>0)return s.stakedDays;if(s.lockedDay>=hexDay)return 0;return Math.min(Math.max(hexDay-s.lockedDay,0),s.stakedDays);}
+let stPrefix=''; // persistent prefix prepended to all setSt calls when set
+// #st has two independent child slots so the text banner (setSt) and the phased scan-status
+// box (renderScanStatus) can update without clobbering each other. Previously both wrote to
+// the same innerHTML, so calling setSt('') at end-of-main-scan wiped the phases from view
+// even though they were still tracked in memory — the box appeared to vanish until the HTT
+// Analyzer phase re-rendered it.
+function _stSlot(name){
+  const parent=document.getElementById('st');
+  if(!parent)return null;
+  let slot=document.getElementById('st-'+name);
+  if(!slot){
+    // Lazy-init both slots in the fixed order: message on top, phases below
+    parent.innerHTML='<div id="st-msg"></div><div id="st-phases"></div>';
+    slot=document.getElementById('st-'+name);
+  }
+  return slot;
+}
+function setSt(msg,err){
+  const parent=document.getElementById('st');
+  const slot=_stSlot('msg');
+  if(!slot)return;
+  if(!msg&&!err){slot.innerHTML='';slot.className='';}
+  else{slot.innerHTML=msg;slot.className=err?'err':'';}
+  // Update parent class for legacy error styling that keys off .st.err
+  if(parent)parent.className='st'+(err?' err':'');
+}
+
+// ── Phased scan status bar ──
+// Tracks the multi-phase scan and renders status for each phase.
+let scanPhases=[]; // [{id,chain,label,status:'waiting'|'active'|'done',detail,pct}]
+function initScanStatus(plsActive,ethActive){
+  scanPhases=[];
+  if(plsActive)scanPhases.push({id:'pls',chain:'pls',label:'PulseChain',status:'waiting',detail:'',pct:0});
+  if(ethActive)scanPhases.push({id:'eth',chain:'eth',label:'Ethereum',status:'waiting',detail:'',pct:0});
+  renderScanStatus();
+}
+function updatePhase(id,updates){
+  const p=scanPhases.find(x=>x.id===id);
+  if(!p)return;
+  Object.assign(p,updates);
+  renderScanStatus();
+}
+function addSubPhase(parentId,subId,label,status){
+  const idx=scanPhases.findIndex(x=>x.id===parentId);
+  if(idx<0)return;
+  // Insert after parent and any existing sub-phases of this parent
+  let insertAt=idx+1;
+  while(insertAt<scanPhases.length&&scanPhases[insertAt].parentId===parentId)insertAt++;
+  scanPhases.splice(insertAt,0,{id:subId,parentId,chain:scanPhases[idx].chain,label,status:status||'active',detail:'',pct:0});
+  renderScanStatus();
+}
+function renderScanStatus(){
+  const el=_stSlot('phases');
+  if(!el||!scanPhases.length){return;}
+  let html='<div class="scan-status">';
+  let lastChain=null;
+  for(const p of scanPhases){
+    // Separator between chains
+    if(p.chain!==lastChain&&lastChain!==null&&!p.parentId)html+='<div class="scan-sep"></div>';
+    lastChain=p.parentId?lastChain:p.chain;
+    const dotCls=p.status==='done'?'done':p.status==='active'?('active '+(p.id.startsWith('htt-an')?'htt':(p.id.includes('hsi')||p.id.includes('htt')?'hsi':p.chain))):'waiting';
+    const txtCls=p.status==='active'?'bright':'';
+    const chainCls=p.id.startsWith('htt-an')?'c-htt':(p.chain==='pls'?'c-pls':'c-eth');
+    const indent=p.parentId?'margin-left:30px;':'';
+    html+='<div class="scan-phase" style="'+indent+'">';
+    html+='<div class="phase-dot '+dotCls+'"></div>';
+    html+='<span class="phase-txt '+txtCls+'">';
+    if(p.status==='done'){
+      if(p.parentId){
+        html+='<span class="'+chainCls+'">'+p.label+'</span> <span class="c-ok">✓ '+p.detail+'</span>';
+      }else{
+        html+='<span class="'+chainCls+'">'+p.label+'</span> complete <span class="c-ok">✓ '+p.detail+'</span>';
+      }
+    }else if(p.status==='active'){
+      html+=p.detail||('Scanning <span class="'+chainCls+'">'+p.label+'</span>…');
+    }else{
+      html+='<span class="c-dim">'+p.label+'</span>';
+    }
+    html+='</span>';
+    if(p.status==='active'&&p.pct>0){
+      const fillCls=p.chain==='pls'?'pls':'eth';
+      html+='<div class="phase-bar"><div class="phase-fill '+fillCls+'" style="width:'+p.pct+'%"></div></div>';
+    }
+    html+='</div>';
+  }
+  html+='</div>';
+  el.innerHTML=html;
+}
+function clearScanStatus(){scanPhases=[];const el=document.getElementById('st-phases');if(el)el.innerHTML='';}
+
+// ── Progress bar — psychological feedback during the analyze pipeline ──
+// We don't know exact time-to-completion, but advancing the bar at known stages
+// converts indefinite-spinner anxiety into definite-progress satisfaction.
+function setProgress(pct){
+  const bar=document.getElementById('progress-bar');
+  const fill=document.getElementById('progress-bar-fill');
+  if(!bar||!fill)return;
+  if(pct<=0){bar.classList.remove('done');fill.style.opacity='1';fill.style.width='0%';return;}
+  bar.classList.remove('done');
+  fill.style.opacity='1';
+  fill.style.width=Math.min(100,pct)+'%';
+  if(pct>=100){
+    setTimeout(()=>{bar.classList.add('done');setTimeout(()=>{fill.style.width='0%';},400);},250);
+  }
+}
+
+// (ethScanBar replaced by phased scan status system above)
+
+// ── Skeleton dashboard — render placeholder structure instantly on Analyze click ──
+// Total fetch time is identical, but the user sees the dashboard chrome within ~50ms
+// instead of staring at a status message for 5-15 seconds. Replaced wholesale by
+// renderAll() when real data arrives.
+function showSkeletonDashboard(){
+  const dash=document.getElementById('dash');
+  if(!dash)return;
+  // Cards: replace innerHTML wholesale (will be overwritten by renderAll)
+  const cardsHtml=Array(10).fill(0).map(()=>
+    `<div class="skel-card"><div class="skel skel-card-lbl"></div><div class="skel skel-card-val"></div><div class="skel skel-card-sub"></div></div>`
+  ).join('');
+  document.getElementById('cards').innerHTML=cardsHtml;
+  // Charts: DO NOT replace innerHTML — that would destroy the <canvas> elements that
+  // Chart.js needs to render into. Instead, overlay an absolute-positioned skeleton on top
+  // of each chart container. Overlays get removed by clearSkeletonOverlays() before charts paint.
+  document.querySelectorAll('.charts .cbox').forEach(box=>{
+    // Find the canvas's parent (a relatively-positioned container)
+    const canvas=box.querySelector('canvas');
+    if(canvas){
+      const canvasParent=canvas.parentElement;
+      if(canvasParent&&!canvasParent.querySelector('.skel-overlay')){
+        const overlay=document.createElement('div');
+        overlay.className='skel-overlay skel-chart-canvas';
+        overlay.style.cssText='position:absolute;inset:0;z-index:2;';
+        canvasParent.appendChild(overlay);
+      }
+    }
+    // Pie body has different structure — overlay it too, preserving the canvas inside
+    const pieBody=box.querySelector('.pie-body');
+    if(pieBody&&!pieBody.querySelector('.skel-overlay')){
+      const overlay=document.createElement('div');
+      overlay.className='skel-overlay';
+      overlay.style.cssText='position:absolute;inset:0;z-index:2;display:flex;align-items:center;gap:16px;background:var(--s1);';
+      overlay.innerHTML='<div class="skel-chart-canvas" style="width:120px;height:120px;border-radius:50%;flex-shrink:0;"></div><div style="flex:1;"><div class="skel skel-card-lbl"></div><div class="skel skel-card-val" style="margin-top:6px;"></div></div>';
+      // Make sure pieBody is positioned so the absolute overlay anchors correctly
+      const cs=getComputedStyle(pieBody);
+      if(cs.position==='static')pieBody.style.position='relative';
+      pieBody.appendChild(overlay);
+    }
+  });
+  // Stake table: full-width skeleton rows (#slist gets overwritten by renderAll)
+  const tableHtml='<div class="stbl-wrap"><div style="padding:0;">'+
+    Array(8).fill(0).map(()=>`<div class="skel-table-row">${Array(8).fill('<div class="skel skel-table-cell"></div>').join('')}</div>`).join('')+
+    '</div></div>';
+  document.getElementById('slist').innerHTML=tableHtml;
+  dash.style.display='block';
+}
+
+// Remove all skeleton overlays — called right before charts render so the freshly-painted
+// canvases become visible.
+function clearSkeletonOverlays(){
+  document.querySelectorAll('.skel-overlay').forEach(el=>el.remove());
+}
+function cdTarget(ld){return(HTS+ld*86400)*1000;}
+function cdFmt(ms){if(ms<=0)return null;const tot=Math.floor(ms/1000);return{d:Math.floor(tot/86400),h:String(Math.floor((tot%86400)/3600)).padStart(2,'0'),m:String(Math.floor((tot%3600)/60)).padStart(2,'0'),s:String(tot%60).padStart(2,'0')};}
+function cdHtml(ms){const f=cdFmt(ms);if(!f)return`<div class="cdbox"><div class="cdseg"><div class="cdnum" style="color:#00FF66;font-size:16px;">NOW ACTIVE</div></div></div>`;return`<div class="cdbox">${f.d>0?`<div class="cdseg"><div class="cdnum">${f.d}</div><div class="cdlbl">day${f.d!==1?'s':''}</div></div><span class="cdsep">:</span>`:''}<div class="cdseg"><div class="cdnum">${f.h}</div><div class="cdlbl">hrs</div></div><span class="cdsep">:</span><div class="cdseg"><div class="cdnum">${f.m}</div><div class="cdlbl">min</div></div><span class="cdsep">:</span><div class="cdseg"><div class="cdnum">${f.s}</div><div class="cdlbl">sec</div></div></div>`;}
+function startCd(idStr,targetMs){const tick=()=>{const el=document.querySelector(`[data-cd="${idStr}"]`);if(!el)return;el.innerHTML=cdHtml(targetMs-Date.now());};tick();cdTimers.push(setInterval(tick,1000));}
+function clearCds(){cdTimers.forEach(clearInterval);cdTimers=[];}
+
+// ── HEX Day display with countdown to next day ──
+let dayBarTimer=null;
+function updateDayBar(){
+  document.getElementById('day-date').textContent=new Date().toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'});
+  if(dayBarTimer)clearInterval(dayBarTimer);
+  // Single source of truth for the day number: the clock-derived curDay ticks every second and
+  // is always in sync. hexDay from the contract is a page-load snapshot that can lag — take
+  // whichever is higher so we never display "yesterday" if the contract has already rolled over.
+  const tickDay=()=>{
+    const now=Date.now()/1000;
+    const curDay=Math.floor((now-HTS)/86400);
+    const day=Math.max(hexDay||0,curDay);
+    const nextDayTs=HTS+(day+1)*86400;
+    const rem=Math.max(0,Math.floor(nextDayTs-now));
+    const h=String(Math.floor(rem/3600)).padStart(2,'0');
+    const m=String(Math.floor((rem%3600)/60)).padStart(2,'0');
+    const s=String(rem%60).padStart(2,'0');
+    document.getElementById('day-num').textContent='Day '+day.toLocaleString();
+    document.getElementById('day-cd').innerHTML=`<div class="day-cd-seg"><div class="day-cd-num">${h}</div><div class="day-cd-u">hrs</div></div><span class="day-cd-sep">:</span><div class="day-cd-seg"><div class="day-cd-num">${m}</div><div class="day-cd-u">min</div></div><span class="day-cd-sep">:</span><div class="day-cd-seg"><div class="day-cd-num">${s}</div><div class="day-cd-u">sec</div></div>`;
+  };
+  tickDay();
+  dayBarTimer=setInterval(tickDay,1000);
+}
+updateDayBar(); // start immediately on page load
+
+
+// StakeEnd event topic0 = keccak256("StakeEnd(uint256,uint256,address,uint40)")
+const TOPIC_STAKE_END='0x'+keccak256('StakeEnd(uint256,uint256,address,uint40)');
+// StakeStart event topic0 = keccak256("StakeStart(uint256,address,uint40)")
+const TOPIC_STAKE_START='0x'+keccak256('StakeStart(uint256,address,uint40)');
+const M40=(1n<<40n)-1n,M16=(1n<<16n)-1n;
+
+async function rpcLogs(params,url){
+  const ac=new AbortController();
+  const t=setTimeout(()=>ac.abort(),12000);
+  try{
+    const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({jsonrpc:'2.0',id:1,method:'eth_getLogs',params:[params]}),signal:ac.signal});
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    let j;
+    try{j=await r.json();}catch(e){throw new Error('Non-JSON response from RPC');}
+    if(j.error)throw new Error(j.error.message||JSON.stringify(j.error));
+    return j.result||[];
+  }finally{clearTimeout(t);}
+}
+
+// HEX deployment block per chain (lower bound for log scans).
+// Ethereum: HEX deployed at tx 0xcbe7bc037f24b04... on 2019-12-03 ~01:50 UTC. Block ~9,022,344. We use 9,000,000 as a safe bound.
+// PulseChain: contract state was forked at PulseChain genesis (block 0), so we just use 0.
+const HEX_DEPLOY_BLOCK={pls:0,eth:9000000};
+// Cache for batched ETH log scan results — keyed by sorted wallet list
+let ethLogScanCache=null;      // {walletSet: Set, results: Map<addr, stakes[]>}
+let ethLogScanPromise=null;    // in-flight promise to prevent duplicate scans
+
+// Find the earliest block where an address had any HEX contract interaction.
+// Uses a single broad log query (any topic, address as topic1) — fast when it works.
+// Falls back to HEX_DEPLOY_BLOCK if the query fails or returns nothing.
+async function findFirstHexBlock(addr,chain){
+  if(chain==='pls')return 0;
+  const addrTopic='0x'+addr.slice(2).toLowerCase().padStart(64,'0');
+  const urls=ethUrls();
+  for(let i=0;i<urls.length;i++){
+    try{
+      const logs=await rpcLogs({address:HEX,topics:[null,addrTopic],fromBlock:'0x'+HEX_DEPLOY_BLOCK.eth.toString(16),toBlock:'latest'},urls[i]);
+      if(logs&&logs.length){
+        const blocks=logs.map(l=>Number(BigInt(l.blockNumber)));
+        const first=Math.min(...blocks);
+        const rounded=Math.max(HEX_DEPLOY_BLOCK.eth,Math.floor(first/100000)*100000);
+        return rounded;
+      }
+    }catch(e){continue;}
+  }
+  return HEX_DEPLOY_BLOCK.eth;
+}
+
+// Get current block height from a chain (for log scan upper bound). Returns hex string with 0x prefix.
+async function getBlockNumber(chain){
+  const urls=chain==='eth'?ethUrls():rpcsFor(chain);
+  for(let i=0;i<urls.length;i++){
+    try{
+      const r=await fetch(urls[i],{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({jsonrpc:'2.0',id:1,method:'eth_blockNumber',params:[]})});
+      const j=await r.json();
+      if(j.result)return Number(BigInt(j.result));
+    }catch(e){}
+  }
+  return null;
+}
+
+// Run async tasks with bounded concurrency. Returns results in original order.
+async function runConcurrent(tasks,concurrency){
+  const results=new Array(tasks.length);
+  let next=0;
+  async function worker(){
+    while(next<tasks.length){
+      const i=next++;
+      try{results[i]=await tasks[i]();}
+      catch(e){results[i]={error:e};}
+    }
+  }
+  const workers=[];
+  for(let i=0;i<Math.min(concurrency,tasks.length);i++)workers.push(worker());
+  await Promise.all(workers);
+  return results;
+}
+
+// sessionStorage cache for ended stakes — speeds up re-scans within the same tab session.
+// Auto-erases when the tab closes — zero footprint, no persistent data on the user's device.
+const ENDED_CACHE_KEY='hsa_ended_v1';
+// One-time cleanup: remove any localStorage data left by older versions
+try{localStorage.removeItem(ENDED_CACHE_KEY);}catch(e){}
+function loadEndedCache(){try{const raw=sessionStorage.getItem(ENDED_CACHE_KEY);return raw?JSON.parse(raw):{};}catch(e){return{};}}
+function saveEndedCache(cache){try{sessionStorage.setItem(ENDED_CACHE_KEY,JSON.stringify(cache));}catch(e){}}
+function endedCacheKey(addr,chain){return addr.toLowerCase()+':'+chain;}
+function serializeEndedStakes(stakes){
+  return stakes.map(s=>({
+    sid:s.stakeId.toString(),sh:s.stakedHearts.toString(),ss:s.stakeShares.toString(),
+    ld:s.lockedDay,sd:s.stakedDays,ud:s.unlockedDay,
+    po:s.payout?s.payout.toString():'0',pe:s.penalty?s.penalty.toString():'0',
+    svd:s.servedDays||0,st:s.stakeType||'Native'
+  }));
+}
+function deserializeEndedStakes(arr,addr,chain){
+  return arr.map(s=>({
+    stakeId:BigInt(s.sid),stakedHearts:BigInt(s.sh),stakeShares:BigInt(s.ss),
+    lockedDay:s.ld,stakedDays:s.sd,unlockedDay:s.ud,
+    payout:BigInt(s.po||'0'),penalty:BigInt(s.pe||'0'),
+    servedDays:s.svd||0,owner:addr,chain,stakeType:s.st||'Native',fromLog:true
+  }));
+}
+
+async function fetchEndedStakesFromLogs(addr,chain){
+  // ── Primary: Explorer API (1-2 calls instead of 200+ RPC chunks) ──
+  const explorerResult=await fetchEndedViaExplorer(addr,chain);
+  if(explorerResult!==null){
+    // Cache to sessionStorage for re-scans within this tab session
+    const diskCache=loadEndedCache();
+    const ck=endedCacheKey(addr,chain);
+    if(explorerResult.length>0){diskCache[ck]={stakes:serializeEndedStakes(explorerResult),lastBlock:Date.now()};saveEndedCache(diskCache);}
+    return explorerResult;
+  }
+  // ── Fallback: RPC chunked scan (existing proven approach) ──
+  const addrTopic='0x'+addr.slice(2).toLowerCase().padStart(64,'0');
+  if(chain==='pls'){
+    return await fetchEndedFromLogsSingle(addr,addrTopic,'pls');
+  }
+  // Ethereum: use batched scan — one scan for ALL wallets, results cached
+  if(!ethLogScanPromise){
+    ethLogScanPromise=runBatchEthLogScan(wallets);
+  }
+  const batchResults=await ethLogScanPromise;
+  return batchResults.get(addr.toLowerCase())||[];
+}
+
+// Batch ETH log scan: one scan covers all wallet addresses via topic OR logic
+// Uses sessionStorage cache for ended stakes — only scans blocks since last cached scan
+async function runBatchEthLogScan(addrs){
+  if(ethLogScanCache){
+    const same=addrs.length===ethLogScanCache.walletList.length&&
+      addrs.every(a=>ethLogScanCache.walletList.includes(a.toLowerCase()));
+    if(same)return ethLogScanCache.results;
+  }
+  const addrTopics=addrs.map(a=>'0x'+a.slice(2).toLowerCase().padStart(64,'0'));
+  const results=new Map();
+  addrs.forEach(a=>results.set(a.toLowerCase(),[]));
+  updatePhase('eth',{status:'active',detail:'Scanning <span class="c-eth">Ethereum</span> history…',pct:20});
+
+  // Check sessionStorage cache — load previously found ended stakes
+  const diskCache=loadEndedCache();
+  let cacheHitBlock=0;
+  const cachedByAddr=new Map();
+  let allCached=true;
+  for(const a of addrs){
+    const ck=endedCacheKey(a,'eth');
+    const entry=diskCache[ck];
+    if(entry&&entry.lastBlock&&entry.stakes&&entry.stakes.length>0){
+      cachedByAddr.set(a.toLowerCase(),{stakes:deserializeEndedStakes(entry.stakes,a,'eth'),lastBlock:entry.lastBlock});
+      cacheHitBlock=cacheHitBlock===0?entry.lastBlock:Math.min(cacheHitBlock,entry.lastBlock);
+    }else{
+      allCached=false;
+      cachedByAddr.set(a.toLowerCase(),{stakes:[],lastBlock:0});
+    }
+  }
+
+  // Always do a full scan — but log cache status for debugging
+  if(cacheHitBlock>0){
+    console.log(`[eth] session cache: found ended stakes cached up to block ${cacheHitBlock.toLocaleString()}`);
+  }
+
+  const chunkedResults=await fetchEndedFromLogsChunkedBatch(addrTopics,'eth');
+  // Split by address
+  for(const a of addrs){
+    const at=a.slice(2).toLowerCase().padStart(64,'0');
+    const addrEnd=(chunkedResults.endLogs||[]).filter(l=>l.topics[1]&&l.topics[1].slice(2).toLowerCase()===at);
+    const addrStart=(chunkedResults.startLogs||[]).filter(l=>l.topics[1]&&l.topics[1].slice(2).toLowerCase()===at);
+    const merged=mergeStartEndLogs(addrEnd,addrStart,'eth');
+    results.set(a.toLowerCase(),merged);
+    // Save to sessionStorage cache for re-scans
+    const ck=endedCacheKey(a,'eth');
+    if(merged.length>0){
+      diskCache[ck]={stakes:serializeEndedStakes(merged),lastBlock:Date.now()};
+    }
+  }
+  saveEndedCache(diskCache);
+
+  ethLogScanCache={walletList:addrs.map(a=>a.toLowerCase()),results};
+  return results;
+}
+
+// Single full-range log scan. When `strict` is true (Ethereum fast path), returns null if ALL RPCs rejected the query
+// (so caller knows to fall back). Otherwise returns whatever data was found ([] on total failure).
+async function fetchEndedFromLogsSingle(addr,addrTopic,chain,strict){
+  const urls=chain==='eth'?ethUrls():rpcsFor(chain);
+  // Combined query: fetch both StakeEnd and StakeStart in one call using topic OR
+  const combinedParams={address:HEX,topics:[[TOPIC_STAKE_END,TOPIC_STAKE_START],addrTopic],fromBlock:'0x0',toBlock:'latest'};
+  let allLogs=null;
+  for(let i=0;i<urls.length;i++){
+    try{
+      allLogs=await rpcLogs(combinedParams,urls[i]);
+      break;
+    }catch(e){continue;}
+  }
+  if(strict&&allLogs===null)return null;
+  if(!allLogs||!allLogs.length)return[];
+  const endLogs=allLogs.filter(l=>l.topics[0]===TOPIC_STAKE_END);
+  const startLogs=allLogs.filter(l=>l.topics[0]===TOPIC_STAKE_START);
+  if(!endLogs.length)return[];
+  return mergeStartEndLogs(endLogs,startLogs,chain);
+}
+
+// Chunked log scan for Ethereum. 500,000 block chunks at 20 concurrent — v40 proven config.
+// With ~13M ETH blocks this yields ~26 chunks. Per-chunk failover across all 4 RPCs.
+// publicnode may reject 500K ranges (its limit is 50K) — failover handles it by trying ankr/llamarpc/1rpc.
+async function fetchEndedFromLogsChunkedBatch(addrTopics,chain){
+  const urls=ethUrls();
+  const fromBlock=HEX_DEPLOY_BLOCK.eth;
+  const toBlock=await getBlockNumber(chain);
+  if(toBlock==null)return{endLogs:[],startLogs:[]};
+  const CHUNK=49999;
+  const CONCURRENCY=6;
+  const ranges=[];
+  for(let b=fromBlock;b<=toBlock;b+=CHUNK){ranges.push([b,Math.min(b+CHUNK-1,toBlock)]);}
+  const totalChunks=ranges.length;
+  let done=0;
+  const rpcHits={};urls.forEach(u=>{rpcHits[new URL(u).hostname]=0;});
+  console.log(`[eth] batch scan: ${totalChunks} chunks of ${CHUNK.toLocaleString()} blocks, concurrency ${CONCURRENCY}, ${urls.length} RPCs`);
+
+  const queryRange=async([rb,re],chunkIdx)=>{
+    // Combined query: topic[0] as array = OR logic — fetches both StakeEnd and StakeStart in ONE call
+    const combinedParams={address:HEX,topics:[[TOPIC_STAKE_END,TOPIC_STAKE_START],addrTopics],fromBlock:'0x'+rb.toString(16),toBlock:'0x'+re.toString(16)};
+
+    const tryAllRpcs=async()=>{
+      for(const url of urls){
+        try{
+          const logs=await rpcLogs(combinedParams,url);
+          return{logs,rpcUsed:url};
+        }catch(e){continue;}
+      }
+      return null;
+    };
+
+    // Retry with exponential backoff: 500ms, 1s, 2s, 4s
+    const MAX_RETRIES=4;
+    const BACKOFFS=[500,1000,2000,4000];
+    let result=null;
+    for(let attempt=0;attempt<=MAX_RETRIES;attempt++){
+      if(attempt>0){
+        await new Promise(r=>setTimeout(r,BACKOFFS[attempt-1]));
+      }
+      result=await tryAllRpcs();
+      if(result)break;
+    }
+
+    done++;
+    const pct=Math.round(done/totalChunks*100);
+    setProgress(55+Math.round(pct*0.4));
+    if(done<=5||done%5===0||done===totalChunks){
+      updatePhase('eth',{detail:'Scanning <span class="c-eth">Ethereum</span> history… <span class="c-dim">'+pct+'%</span>',pct:10+Math.round(pct*0.75)});
+    }
+
+    const ok=result!==null;
+    if(ok){const h=new URL(result.rpcUsed).hostname;rpcHits[h]=(rpcHits[h]||0)+1;}
+
+    if(!ok){
+      console.error(`[eth] FAILED chunk #${chunkIdx} blocks ${rb.toLocaleString()}-${re.toLocaleString()} after ${MAX_RETRIES+1} attempts`);
+    }
+
+    // Split combined logs by topic
+    const endLogs=ok?result.logs.filter(l=>l.topics[0]===TOPIC_STAKE_END):[];
+    const startLogs=ok?result.logs.filter(l=>l.topics[0]===TOPIC_STAKE_START):[];
+
+    return{
+      endLogs,
+      startLogs,
+      failed:!ok,
+      chunkIdx,blockRange:[rb,re]
+    };
+  };
+
+  const scanStart=Date.now();
+  updatePhase('eth',{detail:'Scanning <span class="c-eth">Ethereum</span> history… <span class="c-dim">0%</span>',pct:10});
+  const tasks=ranges.map((r,i)=>()=>queryRange(r,i));
+  const results=await runConcurrent(tasks,CONCURRENCY);
+
+  const allEnd=[],allStart=[],failedChunks=[];
+  for(let i=0;i<results.length;i++){
+    const r=results[i];
+    if(!r){failedChunks.push({idx:i,range:ranges[i]});continue;}
+    if(r.failed)failedChunks.push({idx:i,range:r.blockRange||ranges[i]});
+    allEnd.push(...r.endLogs);
+    allStart.push(...r.startLogs);
+  }
+
+  const elapsed=((Date.now()-scanStart)/1000).toFixed(1);
+  const succeeded=totalChunks-failedChunks.length;
+  console.log(`[eth] batch scan complete: ${succeeded}/${totalChunks} chunks OK, ${failedChunks.length} failed, ${allEnd.length} end events, ${allStart.length} start events, ${elapsed}s`);
+  console.log('[eth] RPC load distribution:',Object.entries(rpcHits).map(([h,c])=>`${h}:${c}`).join(', '));
+  if(failedChunks.length>0){
+    console.warn(`[eth] FAILED CHUNKS (${failedChunks.length}):`,failedChunks.map(f=>`#${f.idx} [${f.range[0].toLocaleString()}-${f.range[1].toLocaleString()}]`).join(', '));
+  }
+
+  const totalFound=allEnd.length;
+  if(totalFound>0)updatePhase('eth',{detail:'Processing '+totalFound.toLocaleString()+' <span class="c-eth">Ethereum</span> stake events…',pct:88});
+  return{endLogs:allEnd,startLogs:allStart};
+}
+
+async function fetchEndedFromLogsChunked(addr,addrTopic,chain){
+  const urls=chain==='eth'?ethUrls():rpcsFor(chain);
+  // Smart starting block — skips years of pre-wallet history for newer wallets
+  const fromBlock=await findFirstHexBlock(addr,chain);
+  const toBlock=await getBlockNumber(chain);
+  if(toBlock==null){
+    console.warn(`[${chain}] could not get current block, skipping ended-log scan`);
+    return[];
+  }
+  const CHUNK=49999;
+  const totalChunks=Math.ceil((toBlock-fromBlock)/CHUNK);
+  let done=0;
+  const ranges=[];
+  for(let b=fromBlock;b<=toBlock;b+=CHUNK){ranges.push([b,Math.min(b+CHUNK-1,toBlock)]);}
+  const queryRange=async([rb,re])=>{
+    // Combined query: fetch both StakeEnd and StakeStart in one call using topic OR
+    const combinedParams={address:HEX,topics:[[TOPIC_STAKE_END,TOPIC_STAKE_START],addrTopic],fromBlock:'0x'+rb.toString(16),toBlock:'0x'+re.toString(16)};
+    let allLogs=null;
+    for(const url of urls){
+      try{allLogs=await rpcLogs(combinedParams,url);break;}
+      catch(e){}
+    }
+    done++;
+    if(done%5===0||done===totalChunks){
+      const pct=Math.round(done/totalChunks*100);
+      setSt(`<span class="spin"></span>Scanning stake history… ${pct}%`);
+    }
+    const endLogs=allLogs?allLogs.filter(l=>l.topics[0]===TOPIC_STAKE_END):[];
+    const startLogs=allLogs?allLogs.filter(l=>l.topics[0]===TOPIC_STAKE_START):[];
+    return{endLogs,startLogs,failed:allLogs===null};
+  };
+  const tasks=ranges.map(r=>()=>queryRange(r));
+  const results=await runConcurrent(tasks,6);
+  let allEnd=[],allStart=[],failedRanges=0;
+  for(const r of results){
+    if(!r||r.error){failedRanges++;continue;}
+    if(r.failed)failedRanges++;
+    allEnd.push(...r.endLogs);
+    allStart.push(...r.startLogs);
+  }
+  if(failedRanges>0)console.warn(`[${chain}] ended-log scan: ${failedRanges}/${totalChunks} ranges failed`);
+  if(!allEnd.length)return[];
+  return mergeStartEndLogs(allEnd,allStart,chain);
+}
+
+// Parse StakeEnd + StakeStart event arrays and merge into ended-stake records.
+function mergeStartEndLogs(endLogs,startLogs,chain){
+  const allEnded=[];
+  for(const log of endLogs){
+    try{
+      const d0=BigInt(log.data.slice(0,66));
+      const d1=BigInt('0x'+log.data.slice(66,130));
+      const stakeId=BigInt(log.topics[2]);
+      const stakedHearts=(d0>>40n)&M72;
+      const stakeShares=(d0>>112n)&M72;
+      const payout=(d0>>184n)&M72;
+      const penalty=d1&M72;
+      const servedDays=Number((d1>>72n)&M16);
+      allEnded.push({stakeId,stakedHearts,stakeShares,payout,penalty,servedDays,fromLog:true});
+    }catch(e){console.warn('Bad StakeEnd log:',e.message);}
+  }
+  const startMap=new Map();
+  for(const log of startLogs){
+    try{
+      const d0=BigInt(log.data.slice(0,66));
+      const sid=BigInt(log.topics[2]);
+      const ts=Number(d0&M40);
+      const sDays=Number((d0>>184n)&M16);
+      const lockedDay=Math.round((ts-HTS)/86400)+1;
+      startMap.set(sid.toString(),{lockedDay,stakedDays:sDays});
+    }catch(e){console.warn('Bad StakeStart log:',e.message);}
+  }
+  const results=[];
+  for(const e of allEnded){
+    const start=startMap.get(e.stakeId.toString());
+    if(!start)continue;
+    const lockedDay=start.lockedDay;
+    const stakedDays=start.stakedDays;
+    const unlockedDay=lockedDay+e.servedDays;
+    results.push({
+      stakeId:e.stakeId,stakedHearts:e.stakedHearts,stakeShares:e.stakeShares,
+      lockedDay,stakedDays,unlockedDay,
+      yh:e.payout,
+      chain,
+      fromLog:true
+    });
+  }
+  return results;
+}
+
+function switchTab(tab){
+  const tabA=document.getElementById('tab-active');
+  const tabE=document.getElementById('tab-ended');
+  const panA=document.getElementById('active-panel');
+  const panE=document.getElementById('ended-panel');
+  if(tab==='ended'){
+    tabA.className='stake-tab stake-tab-active';
+    tabE.className='stake-tab stake-tab-ended selected';
+    panA.className='hide';
+    panE.className='show';
+  } else {
+    tabA.className='stake-tab stake-tab-active selected';
+    tabE.className='stake-tab stake-tab-ended';
+    panA.className='';
+    panE.className='';
+  }
+}
+
+// ── Multi-wallet state ──
+// wallets: array of lowercase 0x addresses currently in the list (chain-agnostic — same wallet shown on whichever chain(s) are active)
+// walletData: Map<key, {stakes, liquidHearts, chain}> where key = "chain:addr"
+// activeFilter: 'all' or a specific wallet address
+// chainFilter: 'all' or 'pls' or 'eth' (only relevant in 'both' chainMode)
+let wallets=[];
+let walletData=new Map();
+let activeFilter='all';
+
+function wkey(addr,chain){return chain+':'+addr;}
+function normalizeAddr(raw){
+  if(!raw)return null;
+  const t=raw.trim();
+  if(!/^0x[0-9a-fA-F]{40}$/.test(t))return null;
+  return t.toLowerCase();
+}
+// Extract every valid 0x-prefixed 40-char hex address from arbitrary input text.
+// Handles newline-, comma-, space-, tab-separated lists, mixed whitespace, surrounding
+// quotes, spreadsheet-style pastes, etc. Returns deduplicated lowercase addresses in order.
+function extractAddrs(raw){
+  if(!raw)return[];
+  const matches=raw.match(/0x[0-9a-fA-F]{40}/g)||[];
+  const seen=new Set();
+  const out=[];
+  for(const m of matches){
+    const addr=m.toLowerCase();
+    if(!seen.has(addr)){seen.add(addr);out.push(addr);}
+  }
+  return out;
+}
+function truncAddr(a){return a.slice(0,6)+'…'+a.slice(-4);}
+// ── Recent-address history (v54) ─────────────────────────────────────────────
+// Saved on this device only (localStorage on the current origin). Never sent
+// anywhere. The Clear button wipes the list; a small "Saved on this device"
+// label next to it makes the storage visible so it's not surprising. Cap at 20.
+const RECENT_ADDRS_KEY='hsa_recent_addrs';
+const RECENT_CAP=20;
+// One-time cleanup: earlier v54 build used an opt-in flag; the flag is gone now, remove the leftover key.
+try{localStorage.removeItem('hsa_save_history');}catch(e){}
+function getRecentAddrs(){
+  try{const raw=localStorage.getItem(RECENT_ADDRS_KEY);const arr=raw?JSON.parse(raw):[];return Array.isArray(arr)?arr.filter(a=>typeof a==='string'&&/^0x[0-9a-fA-F]{40}$/.test(a)):[];}
+  catch(e){return[];}
+}
+function saveRecentAddrs(list){try{localStorage.setItem(RECENT_ADDRS_KEY,JSON.stringify(list.slice(0,RECENT_CAP)));}catch(e){}}
+// LRU: move-to-front on repeat, cap at RECENT_CAP.
+function rememberRecentAddr(addr){
+  const a=(addr||'').toLowerCase();
+  if(!/^0x[0-9a-fA-F]{40}$/.test(a))return;
+  const cur=getRecentAddrs().filter(x=>x!==a);
+  cur.unshift(a);
+  saveRecentAddrs(cur);
+}
+function removeRecentAddr(addr){
+  const a=(addr||'').toLowerCase();
+  saveRecentAddrs(getRecentAddrs().filter(x=>x!==a));
+  renderRecentDropdown();
+}
+function clearRecentAddrs(){
+  try{localStorage.removeItem(RECENT_ADDRS_KEY);}catch(e){}
+  renderRecentDropdown();
+}
+// Click a recent chip → APPEND the address to the search input (comma-separated), not straight
+// to the wallet list. Keeps the dropdown open so the user can stack multiple picks and visually
+// confirm what will be analyzed. Committed wallet chips (already added via +Add) are skipped so
+// the input doesn't duplicate anything the user has already committed.
+function pickRecentAddr(addr){
+  const a=(addr||'').toLowerCase();
+  if(!/^0x[0-9a-fA-F]{40}$/.test(a))return;
+  const input=document.getElementById('addr');
+  if(!input)return;
+  if(wallets.includes(a)){showWalletErr('That wallet is already added below.','info');input.focus();return;}
+  const cur=(input.value||'').trim();
+  if(extractAddrs(cur).includes(a)){showWalletErr('That wallet is already in the search bar.','info');input.focus();return;}
+  input.value=cur?cur+', '+a:a;
+  input.focus();
+  showWalletErr('');
+}
+// Dropdown open/close — driven by input focus/blur; onmousedown-preventDefault on the dropdown
+// itself keeps clicks inside from stealing focus (which would fire blur and close it).
+let _recentCloseTimer=null;
+function renderRecentDropdown(){
+  const dd=document.getElementById('recent-dropdown');
+  if(!dd)return;
+  const addrs=getRecentAddrs();
+  if(addrs.length===0){
+    dd.innerHTML='<div class="recent-drop-hdr">Saved on this device</div>'+
+      '<div class="recent-drop-empty">Nothing saved yet — analyze a wallet and it appears here</div>';
+    return;
+  }
+  const items=addrs.map(a=>
+    '<div class="recent-drop-item" onclick="pickRecentAddr(\''+a+'\')" title="'+a+' — click to add to the wallet list">'+
+      '<span class="recent-drop-item-addr">'+truncAddr(a)+'</span>'+
+      '<button class="recent-drop-item-x" onclick="event.stopPropagation();removeRecentAddr(\''+a+'\');" title="Remove from history">×</button>'+
+    '</div>'
+  ).join('');
+  dd.innerHTML='<div class="recent-drop-hdr">Saved on this device · '+addrs.length+'</div>'+
+    '<div class="recent-drop-list">'+items+'</div>'+
+    '<div class="recent-drop-foot"><button class="recent-drop-clear" onclick="clearRecentAddrs();closeRecentDropdown();">Clear addresses</button></div>';
+}
+function openRecentDropdown(){
+  if(_recentCloseTimer){clearTimeout(_recentCloseTimer);_recentCloseTimer=null;}
+  const dd=document.getElementById('recent-dropdown');
+  if(!dd)return;
+  renderRecentDropdown();
+  dd.hidden=false;
+}
+function closeRecentDropdown(){
+  const dd=document.getElementById('recent-dropdown');
+  if(dd)dd.hidden=true;
+}
+// Blur fires immediately when a chip is clicked, which would kill the click. Defer.
+function scheduleCloseRecentDropdown(){
+  if(_recentCloseTimer)clearTimeout(_recentCloseTimer);
+  _recentCloseTimer=setTimeout(closeRecentDropdown,150);
+}
+// ────────────────────────────────────────────────────────────────────────────
+function showWalletErr(msg,kind){
+  const el=document.getElementById('wlist-err');
+  if(!msg){el.style.display='none';el.textContent='';el.removeAttribute('data-kind');return;}
+  el.style.display='block';el.textContent=msg;
+  el.setAttribute('data-kind',kind||'error');
+  setTimeout(()=>{if(el.textContent===msg){el.style.display='none';el.textContent='';el.removeAttribute('data-kind');}},4000);
+}
+function addWallet(){
+  const input=document.getElementById('addr');
+  const raw=input.value;
+  const found=extractAddrs(raw);
+  // Single-address fast path: behaves exactly like before, including the strict-format error
+  // when the user typed something invalid.
+  if(found.length<=1){
+    const addr=normalizeAddr(raw);
+    if(!addr){showWalletErr('Invalid address. Must be a 0x-prefixed 40-char hex string.');return;}
+    if(wallets.includes(addr)){showWalletErr('That wallet is already in the list.');return;}
+    if(wallets.length>=10){showWalletErr('Maximum 10 wallets per session.');return;}
+    wallets.push(addr);
+    input.value='';
+    renderWalletList();
+    showWalletErr('');
+    return;
+  }
+  // Bulk path: multiple addresses detected in the input. Add as many as fit, report the rest.
+  let added=0,duplicate=0,overflow=0;
+  for(const addr of found){
+    if(wallets.includes(addr)){duplicate++;continue;}
+    if(wallets.length>=10){overflow++;continue;}
+    wallets.push(addr);
+    added++;
+  }
+  input.value='';
+  renderWalletList();
+  if(added===0&&duplicate>0&&overflow===0){
+    showWalletErr(`All ${duplicate} address${duplicate>1?'es were':' was'} already in the list.`,'info');
+  }else if(added>0){
+    const parts=[`Added ${added} wallet${added>1?'s':''}`];
+    if(duplicate>0)parts.push(`${duplicate} duplicate${duplicate>1?'s':''} skipped`);
+    if(overflow>0)parts.push(`${overflow} skipped (10-wallet limit)`);
+    showWalletErr(parts.join(' · '),'info');
+  }else{
+    showWalletErr('No valid addresses found in input.');
+  }
+}
+function removeWallet(addr){
+  wallets=wallets.filter(w=>w!==addr);
+  // Remove all chain entries for this wallet from cache
+  ['pls','eth'].forEach(c=>walletData.delete(wkey(addr,c)));
+  renderWalletList();
+  // If dashboard was showing and the filter was this wallet, reset to all
+  if(activeFilter===addr)activeFilter='all';
+  // Re-render dashboard if it's currently showing
+  if(document.getElementById('dash').style.display==='block'){
+    if(wallets.length===0){
+      document.getElementById('dash').style.display='none';
+      document.getElementById('share-btn')?.style.setProperty('display','none');
+      setSt('No wallets in list. Add a wallet and click Analyze.');
+    } else {
+      rerenderFromCache();
+    }
+  }
+}
+function renderWalletList(){
+  const el=document.getElementById('wlist');
+  if(!wallets.length){el.innerHTML='';return;}
+  el.innerHTML='<span class="wlist-lbl">'+wallets.length+' wallet'+(wallets.length!==1?'s':'')+'</span>'+
+    wallets.map(a=>`<span class="wchip">${truncAddr(a)}<button class="wchip-x" onclick="removeWallet('${a}')" title="Remove">×</button></span>`).join('');
+}
+
+// ════════════════════════════════════════════════════════════════════
+// HTT Analyzer — INLINE INTEGRATION (no separate page, no entry button)
+// ════════════════════════════════════════════════════════════════════
+// Renders directly into #htt-inline-slot (sits between pending stakes and stake-tabs in #dash).
+// Auto-fetches HTT balance + per-stake details after main scan completes when hasHTT is true.
+// Cached via httBalancesScanToken — filter changes re-render from cache without re-fetching.
+// Native users (hasHTT === false) see no change to the dash; slot stays empty.
+let httLastFetchToken=-1;
+async function renderHTTInlineSection(){
+  const slot=document.getElementById('htt-inline-slot');
+  if(!slot)return;
+  if(!hasHTT){slot.innerHTML='';return;}
+  // Cache hit — render immediately from stored data (filter changes, re-rerenders)
+  if(httLastFetchToken===httBalancesScanToken&&httBalances.size>0){
+    slot.innerHTML=renderHTTInlineHeader()+renderHTTInlineBody();
+    return;
+  }
+  // Fresh fetch — show skeleton + header immediately, fetch in background, re-render when done.
+  // Main dash above is already rendered; HTT section progressively loads underneath.
+  slot.innerHTML=renderHTTInlineHeader()+renderHTTAnalyzerSkeleton();
+  setHTTAnalyzerPhase('active','Fetching HTT contracts, wallet balances, and per-stake details…');
+  try{
+    const httStakes=lastStakes.filter(s=>s.stakeType==='HTT');
+    await Promise.all([
+      fetchWalletHTTBalances(wallets),
+      fetchActuatorStakeDetails(httStakes)
+    ]);
+    // Fetch live USD prices for every discovered HTT contract (fills httPriceByDay for downstream renderers)
+    await fprHTT();
+    httLastFetchToken=httBalancesScanToken;
+    // Detail format matches the other scan-status lines ("x stakes · y pending").
+    // Stakes count = active + overdue + pending (excludes ended/fromLog).
+    const httActiveOrPending=lastStakes.filter(s=>{
+      if(s.stakeType!=='HTT'||s.fromLog)return false;
+      const st=sst(s);return st==='active'||st==='overdue'||st==='pending';
+    });
+    const httPending=httActiveOrPending.filter(s=>sst(s)==='pending').length;
+    setHTTAnalyzerPhase('done',httActiveOrPending.length+' stakes · '+httPending+' pending');
+    slot.innerHTML=renderHTTInlineHeader()+renderHTTInlineBody();
+  }catch(e){
+    console.warn('HTT inline fetch failed:',e.message);
+    setHTTAnalyzerPhase('done','scan failed — see console');
+    slot.innerHTML=renderHTTInlineHeader()+'<div class="htt-an-loading" style="color:#ff5c5c;">HTT scan failed — see console.</div>';
+  }
+}
+
+// Section header for the inline HTT analysis area — small banner with title + data context.
+// v51 HTT section header — factual subtitle derived from computed position data.
+function renderHTTInlineHeader(){
+  const data=computeHTTPositionData();
+  let sub;
+  if(!data||(data.stakeTotal===0&&data.activeSeries===0)){
+    sub='No HTT activity detected';
+  }else{
+    const stakeLbl=data.stakeTotal+' HTT-backed stake'+(data.stakeTotal===1?'':'s');
+    const hexLbl=' · '+fh(data.totalPrincipal)+' HEX locked';
+    const seriesLbl=' · '+data.activeSeries+' HTT series active';
+    sub=stakeLbl+hexLbl+seriesLbl;
+  }
+  const tip='HTT Position covers your Actuator-delegated HEX stakes and any HTT tokens you hold (Actuator is PulseChain-only). HOW IT WORKS — each stake mints ONE HTT series at a time. Once you extract a series you can only mint MORE of that same series; to switch to a different one you must first retire 100% of the current series, which hands control of the stake back to you. Key terms — EXTRACTED: HTT already minted against a stake and still outstanding; retiring it before end-stake reclaims the underlying HEX. EXTRACTABLE: how much MORE of your locked series you can mint right now = the stake\'s current value (principal + accrued) minus what is already extracted. ACCRUED is NOT the same as EXTRACTABLE — accrued is the stake\'s total earned yield, while extractable is only the leftover headroom after what you have already pulled; extractable grows a little each day as the stake accrues. IN WALLET: liquid HTT tokens held across your wallets, self-extracted or acquired on the market. HEX LOCKED: HEX principal across your HTT-backed stakes. BOUNTY: projected end-stake reserve — a figure the Actuator itself does not surface. Every stake is listed under its native series (its own end day); a stake locked to an earlier series is flagged. HTT-N redeems on HEX day N. USD VALUES — per-HTT prices are fetched live from the PulseX v2 subgraph (derivedUSD) and refresh on the same 60s cadence as the HEX price; a dash means the subgraph has no routed USD price yet for that series (typically thin liquidity for a newer HTT).';
+  return '<div class="htt-inline-header">'+
+    '<div class="htt-inline-title-block">'+
+      '<div class="htt-inline-title">HTT Position</div>'+
+      '<div class="htt-inline-sub">'+sub+'</div>'+
+    '</div>'+
+    '<div class="htt-inline-info"><div class="info-i" onclick="this.classList.toggle(\'active\')">i</div><div class="info-tip">'+tip+'</div></div>'+
+  '</div>';
+}
+
+// v51 inline body — four fact-based blocks. No editorializing, no derived/signed metrics.
+//   1. Key Stats (6-card strip)
+//   2. Per-HTT Breakdown (table with inline visual bars)
+//   3. HTT Maturity Calendar (timeline chart)
+//   4. Per-Stake Detail (sortable table)
+function renderHTTInlineBody(){
+  return renderHTTKeyStats()+renderHTTSeriesBreakdown()+renderHTTMaturityCalendar()+renderHTTStakesTable();
+}
+
+// ══════════════════════════════════════════════════════════════════
+// Shared HTT data aggregator — single source of truth for all v51 blocks.
+// Computes per-series totals (outstanding, mintable, held, principal, accrued)
+// using effective maturity (stored s.maturity if minted, else endDay if implied).
+// Returns null when there's no HTT activity to display.
+// ══════════════════════════════════════════════════════════════════
+function computeHTTPositionData(){
+  // ── Wallet holdings by HTT day ──
+  const heldBySeries=new Map();
+  for(const [_,holdings] of httBalances){
+    for(const h of holdings){
+      if(!heldBySeries.has(h.day))heldBySeries.set(h.day,{held:0n,label:h.symbol||('HTT-'+(h.day+1))});
+      heldBySeries.get(h.day).held+=h.balance;
+    }
+  }
+  // ── Per-stake aggregation by NATIVE series (the stake's own end day = its true, permanent identity).
+  //    Backing / mintable / accrued / extracted all attribute to the native series. When a stake extracted
+  //    an earlier/different ("borrowed") HTT, that's tracked separately for an annotation, and the extracted
+  //    amount is ALSO bucketed by the token's OWN redemption day so the maturity chart shows real timing. ──
+  const outstandingBySeries=new Map(); // collateralAmount (extracted), attributed to the stake's native series
+  const mintableBySeries=new Map();
+  const principalBySeries=new Map();
+  const stakeCountBySeries=new Map();
+  const accruedBySeries=new Map();
+  const earliestEndDayBySeries=new Map();
+  const borrowBySeries=new Map();       // nativeDay → Map(tokenDay → extracted) for mismatched extractions
+  const extractedByTokenDay=new Map();  // collateralAmount keyed by the token's OWN redemption day (chart axis)
+  for(const s of lastStakes){
+    if(s.stakeType!=='HTT'||s.fromLog)continue;
+    const stored=Number(s.maturity)||0;
+    const endDay=Number((s.lockedDay||0)+(s.stakedDays||0));
+    const nativeDay=endDay;                       // identity = the stake's own end day
+    const tokenDay=stored>0?stored:endDay;         // the HTT series actually extracted (borrowed if ≠ native)
+    if(nativeDay===0)continue;
+    if(hexDay&&nativeDay<=hexDay)continue;         // skip stakes whose HEX has already unlocked
+    stakeCountBySeries.set(nativeDay,(stakeCountBySeries.get(nativeDay)||0)+1);
+    const det=httStakeDetails.get(s.stakeId?.toString())||{};
+    const coll=s.collateralAmount||0n;
+    if(coll>0n){
+      outstandingBySeries.set(nativeDay,(outstandingBySeries.get(nativeDay)||0n)+coll);
+      extractedByTokenDay.set(tokenDay,(extractedByTokenDay.get(tokenDay)||0n)+coll);
+      if(tokenDay!==nativeDay){
+        if(!borrowBySeries.has(nativeDay))borrowBySeries.set(nativeDay,new Map());
+        const bm=borrowBySeries.get(nativeDay);
+        bm.set(tokenDay,(bm.get(tokenDay)||0n)+coll);
+      }
+    }
+    const avail=det.availableToExtract||0n;
+    if(avail>0n)mintableBySeries.set(nativeDay,(mintableBySeries.get(nativeDay)||0n)+avail);
+    if(s.stakedHearts)principalBySeries.set(nativeDay,(principalBySeries.get(nativeDay)||0n)+s.stakedHearts);
+    const accrued=det.accrued||0n;
+    if(accrued>0n)accruedBySeries.set(nativeDay,(accruedBySeries.get(nativeDay)||0n)+accrued);
+    if(!earliestEndDayBySeries.has(nativeDay)||endDay<earliestEndDayBySeries.get(nativeDay))earliestEndDayBySeries.set(nativeDay,endDay);
+  }
+  // ── Union of held + native-staked series ──
+  const allDays=new Set([...heldBySeries.keys(),...stakeCountBySeries.keys(),...principalBySeries.keys()]);
+  if(allDays.size===0){
+    return{series:[],extractedByTokenDay:[],totalPrincipal:0n,totalOutstanding:0n,totalMintable:0n,totalHeld:0n,totalAccrued:0n,stakeTotal:0,earliestMintableDay:null,earliestMintableLabel:null,activeSeries:0};
+  }
+  const series=Array.from(allDays).map(day=>{
+    const heldInfo=heldBySeries.get(day);
+    const held=heldInfo?heldInfo.held:0n;
+    const label=heldInfo?heldInfo.label:(httContractInfo.get(day)?.symbol||('HTT-'+(day+1)));
+    const outstanding=outstandingBySeries.get(day)||0n;
+    const mintable=mintableBySeries.get(day)||0n;
+    const principal=principalBySeries.get(day)||0n;
+    const stakeCount=stakeCountBySeries.get(day)||0;
+    const accrued=accruedBySeries.get(day)||0n;
+    const earliestEnd=earliestEndDayBySeries.get(day)||day;
+    const bm=borrowBySeries.get(day);
+    const borrows=bm?Array.from(bm.entries()).map(([td,amt])=>({tokenDay:td,label:(httContractInfo.get(td)?.symbol||('HTT-'+(td+1))),amount:amt})).sort((a,b)=>a.tokenDay-b.tokenDay):[];
+    return{day,label,held,outstanding,mintable,principal,stakeCount,accrued,earliestEnd,borrows,source:stakeCount>0?'stake':'market'};
+  }).sort((a,b)=>a.day-b.day);
+  // ── Assign each series a stable identity color (purple/blue/pink palette, theme-consistent).
+  //    Reused across the composition bar, table badge dots, and any per-series visual. ──
+  const HTT_SERIES_COLORS=['#FF00CC','#9400FF','#00AAFF','#c4a7ff','#00CFFF','#a78bfa','#FF6EC7','#7c3aed','#5B8DEF','#b96bff','#3FA9F5','#d49bff'];
+  series.forEach((s,i)=>{s.color=HTT_SERIES_COLORS[i%HTT_SERIES_COLORS.length];});
+  // ── Aggregates ──
+  const totalPrincipal=series.reduce((s,x)=>s+x.principal,0n);
+  const totalOutstanding=series.reduce((s,x)=>s+x.outstanding,0n);
+  const totalMintable=series.reduce((s,x)=>s+x.mintable,0n);
+  const totalHeld=series.reduce((s,x)=>s+x.held,0n);
+  const totalAccrued=series.reduce((s,x)=>s+x.accrued,0n);
+  const stakeTotal=series.reduce((s,x)=>s+x.stakeCount,0);
+  // Earliest mintable: among series with mintable > 0, find the earliest end day
+  let earliestMintableDay=null,earliestMintableLabel=null;
+  for(const s of series){
+    if(s.mintable>0n&&(earliestMintableDay===null||s.earliestEnd<earliestMintableDay)){
+      earliestMintableDay=s.earliestEnd;
+      earliestMintableLabel=s.label;
+    }
+  }
+  // Active series = anything with outstanding, held, or mintable
+  const activeSeries=series.filter(s=>s.outstanding>0n||s.held>0n||s.mintable>0n).length;
+  // Extracted bucketed by the token's OWN future redemption day — drives the "Extracted by Redemption Day"
+  // chart so a borrowed (earlier-maturing) HTT plots at its real redemption, not the stake's end day.
+  const extractedByToken=Array.from(extractedByTokenDay.entries())
+    .filter(([day])=>!hexDay||day>hexDay)
+    .map(([day,value])=>({day,label:(httContractInfo.get(day)?.symbol||('HTT-'+(day+1))),value}))
+    .sort((a,b)=>a.day-b.day);
+  return{series,extractedByTokenDay:extractedByToken,totalPrincipal,totalOutstanding,totalMintable,totalHeld,totalAccrued,stakeTotal,earliestMintableDay,earliestMintableLabel,activeSeries};
+}
+
+// ══════════════════════════════════════════════════════════════════
+// Block 1: Key Stats — 6-card strip of single facts.
+// HEX Locked · HTT Extracted · HTT Extractable · HTT In Wallet · HEX Accrued · Earliest Extractable
+// ══════════════════════════════════════════════════════════════════
+function renderHTTKeyStats(){
+  const data=computeHTTPositionData();
+  if(!data)return '';
+  let earliestMintableVal='—',earliestMintableSub='nothing extractable yet';
+  if(data.earliestMintableDay!==null){
+    const daysLeft=hexDay?Math.max(0,data.earliestMintableDay-hexDay):0;
+    earliestMintableVal='Day '+(data.earliestMintableDay+1);
+    earliestMintableSub=data.earliestMintableLabel+' · '+daysLeft.toLocaleString()+' d';
+  }
+  // ── USD totals for the three HTT-denominated cards, summed across all series ──
+  // Extracted uses borrow-aware pricing (borrowed portions priced at the borrowed series' rate);
+  // mintable + held live in the native series and use the native price.
+  let usdExtracted=0,usdExtractable=0,usdHeld=0;
+  for(const s of data.series){
+    usdExtracted+=httUsdExtractedForSeries(s);
+    const p=httPriceFor(s.day);
+    if(!p)continue;
+    if(s.mintable>0n)usdExtractable+=Number(s.mintable)/1e8*p;
+    if(s.held>0n)usdHeld+=Number(s.held)/1e8*p;
+  }
+  // Each card carries a category color: HEX (amber), HTT (purple/blue/lavender), TIME (cyan).
+  // cat class drives the top accent stripe, unit-pill color, and category glow tint.
+  // Optional `usd` renders a green USD line between the main val and the descriptive sub.
+  const stat=(cat,lbl,val,unit,sub,usd)=>
+    '<div class="htt51-stat cat-'+cat+'">'+
+      '<div class="htt51-stat-lbl">'+lbl+'</div>'+
+      '<div class="htt51-stat-val">'+val+(unit?'<span class="htt51-stat-unit">'+unit+'</span>':'')+'</div>'+
+      (usd?'<div class="htt51-stat-usd" title="Live USD value at PulseX v2 subgraph prices">'+httFmtUsd(usd)+'</div>':'')+
+      '<div class="htt51-stat-sub">'+sub+'</div>'+
+    '</div>';
+  const cards='<div class="htt51-keystats">'+
+    stat('hex','HEX Locked',fh(data.totalPrincipal),'HEX','in HTT-backed stakes')+
+    stat('out','HTT Extracted',fh(data.totalOutstanding),'HTT','extracted against your stakes',usdExtracted)+
+    stat('mint','HTT Extractable',fh(data.totalMintable),'HTT','still extractable from your stakes',usdExtractable)+
+    stat('held','HTT In Wallet',fh(data.totalHeld),'HTT','across all HTT series',usdHeld)+
+    stat('hex','HEX Accrued',fh(data.totalAccrued),'HEX','yield earned in HTT-backed stakes')+
+    stat('time','Earliest Extractable',earliestMintableVal,'',earliestMintableSub)+
+  '</div>';
+  // ── Composition bar: HEX backing distribution across stake-linked series ──
+  // The compact "pie" — proportional, color-coded, ties series colors to the table below.
+  const backing=data.series.filter(s=>s.principal>0n).slice().sort((a,b)=>(b.principal>a.principal?1:(b.principal<a.principal?-1:0)));
+  const totalBacking=backing.reduce((a,s)=>a+s.principal,0n);
+  let compBar='';
+  if(backing.length>0&&totalBacking>0n){
+    let segs='',legend='';
+    for(const s of backing){
+      const pct=Number(s.principal*10000n/totalBacking)/100;
+      segs+='<div class="htt51-comp-seg" style="width:'+pct.toFixed(3)+'%;background:'+s.color+';" title="'+s.label+': '+fh(s.principal)+' HEX ('+pct.toFixed(1)+'%)"></div>';
+      legend+='<div class="htt51-comp-leg"><span class="htt51-comp-dot" style="background:'+s.color+';"></span><span class="htt51-comp-leg-lbl">'+s.label+'</span><span class="htt51-comp-leg-val">'+fh(s.principal)+'</span><span class="htt51-comp-leg-pct">'+pct.toFixed(1)+'%</span></div>';
+    }
+    compBar='<div class="htt51-comp">'+
+      '<div class="htt51-comp-cap">HEX Locked by HTT Series</div>'+
+      '<div class="htt51-comp-bar">'+segs+'</div>'+
+      '<div class="htt51-comp-legend">'+legend+'</div>'+
+    '</div>';
+  }
+  return cards+compBar;
+}
+
+// ══════════════════════════════════════════════════════════════════
+// Block 2: Per-HTT Breakdown — sortable table with inline visual bars.
+// Stake-linked rows and market-only rows in one table, distinguished by subtle tint.
+// Bar visualization: outstanding (dark) + mintable (light), bar length proportional to series capacity.
+// ══════════════════════════════════════════════════════════════════
+// Click a Per-HTT Breakdown column header → sort + re-render inline section.
+// First click = column's natural direction; click same header again = reversed.
+function setHTTSeriesSort(key){
+  if(httSeriesSortBy===key){httSeriesSortReversed=!httSeriesSortReversed;}
+  else{httSeriesSortBy=key;httSeriesSortReversed=false;}
+  const slot=document.getElementById('htt-inline-slot');
+  if(slot)slot.innerHTML=renderHTTInlineHeader()+renderHTTInlineBody();
+}
+
+function renderHTTSeriesBreakdown(){
+  const data=computeHTTPositionData();
+  if(!data||data.series.length===0)return '';
+  // ── Sort per active column. Natural direction: day=ascending (chronological),
+  //    everything else descending (biggest first). Reversed flips it. ──
+  const cmpBig=(a,b)=>a>b?-1:(a<b?1:0);
+  const extractRatio=s=>{const cap=s.outstanding+s.mintable;return cap>0n?Number(s.outstanding*10000n/cap):-1;};
+  const priceOf=s=>httPriceFor(s.day);
+  const usdOfRow=s=>httUsdOf(s.day,s.outstanding+s.mintable+s.held);
+  const baseSort={
+    day:(a,b)=>a.day-b.day,
+    price:(a,b)=>priceOf(b)-priceOf(a),
+    stakes:(a,b)=>b.stakeCount-a.stakeCount,
+    principal:(a,b)=>cmpBig(a.principal,b.principal),
+    extraction:(a,b)=>extractRatio(b)-extractRatio(a),
+    outstanding:(a,b)=>cmpBig(a.outstanding,b.outstanding),
+    mintable:(a,b)=>cmpBig(a.mintable,b.mintable),
+    held:(a,b)=>cmpBig(a.held,b.held),
+    value:(a,b)=>usdOfRow(b)-usdOfRow(a),
+  }[httSeriesSortBy]||((a,b)=>a.day-b.day);
+  const sortFn=httSeriesSortReversed?(a,b)=>-baseSort(a,b):baseSort;
+  const sorted=data.series.slice().sort(sortFn);
+  // Totals — HEX + HTT sums plus live USD value for each HTT bucket (extracted / extractable / in-wallet).
+  // Extracted USD uses borrow-aware pricing (borrowed portions use their own series price); mintable/held
+  // both live in the native series and use the native price.
+  let totExtracted=0n,totExtractable=0n,totHeld=0n,totPrincipal=0n;
+  let usdExtracted=0,usdExtractable=0,usdHeld=0;
+  for(const s of data.series){
+    totPrincipal+=s.principal;totExtracted+=s.outstanding;totExtractable+=s.mintable;totHeld+=s.held;
+    usdExtracted+=httUsdExtractedForSeries(s);
+    const p=httPriceFor(s.day);
+    if(p){
+      if(s.mintable>0n)usdExtractable+=Number(s.mintable)/1e8*p;
+      if(s.held>0n)usdHeld+=Number(s.held)/1e8*p;
+    }
+  }
+  const usdRowTotal=usdExtracted+usdExtractable+usdHeld;
+  const rows=sorted.map(s=>{
+    // Normalized ratio bar — full track = this series' current cap (extracted + mintable).
+    // Purple = extracted (HEX already pulled out), Blue = mintable (still extractable).
+    // % label = extracted share of cap → how much of the current cap is already pulled.
+    const cap=s.outstanding+s.mintable;
+    const outPct=cap>0n?Number(s.outstanding*10000n/cap)/100:0;
+    const mintPct=100-outPct;
+    let barHTML;
+    if(s.source==='market'){
+      barHTML='<div class="htt51-ratio-empty">no related stake</div>';
+    }else if(cap===0n){
+      barHTML='<div class="htt51-ratio-empty">no capacity</div>';
+    }else{
+      // Minimum visible sliver for tiny non-zero segments so neither side disappears
+      const outW=s.outstanding>0n?Math.max(outPct,2):0;
+      const mintW=s.mintable>0n?Math.max(mintPct,2):0;
+      barHTML='<div class="htt51-ratio">'+
+        '<div class="htt51-ratio-track">'+
+          (s.outstanding>0n?'<div class="htt51-ratio-out" style="width:'+outW.toFixed(2)+'%" title="Extracted '+fh(s.outstanding)+' HEX ('+outPct.toFixed(1)+'%)"></div>':'')+
+          (s.mintable>0n?'<div class="htt51-ratio-mint" style="width:'+mintW.toFixed(2)+'%" title="Extractable '+fh(s.mintable)+' HEX ('+mintPct.toFixed(1)+'%)"></div>':'')+
+        '</div>'+
+        '<span class="htt51-ratio-pct">'+outPct.toFixed(0)+'%</span>'+
+      '</div>';
+    }
+    const daysLeft=hexDay?Math.max(0,s.day-hexDay):0;
+    const daysLeftStr=daysLeft>0?daysLeft.toLocaleString()+'d':'matured';
+    const rowCls='htt51-row '+(s.source==='market'?'market':'stake');
+    // Extracted breakdown — for series with any borrowed extraction, split the total across native (this series)
+    // and each borrowed series so the user can see exactly what they owe in which token, not just the aggregate.
+    let borrowNote='';
+    if(s.borrows&&s.borrows.length>0){
+      const borrowedSum=s.borrows.reduce((a,b)=>a+b.amount,0n);
+      const nativePart=s.outstanding-borrowedSum;
+      const lines=[];
+      if(nativePart>0n){
+        lines.push('<span class="htt51-borrow-line native" title="Extracted as this series (native — redeems on this row\'s day)">'+fh(nativePart)+' as '+s.label+'</span>');
+      }
+      for(const b of s.borrows){
+        lines.push('<span class="htt51-borrow-line borrowed" title="Extracted as '+b.label+' (borrowed — redeems earlier). Stake\'s HEX still unlocks on this row\'s day; the borrowed token must be retired before the native series can be minted.">🔒 '+fh(b.amount)+' as '+b.label+'</span>');
+      }
+      borrowNote='<div class="htt51-borrow-note">'+lines.join('')+'</div>';
+    }
+    const p=priceOf(s);
+    const priceCell=p>0
+      ? '<span class="htt51-price">'+httFmtPrice(p)+'</span>'
+      : '<span class="htt51-dash" title="No routed USD price on PulseX v2 subgraph yet — thin or missing liquidity.">—</span>';
+    // Native-priced USD sub — used for extractable + in-wallet, which live in the native series
+    const usdSubNative=(amt)=>{if(!p||amt===0n)return '';return '<span class="htt51-usd-sub">'+httFmtUsd(Number(amt)/1e8*p)+'</span>';};
+    // Extracted USD uses borrow-aware pricing (a series minted-against as a different HTT still has real USD value)
+    const usdExtracted=httUsdExtractedForSeries(s);
+    const usdExtractedSub=(s.outstanding>0n&&usdExtracted>0)?'<span class="htt51-usd-sub">'+httFmtUsd(usdExtracted)+'</span>':'';
+    return '<tr class="'+rowCls+'">'+
+      '<td><span class="htt51-series-cell"><span class="htt51-series-cdot" style="background:'+s.color+';"></span><span class="htt51-series-badge">'+s.label+'</span></span></td>'+
+      '<td class="right">'+priceCell+'</td>'+
+      '<td class="right">'+(s.stakeCount>0?s.stakeCount:'<span class="htt51-dash">—</span>')+'</td>'+
+      '<td class="right htt51-hex">'+(s.principal>0n?fh(s.principal):'<span class="htt51-dash">—</span>')+'</td>'+
+      '<td class="htt51-bar-cell">'+barHTML+'</td>'+
+      '<td class="right">'+(s.outstanding>0n?(fh(s.outstanding)+usdExtractedSub+borrowNote):'<span class="htt51-dash">0</span>')+'</td>'+
+      '<td class="right">'+(s.mintable>0n?(fh(s.mintable)+usdSubNative(s.mintable)):'<span class="htt51-dash">0</span>')+'</td>'+
+      '<td class="right htt51-wallet">'+(s.held>0n?(fh(s.held)+usdSubNative(s.held)):'<span class="htt51-dash">0</span>')+'</td>'+
+      '<td class="right htt51-days">'+daysLeftStr+'</td>'+
+    '</tr>';
+  }).join('');
+  // Totals row — labels above values (matches native stakes totals). Per-cell USD is inlined
+  // next to its value so all cells stay to a uniform 2-line height; the combined USD position
+  // is prominent in the left summary that fills what would otherwise be empty space.
+  const totCell=(lbl,hex,usd,cls)=>{
+    const hexPart=hex>0n?fh(hex):'<span class="htt51-dash">0</span>';
+    const usdInline=usd>0?'<span class="htt-totals-usd-inline" title="Live USD value at PulseX v2 subgraph prices">· '+httFmtUsd(usd)+'</span>':'';
+    return '<td class="right'+(cls?' '+cls:'')+'"><span class="htt51-tot-lbl">'+lbl+'</span><span class="htt51-tot-val">'+hexPart+usdInline+'</span></td>';
+  };
+  const posSummary=usdRowTotal>0
+    ? '<div class="htt-totals-summary"><span class="htt-totals-summary-top">Totals · '+data.series.length+' Series</span><span class="htt-totals-summary-val" title="Extracted + Extractable + In Wallet, live PulseX v2 subgraph prices">'+httFmtUsd(usdRowTotal)+'</span><span class="htt-totals-summary-sub">Live HTT Position</span></div>'
+    : '<div class="htt-totals-summary"><span class="htt-totals-summary-top">Totals · '+data.series.length+' Series</span></div>';
+  const totalsRow='<tr class="htt51-totals-row">'+
+    '<td colspan="2">'+posSummary+'</td>'+
+    '<td class="right"><span class="htt51-tot-lbl">Stakes</span><span class="htt51-tot-val">'+data.stakeTotal+'</span></td>'+
+    '<td class="right htt51-hex"><span class="htt51-tot-lbl">Principal</span><span class="htt51-tot-val">'+(totPrincipal>0n?fh(totPrincipal):'—')+'</span></td>'+
+    '<td class="right"></td>'+
+    totCell('Extracted',totExtracted,usdExtracted)+
+    totCell('Extractable',totExtractable,usdExtractable)+
+    totCell('In Wallet',totHeld,usdHeld)+
+    '<td class="right"></td>'+
+  '</tr>';
+  // Sortable column header helper — active column highlights + shows direction arrow
+  const arrow=key=>httSeriesSortBy===key?'<span class="htt51-th-arrow">'+(httSeriesSortReversed?'↓':'↑')+'</span>':'';
+  const sTh=(key,label,align,tip)=>'<th class="htt51-sortable'+(httSeriesSortBy===key?' active':'')+(align==='right'?' right':'')+'"'+(tip?' title="'+tip+'"':'')+' onclick="setHTTSeriesSort(\''+key+'\')">'+label+arrow(key)+'</th>';
+  return '<div class="htt51-block">'+
+    '<div class="htt51-block-hdr"><span class="htt51-block-dot"></span>Per-HTT Breakdown'+
+      '<div class="htt51-ratio-legend"><span class="htt51-rl-item"><span class="htt51-rl-sw out"></span>Extracted</span><span class="htt51-rl-item"><span class="htt51-rl-sw mint"></span>Extractable</span></div>'+
+    '</div>'+
+    '<table class="htt51-series-table">'+
+      '<thead><tr>'+
+        sTh('day','HTT','left','An HTT series, grouped by its redemption day. Stake-backed rows aggregate your stakes whose native series is this one; market rows are tokens you hold with no related stake.')+
+        sTh('price','PRICE<span class="unit-col-usd">USD</span>','right','Live per-HTT USD price from the PulseX v2 subgraph (derivedUSD). Refreshes on the same 60s cadence as the HEX price. A dash means the subgraph has no routed USD price yet for this series (typically thin or missing liquidity).')+
+        sTh('stakes','STAKES','right','How many of your stakes have this as their native series — their own end day.')+
+        sTh('principal','PRINCIPAL<span class="unit-col-hex">HEX</span>','right','Total HEX principal of the stakes in this series — the Actuator\'s Principal, summed.')+
+        sTh('extraction','EXTRACTION','left','Share of this series\' current cap already extracted (purple) vs still extractable (blue).')+
+        sTh('outstanding','EXTRACTED<span class="unit-col-htt">HTT</span>','right','Total HTT minted against this series and still outstanding. USD value beneath uses the live PulseX v2 price. A lock note shows when it was minted as an earlier series.')+
+        sTh('mintable','EXTRACTABLE<span class="unit-col-htt">HTT</span>','right','Total HEX still extractable from this series\' stakes right now — grows as they accrue. USD value beneath uses the live PulseX v2 price.')+
+        sTh('held','IN WALLET<span class="unit-col-htt">HTT</span>','right','HTT tokens of this series held across your wallets, self-extracted or bought. USD value beneath uses the live PulseX v2 price.')+
+        sTh('day','DAYS LEFT','right','Days until this series redeems — HTT-N redeems on HEX day N.')+
+      '</tr></thead>'+
+      '<tbody>'+rows+totalsRow+'</tbody>'+
+    '</table>'+
+  '</div>';
+}
+
+// ══════════════════════════════════════════════════════════════════
+// Block 3: HTT Maturity Calendar — timeline of when outstanding HTT redeems.
+// Uniform purple bars, real Y-axis, no status colors. Pure "when and how much" chart.
+// ══════════════════════════════════════════════════════════════════
+// Reusable HTT bar-chart SVG builder. rows = [{day,label,value:BigInt}].
+// Wide/short viewBox (600x215) keeps height sane at half-container width.
+function buildHTTBarChartSVG(rows,barColor){
+  const maxV=rows.reduce((m,r)=>r.value>m?r.value:m,0n);
+  const rawMax=Number(maxV)/1e8;
+  const niceMax=(()=>{
+    if(rawMax<=0)return 1;
+    const mag=Math.pow(10,Math.floor(Math.log10(rawMax)));
+    const norm=rawMax/mag;
+    const nn=norm<=1?1:norm<=2?2:norm<=5?5:10;
+    return nn*mag;
+  })();
+  const niceMaxBig=BigInt(Math.round(niceMax*1e8));
+  const w=600,h=215,padL=54,padR=16,padT=22,padB=48;
+  const barAreaW=w-padL-padR,barAreaH=h-padT-padB;
+  const slotW=barAreaW/rows.length,barW=Math.min(44,slotW-16),baselineY=h-padB;
+  let svg='';
+  const ySteps=4;
+  for(let i=0;i<=ySteps;i++){
+    const frac=i/ySteps,gy=baselineY-barAreaH*frac,val=niceMax*frac;
+    svg+=i===0
+      ?'<line x1="'+padL+'" y1="'+gy+'" x2="'+(w-padR)+'" y2="'+gy+'" stroke="rgba(255,255,255,0.18)" stroke-width="1"/>'
+      :'<line x1="'+padL+'" y1="'+gy+'" x2="'+(w-padR)+'" y2="'+gy+'" stroke="rgba(255,255,255,0.06)" stroke-width="1" stroke-dasharray="2,4"/>';
+    const lbl=val>=1e6?(val/1e6).toFixed(val>=1e7?0:1)+'M':val>=1e3?(val/1e3).toFixed(0)+'K':val.toFixed(0);
+    svg+='<text x="'+(padL-8)+'" y="'+(gy+4)+'" font-family="Space Mono" font-size="11" fill="rgba(255,255,255,0.6)" text-anchor="end" font-weight="600">'+lbl+'</text>';
+  }
+  rows.forEach((r,i)=>{
+    const slotCx=padL+slotW*i+slotW/2,x=slotCx-barW/2;
+    const ratio=niceMaxBig>0n?Number(r.value*10000n/niceMaxBig)/10000:0;
+    const bh=Math.max(3,barAreaH*ratio),by=baselineY-bh;
+    svg+='<rect x="'+x+'" y="'+by+'" width="'+barW+'" height="'+bh+'" fill="'+barColor+'" rx="2" ry="2"/>';
+    if(bh>4)svg+='<rect x="'+x+'" y="'+(baselineY-4)+'" width="'+barW+'" height="4" fill="'+barColor+'"/>';
+    const displayDay=r.day+1,dft=hexDay?r.day-hexDay:null;
+    svg+='<text x="'+slotCx+'" y="'+(baselineY+18)+'" font-family="Space Mono" font-size="13" fill="#ffffff" text-anchor="middle" font-weight="700">'+displayDay+'</text>';
+    if(dft!==null)svg+='<text x="'+slotCx+'" y="'+(baselineY+33)+'" font-family="Space Mono" font-size="11" fill="rgba(255,255,255,0.6)" text-anchor="middle" font-weight="600">+'+dft.toLocaleString()+'d</text>';
+  });
+  svg+='<text x="'+padL+'" y="13" font-family="Space Mono" font-size="11" fill="rgba(255,255,255,0.6)" font-weight="700" letter-spacing="0.08em">TODAY · DAY '+(hexDay||'?')+'</text>';
+  return '<svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="xMidYMid meet" class="htt51-ml-svg">'+svg+'</svg>';
+}
+
+// Two side-by-side maturity charts: Outstanding (already extracted) + Mintable (still extractable),
+// both plotted against the redemption-day X-axis. Colors match the Block 2 extraction bars.
+function renderHTTMaturityCalendar(){
+  const data=computeHTTPositionData();
+  if(!data)return '';
+  // Extracted plots by the TOKEN's OWN redemption day — a borrowed (earlier) HTT redeems before the stake ends,
+  // so it lands on its real day, surfacing the early-redemption timeline. Mintable plots by the native day.
+  const outSeries=(data.extractedByTokenDay||[]).slice();
+  const mintSeries=data.series.filter(s=>s.mintable>0n).map(s=>({day:s.day,label:s.label,value:s.mintable}));
+  if(outSeries.length===0&&mintSeries.length===0)return '';
+  const outChart=outSeries.length>0?buildHTTBarChartSVG(outSeries,'#9400FF'):'<div class="htt51-ml-empty">No extracted HEX</div>';
+  const mintChart=mintSeries.length>0?buildHTTBarChartSVG(mintSeries,'#00AAFF'):'<div class="htt51-ml-empty">No extractable HEX</div>';
+  return '<div class="htt51-charts-row">'+
+    '<div class="htt51-block">'+
+      '<div class="htt51-block-hdr"><span class="htt51-block-dot"></span>Extracted by Redemption Day</div>'+
+      '<div class="htt51-ml-wrap">'+outChart+'</div>'+
+      '<div class="htt51-ml-sub">HEX already extracted · grouped by the day each HTT redeems</div>'+
+    '</div>'+
+    '<div class="htt51-block">'+
+      '<div class="htt51-block-hdr"><span class="htt51-block-dot"></span>Extractable by Redemption Day</div>'+
+      '<div class="htt51-ml-wrap">'+mintChart+'</div>'+
+      '<div class="htt51-ml-sub">HEX still extractable from your stakes</div>'+
+    '</div>'+
+  '</div>';
+}
+
+// Skeleton placeholders for the HTT section body — shown during the secondary HTT scan.
+// Shimmer animation indicates loading; replaced wholesale by renderHTTInlineBody when data lands.
+function renderHTTAnalyzerSkeleton(){
+  // Top cards row skeleton — 3 cards, each with header + hero block + sub-stats
+  const skelCard=(themeCls)=>'<div class="htt-tcard '+themeCls+'">'+
+    '<div class="htt-tcard-hdr"><span class="htt-tcard-dot"></span><span class="htt-skel-block" style="height:14px;width:140px;"></span></div>'+
+    '<div class="htt-hero">'+
+      '<div class="htt-skel-block" style="height:11px;width:140px;margin-bottom:14px;"></div>'+
+      '<div class="htt-skel-block" style="height:48px;width:75%;margin-bottom:10px;"></div>'+
+      '<div class="htt-skel-block" style="height:12px;width:60%;"></div>'+
+    '</div>'+
+    '<div class="htt-skel-block" style="height:10px;width:100%;margin:14px 0;"></div>'+
+    '<div class="htt-skel-block" style="height:36px;width:100%;margin-bottom:10px;"></div>'+
+    '<div class="htt-skel-block" style="height:36px;width:100%;"></div>'+
+  '</div>';
+  const cardsRow='<div class="htt-cards-row">'+skelCard('c-wb')+skelCard('c-pf')+skelCard('c-pos')+'</div>';
+  // Wallet HTT Holdings skeleton — section + donut left + table rows right
+  const tableRows=Array(5).fill(0).map(()=>
+    '<div style="display:flex;gap:12px;padding:14px 10px;border-bottom:1px solid rgba(255,255,255,0.04);align-items:center;">'+
+      '<div class="htt-skel-pill" style="width:80px;"></div>'+
+      '<div class="htt-skel-block" style="height:11px;flex:1;"></div>'+
+      '<div class="htt-skel-block" style="height:11px;flex:1;"></div>'+
+      '<div class="htt-skel-block" style="height:11px;flex:1;"></div>'+
+      '<div class="htt-skel-pill" style="width:100px;"></div>'+
+    '</div>'
+  ).join('');
+  const holdingsPanel='<div class="htt-section">'+
+    '<div class="htt-section-hdr"><div class="htt-section-hdr-l">'+
+      '<div class="htt-section-title"><span class="htt-section-title-dot"></span>Wallet HTT Holdings</div>'+
+      '<span class="htt-skel-block" style="height:22px;width:36px;border-radius:11px;"></span>'+
+    '</div><span class="htt-skel-block" style="height:11px;width:200px;"></span></div>'+
+    '<div class="holdings-wrap">'+
+      '<div class="holdings-chart-col">'+
+        '<div class="htt-skel-circle" style="width:200px;height:200px;"></div>'+
+        '<div class="htt-skel-block" style="height:11px;width:160px;margin-top:14px;"></div>'+
+      '</div>'+
+      '<div class="holdings-table-wrap">'+tableRows+'</div>'+
+    '</div>'+
+  '</div>';
+  // Charts row — 3 chart card placeholders
+  const chartBox=()=>'<div class="htt-cbox">'+
+    '<div class="htt-skel-block" style="height:14px;width:60%;margin-bottom:18px;"></div>'+
+    '<div class="htt-skel-block" style="height:170px;width:100%;"></div>'+
+  '</div>';
+  const chartsRow='<div class="htt-charts-row">'+chartBox()+chartBox()+chartBox()+'</div>';
+  // HTT Stakes table skeleton
+  const stakesRows=Array(6).fill(0).map(()=>
+    '<div style="display:flex;gap:10px;padding:14px 10px;border-bottom:1px solid rgba(255,255,255,0.04);align-items:center;">'+
+      '<div class="htt-skel-block" style="height:11px;width:60px;"></div>'+
+      '<div class="htt-skel-pill" style="width:80px;"></div>'+
+      '<div class="htt-skel-block" style="height:11px;flex:1;"></div>'+
+      '<div class="htt-skel-block" style="height:11px;flex:1;"></div>'+
+      '<div class="htt-skel-block" style="height:11px;flex:1;"></div>'+
+      '<div class="htt-skel-block" style="height:11px;flex:1;"></div>'+
+      '<div class="htt-skel-block" style="height:11px;flex:1;"></div>'+
+    '</div>'
+  ).join('');
+  const stakesTable='<div class="htt-section">'+
+    '<div class="htt-section-hdr"><div class="htt-section-hdr-l">'+
+      '<div class="htt-section-title"><span class="htt-section-title-dot"></span>HTT Stakes</div>'+
+      '<span class="htt-skel-block" style="height:22px;width:36px;border-radius:11px;"></span>'+
+    '</div></div>'+
+    stakesRows+
+  '</div>';
+  // Native & HSI table skeleton
+  const ctxRows=Array(4).fill(0).map(()=>
+    '<div style="display:flex;gap:10px;padding:14px 10px;border-bottom:1px solid rgba(255,255,255,0.04);align-items:center;">'+
+      '<div class="htt-skel-block" style="height:11px;width:60px;"></div>'+
+      '<div class="htt-skel-pill" style="width:50px;"></div>'+
+      '<div class="htt-skel-pill" style="width:70px;"></div>'+
+      '<div class="htt-skel-block" style="height:11px;flex:1;"></div>'+
+      '<div class="htt-skel-block" style="height:11px;flex:1;"></div>'+
+      '<div class="htt-skel-block" style="height:11px;flex:1;"></div>'+
+    '</div>'
+  ).join('');
+  const ctxTable='<div class="htt-section">'+
+    '<div class="htt-section-hdr"><div class="htt-section-hdr-l">'+
+      '<div class="htt-ctx-title"><span class="htt-ctx-title-dot"></span>Native &amp; HSI Stakes</div>'+
+      '<span class="htt-skel-block" style="height:22px;width:36px;border-radius:11px;"></span>'+
+    '</div></div>'+
+    ctxRows+
+  '</div>';
+  return cardsRow+holdingsPanel+chartsRow+stakesTable+ctxTable;
+}
+
+// Add or update the HTT Analyzer phase in the existing scan-status section.
+// Top-level entry (not a sub-phase) — appears after the prior PLS/ETH scan rows.
+function setHTTAnalyzerPhase(status,detail){
+  let p=scanPhases.find(x=>x.id==='htt-analyzer');
+  if(p){Object.assign(p,{status,detail});}
+  else{scanPhases.push({id:'htt-analyzer',chain:'pls',label:'HTT Analyzer',status,detail,pct:0});}
+  renderScanStatus();
+}
+
+// User clicks a column header → update sort + re-render inline HTT section.
+// Toggle behavior matches native HSA: first click = column's natural direction,
+// second click on same column = reversed. Different column = reset to natural.
+function setHTTStakesSort(key){
+  if(httStakesSortBy===key){
+    httStakesSortReversed=!httStakesSortReversed;
+  }else{
+    httStakesSortBy=key;
+    httStakesSortReversed=false;
+  }
+  const slot=document.getElementById('htt-inline-slot');
+  if(slot)slot.innerHTML=renderHTTInlineHeader()+renderHTTInlineBody();
+}
+
+// ── HTT Stakes table: per-stake details, sortable, no-scroll fit, labeled totals row ──
+function renderHTTStakesTable(){
+  const stakes=lastStakes.filter(s=>s.stakeType==='HTT'&&!s.fromLog).slice();
+  if(stakes.length===0)return'';
+  const multiWallet=wallets.length>1;
+  // Enrich stakes with display fields
+  const enriched=stakes.map(s=>{
+    const endDay=(s.lockedDay||0)+(s.stakedDays||0);
+    const stored=Number(s.maturity)||0; // chosen/borrowed maturity if minted, else 0
+    const daysLeft=hexDay&&endDay>hexDay?endDay-hexDay:0;
+    // NATIVE series = the stake's TRUE identity, fixed by its own end day (HTT-(endDay+1)). This is what the stake IS.
+    const seriesLabel=endDay>0?(httContractInfo.get(endDay)?.symbol||('HTT-'+(endDay+1))):'—';
+    // BORROWED series = an earlier/different HTT extracted AGAINST this stake — only when it differs from native.
+    const isBorrow=stored>0&&stored!==endDay;
+    const isEESRisk=stored>0&&stored<endDay; // borrowed token redeems BEFORE the stake's HEX unlocks
+    const borrowedSeriesLabel=isBorrow?(httContractInfo.get(stored)?.symbol||('HTT-'+(stored+1))):null;
+    const det=httStakeDetails.get(s.stakeId.toString())||{};
+    // tokenDay = the series the extracted/extractable HTT is actually denominated in (borrowed if set, else native)
+    const tokenDay=stored>0?stored:endDay;
+    return{
+      raw:s,
+      stakeId:s.stakeId,
+      wallet:s.owner||'',
+      seriesLabel,          // native series (stake identity)
+      endDay,
+      borrowedDay:stored,
+      borrowedSeriesLabel,
+      isBorrow,
+      isEESRisk,
+      daysLeft,
+      tokenDay,             // series used for USD conversion of available + outstanding
+      principal:s.stakedHearts||0n,
+      accrued:det.accrued||0n,
+      tshares:Number(s.stakeShares||0n)/TSC,
+      available:det.availableToExtract||0n,
+      outstanding:s.collateralAmount||0n,
+      escrow:det.escrow||0n,
+    };
+  });
+  // Sort — each comparator returns its column's NATURAL direction
+  // (chronological asc for days, biggest-first desc for amounts).
+  // httStakesSortReversed flips it when user clicks the same header twice.
+  const cmpBig=(a,b)=>a>b?-1:(a<b?1:0); // BigInt-safe descending
+  const baseSortFn={
+    stakeid:(a,b)=>a.stakeId>b.stakeId?1:(a.stakeId<b.stakeId?-1:0), // ascending — lowest stake # first
+    wallet:(a,b)=>((a.wallet||'').localeCompare(b.wallet||''))||(a.stakeId>b.stakeId?1:-1), // group by wallet, then stake #
+    redemption:(a,b)=>(a.endDay||1e9)-(b.endDay||1e9), // HTT column = native series → order by stake end day
+    endday:(a,b)=>a.endDay-b.endDay,                                  // ascending
+    principal:(a,b)=>cmpBig(a.principal,b.principal),                 // descending (biggest first)
+    accrued:(a,b)=>cmpBig(a.accrued,b.accrued),                       // descending
+    tshares:(a,b)=>b.tshares-a.tshares,                               // descending
+    available:(a,b)=>cmpBig(a.available,b.available),                 // descending
+    outstanding:(a,b)=>cmpBig(a.outstanding,b.outstanding),           // descending
+    escrow:(a,b)=>cmpBig(a.escrow,b.escrow),                          // descending
+  }[httStakesSortBy]||((a,b)=>a.endDay-b.endDay);
+  const sortFn=httStakesSortReversed?(a,b)=>-baseSortFn(a,b):baseSortFn;
+  enriched.sort(sortFn);
+  // Totals — HEX/HTT/T-Share sums plus live USD equivalents for the HTT-denominated columns
+  const totalPrincipal=enriched.reduce((a,s)=>a+s.principal,0n);
+  const totalAccrued=enriched.reduce((a,s)=>a+s.accrued,0n);
+  const totalShares=enriched.reduce((a,s)=>a+s.tshares,0);
+  const totalAvailable=enriched.reduce((a,s)=>a+s.available,0n);
+  const totalOutstanding=enriched.reduce((a,s)=>a+s.outstanding,0n);
+  const totalEscrow=enriched.reduce((a,s)=>a+s.escrow,0n);
+  const totalAvailableUSD=enriched.reduce((a,s)=>a+httUsdOf(s.tokenDay,s.available),0);
+  const totalOutstandingUSD=enriched.reduce((a,s)=>a+httUsdOf(s.tokenDay,s.outstanding),0);
+  // Column-header sort helper — returns class + indicator arrow for a given sort key
+  const sortIndicator=key=>{
+    if(httStakesSortBy!==key)return '';
+    return '<span class="htt-th-sort-arrow">'+(httStakesSortReversed?'↓':'↑')+'</span>';
+  };
+  const sortableTh=(key,label,align,tip)=>{
+    const isActive=httStakesSortBy===key;
+    const cls='sortable'+(isActive?' active':'')+(align==='right'?' right':'');
+    const titleAttr=tip?' title="'+tip+'"':'';
+    return '<th class="'+cls+'"'+titleAttr+' onclick="setHTTStakesSort(\''+key+'\')">'+label+sortIndicator(key)+'</th>';
+  };
+  // Rows — single-line cells, END and DAYS LEFT split into separate columns for native-HSA feel
+  const rows=enriched.map(s=>{
+    // Display convention: HEXTimeToken names tokens HTT-(storageDay+1). Days shown with +1 convention.
+    const endDisplay=s.endDay>0?(s.endDay+1):'—';
+    const borrowDisplay=s.borrowedDay>0?(s.borrowedDay+1):'';
+    // END column = the stake's TRUE unlock day, plain. The borrowed-series detail now lives in the HTT cell.
+    const endCell=endDisplay;
+    // Borrow sub-line: this stake is natively HTT-(endDay+1); show what was extracted AGAINST it in a different series.
+    const borrowSub=s.isBorrow
+      ? '<span class="htt-borrow-sub" title="This '+s.seriesLabel+' stake is LOCKED to '+s.borrowedSeriesLabel+' — '+fh(s.outstanding)+' '+s.borrowedSeriesLabel+' is extracted against it. You can only mint more '+s.borrowedSeriesLabel+' until you retire ALL of it, which hands control of the stake back so it can mint its native '+s.seriesLabel+'. Those tokens redeem on day '+borrowDisplay+', while the stake\'s HEX stays locked until day '+endDisplay+'.">🔒 locked: '+fh(s.outstanding)+' '+s.borrowedSeriesLabel+'</span>'
+      : '';
+    // EES Risk: the borrowed HTT redeems BEFORE the stake's HEX unlocks — covering it on time would force an early
+    // end-stake, and the Actuator freezes the accrued yield until the borrowed token is retired. Red, like the Actuator.
+    const eesFlag=s.isEESRisk
+      ? '<span class="htt-ees-flag" title="EES Risk — this stake\'s HEX stays locked until day '+endDisplay+', but the '+s.borrowedSeriesLabel+' borrowed against it redeems on day '+borrowDisplay+', before the stake unlocks. Covering the token on its redemption day would require ending the stake early, and accrued yield stays frozen until the borrowed HTT is retired.">⚠ EES Risk</span>'
+      : '';
+    // Days-left cell: compact "Nd" + "matured" terminal state
+    const isMatured=s.daysLeft<=0;
+    const daysLeftStr=isMatured?'matured':s.daysLeft.toLocaleString()+'d';
+    const walletCell=multiWallet?'<td><span class="htt-stake-wallet-badge">'+truncAddr(s.wallet)+'</span></td>':'';
+    // USD subline for HTT-denominated cells — silent when no price yet or the amount is zero
+    const availUsd=httUsdOf(s.tokenDay,s.available);
+    const outUsd=httUsdOf(s.tokenDay,s.outstanding);
+    const availUsdSub=availUsd>0?'<span class="htt51-usd-sub">'+httFmtUsd(availUsd)+'</span>':'';
+    const outUsdSub=outUsd>0?'<span class="htt51-usd-sub">'+httFmtUsd(outUsd)+'</span>':'';
+    return '<tr>'+
+      '<td class="htt-stake-id">#'+s.stakeId.toString()+'</td>'+
+      walletCell+
+      '<td><div class="htt-series-cell"><span class="htt-series-badge">'+s.seriesLabel+'</span>'+borrowSub+eesFlag+'</div></td>'+
+      '<td class="right htt-stake-day">'+endCell+'</td>'+
+      '<td class="right htt-stake-days-left'+(isMatured?' matured':'')+'">'+daysLeftStr+'</td>'+
+      '<td class="right htt-stake-principal">'+fh(s.principal)+'</td>'+
+      '<td class="right htt-stake-accrued">'+fh(s.accrued)+'</td>'+
+      '<td class="right">'+s.tshares.toLocaleString(undefined,{maximumFractionDigits:2})+'</td>'+
+      '<td class="right htt-stake-htt">'+fh(s.available)+availUsdSub+'</td>'+
+      '<td class="right htt-stake-htt">'+fh(s.outstanding)+outUsdSub+'</td>'+
+      '<td class="right htt-stake-amber">'+fh(s.escrow)+'</td>'+
+    '</tr>';
+  }).join('');
+  // Big USD summary that fills the otherwise-empty left span — extractable + extracted (what these stakes are worth in HTT terms right now)
+  const totalPositionUSD=totalAvailableUSD+totalOutstandingUSD;
+  const posSummary=totalPositionUSD>0
+    ? '<div class="htt-totals-summary"><span class="htt-totals-summary-top">Totals · '+enriched.length+' Stake'+(enriched.length===1?'':'s')+'</span><span class="htt-totals-summary-val" title="Extractable + Extracted, live PulseX v2 subgraph prices">'+httFmtUsd(totalPositionUSD)+'</span><span class="htt-totals-summary-sub">Live HTT Position</span></div>'
+    : '<div class="htt-totals-summary"><span class="htt-totals-summary-top">Totals · '+enriched.length+' Stake'+(enriched.length===1?'':'s')+'</span></div>';
+  // Inline-USD helper — keeps every cell to a uniform 2-line height (label / value·usd)
+  const inlineUsd=usd=>usd>0?'<span class="htt-totals-usd-inline" title="Live USD value at PulseX v2 subgraph prices">· '+httFmtUsd(usd)+'</span>':'';
+  const totalsRow='<tr class="htt-stake-totals-row">'+
+    '<td colspan="'+(multiWallet?5:4)+'">'+posSummary+'</td>'+
+    '<td class="right"><div class="htt-totals-cell"><span class="htt-totals-lbl">Principal</span><span class="htt-totals-val">'+fh(totalPrincipal)+'</span></div></td>'+
+    '<td class="right"><div class="htt-totals-cell"><span class="htt-totals-lbl">Accrued</span><span class="htt-totals-val">'+fh(totalAccrued)+'</span></div></td>'+
+    '<td class="right"><div class="htt-totals-cell"><span class="htt-totals-lbl">T-Shares</span><span class="htt-totals-val">'+totalShares.toLocaleString(undefined,{maximumFractionDigits:2})+'</span></div></td>'+
+    '<td class="right"><div class="htt-totals-cell"><span class="htt-totals-lbl">Extractable</span><span class="htt-totals-val">'+fh(totalAvailable)+inlineUsd(totalAvailableUSD)+'</span></div></td>'+
+    '<td class="right"><div class="htt-totals-cell"><span class="htt-totals-lbl">Extracted</span><span class="htt-totals-val">'+fh(totalOutstanding)+inlineUsd(totalOutstandingUSD)+'</span></div></td>'+
+    '<td class="right"><div class="htt-totals-cell"><span class="htt-totals-lbl">Bounty</span><span class="htt-totals-val">'+fh(totalEscrow)+'</span></div></td>'+
+  '</tr>';
+  // Header — clickable column titles (native HSA pattern), no floating sort pills
+  const walletHeader=multiWallet?sortableTh('wallet','WALLET','left','Which of your wallets holds this stake — click to group all stakes by wallet.'):'';
+  return '<div class="htt-section">'+
+    '<div class="htt-section-hdr"><div class="htt-section-hdr-l">'+
+      '<div class="htt-section-title"><span class="htt-section-title-dot"></span>HTT Stakes</div>'+
+      '<span class="htt-section-count">'+enriched.length+'</span>'+
+    '</div><span class="htt-section-sub">click any column to sort</span></div>'+
+    '<table class="htt-stakes-table">'+
+      '<thead><tr>'+
+        sortableTh('stakeid','#','left','On-chain stake ID — click to sort by stake number. Handy when several wallets are analyzed at once.')+walletHeader+
+        sortableTh('redemption','HTT','left','The stake\'s native HTT series — its identity, set by its own end day. A stake locked to a different (earlier) series is flagged under the badge.')+
+        sortableTh('endday','END','right','The HEX day this stake unlocks — its end-stake day.')+
+        sortableTh('endday','DAYS LEFT','right','Days remaining until this stake ends and its HEX unlocks.')+
+        sortableTh('principal','PRINCIPAL<span class="unit-col-hex">HEX</span>','right','Original HEX locked in this stake — the Actuator\'s Principal column.')+
+        sortableTh('accrued','ACCRUED<span class="unit-col-hex">HEX</span>','right','HEX yield this stake has earned so far. Separate from what is extractable. Matches the Actuator\'s Accrued Rewards.')+
+        sortableTh('tshares','T-SHARES','right','T-Shares minted for this stake — your share of daily HEX payouts.')+
+        sortableTh('available','EXTRACTABLE<span class="unit-col-htt">HTT</span>','right','How much MORE of your locked HTT series you can mint right now = (principal + accrued) minus what is already extracted. Grows daily as the stake accrues. USD sub-line uses the live PulseX v2 subgraph price for this stake\'s active series. Matches the Actuator\'s Available to Extract.')+
+        sortableTh('outstanding','EXTRACTED<span class="unit-col-htt">HTT</span>','right','HTT already minted against this stake and still outstanding. Retiring it before end-stake reclaims the underlying HEX. USD sub-line uses the live PulseX v2 subgraph price for the borrowed series when different from native. Matches the Actuator\'s Extracted.')+
+        sortableTh('escrow','BOUNTY<span class="unit-col-hex">HEX</span>','right','Projected end-stake reserve set aside on this stake — a figure the Actuator itself does not surface.')+
+      '</tr></thead>'+
+      '<tbody>'+rows+totalsRow+'</tbody>'+
+    '</table>'+
+  '</div>';
+}
+
+async function fetchWalletData(addr,chain){
+  const count=await gsc(addr,chain);
+  const stakeTasks=[];
+  for(let i=0;i<count;i++)stakeTasks.push(()=>gs(addr,i,chain));
+  // PLS: run everything in parallel (4 reliable RPCs handle the load)
+  // ETH: run HSI scan AFTER main log scan to avoid competing for publicnode
+  if(chain==='pls'){
+    const [stakeResults,liquidHearts,logEnded,hsiStakes,bridgedEhex]=await Promise.all([
+      runConcurrent(stakeTasks,6),
+      gbal(addr,chain),
+      fetchEndedStakesFromLogs(addr,chain).catch(()=>[]),
+      fetchHSIStakes(addr,chain).catch(()=>[]),
+      gbalOf(EHEX_BRIDGED,addr,'pls').catch(()=>0n)
+    ]);
+    const stakes=[];
+    for(const s of stakeResults){
+      if(!s||s.error)continue;
+      if(s.stakedDays>0){s.owner=addr;s.chain=chain;s.stakeType='Native';stakes.push(s);}
+    }
+    const activeIds=new Set(stakes.map(s=>s.stakeId.toString()));
+    for(const es of logEnded){
+      if(!activeIds.has(es.stakeId.toString())){
+        es.owner=addr;es.chain=chain;es.stakeType='Native';stakes.push(es);
+      }
+    }
+    if(hsiStakes.length>0){
+      const existingIds=new Set(stakes.map(s=>s.stakeId.toString()));
+      for(const hs of hsiStakes){
+        if(!existingIds.has(hs.stakeId.toString())){
+          stakes.push(hs);
+          existingIds.add(hs.stakeId.toString());
+        }
+      }
+    }
+    return{stakes,liquidHearts,bridgedEhex,chain,addr};
+  }
+  // ETH path: native + balance + main log scan in parallel, then HSI scan sequentially
+  const [stakeResults,liquidHearts,logEnded]=await Promise.all([
+    runConcurrent(stakeTasks,6),
+    gbal(addr,chain),
+    fetchEndedStakesFromLogs(addr,chain).catch(()=>[])
+  ]);
+  const stakes=[];
+  for(const s of stakeResults){
+    if(!s||s.error)continue;
+    if(s.stakedDays>0){s.owner=addr;s.chain=chain;s.stakeType='Native';stakes.push(s);}
+  }
+  const activeIds=new Set(stakes.map(s=>s.stakeId.toString()));
+  for(const es of logEnded){
+    if(!activeIds.has(es.stakeId.toString())){
+      es.owner=addr;es.chain=chain;es.stakeType='Native';stakes.push(es);
+    }
+  }
+  // Now that publicnode is free, run HSI scan
+  const hsiStakes=await fetchHSIStakes(addr,chain).catch(()=>[]);
+  if(hsiStakes.length>0){
+    const existingIds=new Set(stakes.map(s=>s.stakeId.toString()));
+    for(const hs of hsiStakes){
+      if(!existingIds.has(hs.stakeId.toString())){
+        stakes.push(hs);
+        existingIds.add(hs.stakeId.toString());
+      }
+    }
+  }
+  return{stakes,liquidHearts,bridgedEhex:0n,chain,addr};
+}
+
+async function go(){
+  // Pick up any addresses typed/pasted but not yet added
+  const input=document.getElementById('addr');
+  const pendingAddrs=extractAddrs(input.value);
+  if(pendingAddrs.length){
+    for(const a of pendingAddrs){
+      if(wallets.length>=10)break;
+      if(!wallets.includes(a))wallets.push(a);
+    }
+    input.value='';
+    renderWalletList();
+  }
+  if(!wallets.length){setSt('Please add at least one wallet address.',true);return;}
+  // Persist this analyzed set to the recent-addresses history (this-device-only localStorage; see hsa_recent_addrs)
+  for(const a of wallets)rememberRecentAddr(a);
+
+  document.getElementById('gobtn').disabled=true;
+  document.getElementById('addbtn').disabled=true;
+  clearCds();pbd={};gddBy={pls:null,eth:null};walletData.clear();ethLogScanCache=null;ethLogScanPromise=null;walletHSIProbes=new Map();explorerAvailable={eth:null,pls:null};ethFallbackProbed=false;
+  // Invalidate HTT Analyzer cache so re-opening the view after a fresh scan triggers a new balance fetch
+  httBalances=new Map();httContractInfo=new Map();httStakeDetails=new Map();httBalancesScanToken++;
+  showWalletErr('');stPrefix='';
+  setProgress(5);
+  showSkeletonDashboard();
+
+  try{
+    // ── Phase 0: Quick detection — which chains have activity? ──
+    // PLS probes are fast (4 RPCs, no CORS issues). ETH probes go to publicnode/llamarpc.
+    // We probe both chains but process them in strict order.
+    setSt('<span class="spin"></span>Checking wallets…');
+    hexDay=(await ghd('pls').catch(()=>null))||chd();
+
+    // Per-wallet probes: batched — 1 HTTP request per chain instead of 9 individual calls per wallet
+    // PLS batch: stakeCount + balanceOf + HSIM hsiCount + HSIM balanceOf + Actuator hsiCount + bridged eHEX balanceOf (6 per wallet)
+    const plsCalls=wallets.flatMap(addr=>{
+      const ap=pa(addr.slice(2));
+      return[
+        {to:HEX,data:SEL.sc+ap},
+        {to:HEX,data:SEL.bal+ap},
+        {to:HSIM,data:SEL.hsiCount+ap},
+        {to:HSIM,data:SEL.bal+ap},
+        {to:ACTUATOR,data:SEL.hsiCount+ap},
+        {to:EHEX_BRIDGED,data:SEL.bal+ap},
+      ];
+    });
+    // ETH batch: stakeCount + balanceOf + HSIM hsiCount + HSIM balanceOf (4 per wallet)
+    const ethCalls=wallets.flatMap(addr=>{
+      const ap=pa(addr.slice(2));
+      return[
+        {to:HEX,data:SEL.sc+ap},
+        {to:HEX,data:SEL.bal+ap},
+        {to:HSIM,data:SEL.hsiCount+ap},
+        {to:HSIM,data:SEL.bal+ap},
+      ];
+    });
+    const [plsProbe,ethProbe]=await Promise.all([
+      taBatch(plsCalls,'pls').catch(()=>plsCalls.map(()=>'0x')),
+      taBatch(ethCalls,'eth').catch(()=>ethCalls.map(()=>'0x'))
+    ]);
+    // Cache probe results for reuse in fetchWalletData
+    const probeCache=new Map();
+    setProgress(12);
+
+    let plsActive=false,ethActive=false;
+    const walletHSI=new Map();
+    for(let i=0;i<wallets.length;i++){
+      const pb=i*6, eb=i*4;
+      const plsCount=Number(bi(plsProbe[pb]));
+      const plsBal=bi(plsProbe[pb+1]);
+      const plsHsiCount=Number(bi(plsProbe[pb+2]));
+      const plsHsiBal=Number(bi(plsProbe[pb+3]));
+      const plsActCount=Number(bi(plsProbe[pb+4]));
+      const plsBridgedEhex=bi(plsProbe[pb+5]);
+      const ethCount=Number(bi(ethProbe[eb]));
+      const ethBal=bi(ethProbe[eb+1]);
+      const ethHsiCount=Number(bi(ethProbe[eb+2]));
+      const ethHsiBal=Number(bi(ethProbe[eb+3]));
+      // Cache for reuse in scan phase
+      const addr=wallets[i];
+      probeCache.set(addr.toLowerCase()+':pls',{stakeCount:plsCount,balance:plsBal,bridgedEhex:plsBridgedEhex});
+      probeCache.set(addr.toLowerCase()+':eth',{stakeCount:ethCount,balance:ethBal});
+      const plsHSI=plsHsiCount>0||plsHsiBal>0||plsActCount>0;
+      const ethHSI=ethHsiCount>0||ethHsiBal>0;
+      walletHSI.set(wallets[i].toLowerCase(),{pls:plsHSI,eth:ethHSI});
+      if(plsCount>0||plsBal>0n||plsHSI)plsActive=true;
+      if(ethCount>0||ethBal>0n||ethHSI)ethActive=true;
+    }
+    walletHSIProbes=walletHSI;
+
+    // ETH HSI scan always runs regardless of probes (probes can't detect ended-only HSI activity)
+    // so no sequential re-probe needed
+    if(!plsActive&&!ethActive){plsActive=true;ethActive=true;}
+
+    const detectedMode=plsActive&&ethActive?'both':ethActive?'eth':'pls';
+    chainMode=detectedMode;
+    updateChainToggleUI(detectedMode);
+    renderTicker();
+    setProgress(15);
+
+    // ── Initialize phased status bar ──
+    initScanStatus(plsActive,ethActive);
+
+    // Helper: fetch native stakes + ended log scan + daily data + prices for one chain (NO HSI)
+    // This is fetchWalletData minus the HSI part — includes ended-stake recovery
+    const runChainNative=async(ch)=>{
+      const{shareRate,sharesTotal}=await gShareRate(ch);
+      shareRateBy[ch]=shareRate;
+      globalSharesTotalBy[ch]=sharesTotal;
+      if(shareRate>0n){
+        hexPerTShareBy[ch]=Number(shareRate)/10;
+        if(livePrice[ch])tsharePriceBy[ch]=hexPerTShareBy[ch]*livePrice[ch];
+      }
+      // Fetch native active stakes + balance + ended log scan in parallel (no HSI)
+      // Uses probe cache for stakeCount and balance when available to avoid redundant RPC calls
+      await runConcurrent(wallets.map(addr=>async()=>{
+        try{
+          const cached=probeCache.get(addr.toLowerCase()+':'+ch);
+          const count=cached?cached.stakeCount:await gsc(addr,ch);
+          const stakeTasks=[];
+          for(let i=0;i<count;i++)stakeTasks.push(()=>gs(addr,i,ch));
+          const balPromise=cached?Promise.resolve(cached.balance):gbal(addr,ch);
+          const bridgedPromise=ch==='pls'?(cached&&cached.bridgedEhex!==undefined?Promise.resolve(cached.bridgedEhex):gbalOf(EHEX_BRIDGED,addr,'pls').catch(()=>0n)):Promise.resolve(0n);
+          const [stakeResults,liquidHearts,logEnded,bridgedEhex]=await Promise.all([
+            runConcurrent(stakeTasks,6),
+            balPromise,
+            fetchEndedStakesFromLogs(addr,ch).catch(()=>[]),
+            bridgedPromise
+          ]);
+          const stakes=[];
+          for(const s of stakeResults){
+            if(!s||s.error)continue;
+            if(s.stakedDays>0){s.owner=addr;s.chain=ch;s.stakeType='Native';stakes.push(s);}
+          }
+          const activeIds=new Set(stakes.map(s=>s.stakeId.toString()));
+          for(const es of logEnded){
+            if(!activeIds.has(es.stakeId.toString())){
+              es.owner=addr;es.chain=ch;es.stakeType='Native';stakes.push(es);
+              activeIds.add(es.stakeId.toString());
+            }
+          }
+          walletData.set(wkey(addr,ch),{stakes,liquidHearts,bridgedEhex,chain:ch,addr});
+        }catch(e){
+          walletData.set(wkey(addr,ch),{stakes:[],liquidHearts:0n,bridgedEhex:0n,chain:ch,addr,error:e.message});
+        }
+      }),4);
+      // Daily payout data + yield for this chain
+      const chStakes=[];
+      walletData.forEach(d=>{if(d.chain===ch)d.stakes.forEach(s=>chStakes.push(s));});
+      const npChain=chStakes.filter(s=>s.lockedDay<=hexDay&&!s.fromLog);
+      if(npChain.length)await lgdd(Math.min(...npChain.map(s=>s.lockedDay)),ch);
+      chStakes.forEach(s=>{if(!s.fromLog)s.yh=gy(s);});
+      await fetchPrices(chStakes);
+      return chStakes.length;
+    };
+
+    // Helper: run HSI/Actuator for a chain and merge into walletData
+    const runHSI=async(ch)=>{
+      for(const addr of wallets){
+        const key=wkey(addr,ch);
+        const wd=walletData.get(key);
+        if(!wd)continue;
+        try{
+          const hsiStakes=await fetchHSIStakes(addr,ch);
+          const existingIds=new Set(wd.stakes.map(s=>s.stakeId.toString()));
+          for(const hs of hsiStakes){
+            if(!existingIds.has(hs.stakeId.toString())){
+              wd.stakes.push(hs);
+              existingIds.add(hs.stakeId.toString());
+            }
+          }
+        }catch(e){}
+      }
+      // Re-run yield + prices for HSI stakes
+      const chStakes=[];
+      walletData.forEach(d=>{if(d.chain===ch)d.stakes.forEach(s=>chStakes.push(s));});
+      const npChain=chStakes.filter(s=>s.lockedDay<=hexDay&&!s.fromLog);
+      if(npChain.length)await lgdd(Math.min(...npChain.map(s=>s.lockedDay)),ch);
+      chStakes.forEach(s=>{if(!s.fromLog&&!s.yh)s.yh=gy(s);});
+      await fetchPrices(chStakes);
+    };
+
+    // Count HSI/HTT for status display
+    const countTypes=(ch)=>{
+      let native=0,hsi=0,htt=0,ended=0;
+      walletData.forEach(d=>{
+        if(d.chain!==ch)return;
+        d.stakes.forEach(s=>{
+          if(s.stakeType==='HSI-U'||s.stakeType==='HSI-T'||s.stakeType==='HSI')hsi++;
+          else if(s.stakeType==='Actuator'||s.stakeType==='HTT')htt++;
+          else native++;
+          if(s.fromLog||s.unlockedDay>0)ended++;
+        });
+      });
+      return{native,hsi,htt,ended};
+    };
+
+    // ════════════════════════════════════════════════
+    // PHASE 1: PULSECHAIN (everything — native, HSI, HTT)
+    // ════════════════════════════════════════════════
+    if(plsActive){
+      updatePhase('pls',{status:'active',detail:'Scanning <span class="c-pls">PulseChain</span> native stakes…',pct:15});
+      const nativeCount=await runChainNative('pls');
+      setProgress(ethActive?30:60);
+
+      // Render PLS native data immediately
+      activeFilter='all';chainFilter='all';
+      switchTab('active');
+      rerenderFromCache();
+      document.getElementById('dash').style.display='block';
+      document.getElementById('share-btn')?.style.setProperty('display','flex');
+
+      // Check for HSI on PulseChain
+      const plsHasHSI=Array.from(walletHSI.values()).some(v=>v.pls);
+      if(plsHasHSI){
+        addSubPhase('pls','pls-hsi','HSI/HTT stakes on PulseChain','active');
+        updatePhase('pls-hsi',{status:'active',detail:'<span class="c-hsi">HSI/HTT stakes</span> detected on <span class="c-pls">PulseChain</span> — scanning…'});
+        await runHSI('pls');
+        const plsCounts=countTypes('pls');
+        let hsiDetail=[];
+        if(plsCounts.hsi>0)hsiDetail.push(plsCounts.hsi+' HSI');
+        if(plsCounts.htt>0)hsiDetail.push(plsCounts.htt+' HTT');
+        updatePhase('pls-hsi',{status:'done',detail:hsiDetail.join(' · ')});
+        rerenderFromCache();
+      }
+
+      // PulseChain complete
+      const plsFinal=countTypes('pls');
+      let plsDetail=plsFinal.native+' stakes';
+      if(plsFinal.hsi>0)plsDetail+=' · '+plsFinal.hsi+' HSI';
+      if(plsFinal.htt>0)plsDetail+=' · '+plsFinal.htt+' HTT';
+      updatePhase('pls',{status:'done',detail:plsDetail});
+      setProgress(ethActive?40:95);
+
+      if(!ethActive){
+        setSt('');setProgress(100);
+        document.getElementById('gobtn').disabled=false;
+        document.getElementById('addbtn').disabled=false;
+        return;
+      }
+    }
+
+    // ════════════════════════════════════════════════
+    // PHASE 2: ETHEREUM (native, ended log scan, HSI — no HTT)
+    // ════════════════════════════════════════════════
+    if(ethActive){
+      // ETH RPC health check — sequential, runs once before ETH operations
+      updatePhase('eth',{status:'active',detail:'Checking <span class="c-eth">Ethereum</span> RPCs…'});
+      await checkEthRpcHealth();
+
+      // 2a: Native active + ended stakes
+      updatePhase('eth',{status:'active',detail:'Scanning <span class="c-eth">Ethereum</span> stakes…',pct:15});
+      const ethNativeCount=await runChainNative('eth');
+      setProgress(75);
+
+      // Render with ETH active stakes now visible
+      activeFilter='all';chainFilter='all';
+      updateChainToggleUI(detectedMode);
+      rerenderFromCache();
+      document.getElementById('dash').style.display='block';
+      document.getElementById('share-btn')?.style.setProperty('display','flex');
+
+      // 2b: HSI on Ethereum — always run (probes can't detect ended-only HSI activity)
+      addSubPhase('eth','eth-hsi','HSI stakes on Ethereum','active');
+      updatePhase('eth-hsi',{status:'active',detail:'Scanning <span class="c-hsi">HSI stakes</span> on <span class="c-eth">Ethereum</span>…'});
+      await runHSI('eth');
+      const ethCounts=countTypes('eth');
+      if(ethCounts.hsi>0){
+        let hsiDetail=[];
+        if(ethCounts.hsi>0)hsiDetail.push(ethCounts.hsi+' HSI');
+        updatePhase('eth-hsi',{status:'done',detail:hsiDetail.join(' · ')});
+      }else{
+        updatePhase('eth-hsi',{status:'done',detail:'none found'});
+      }
+      rerenderFromCache();
+
+      // Ethereum complete
+      const ethFinal=countTypes('eth');
+      let ethDetail=ethFinal.native+' stakes';
+      if(ethFinal.ended>0)ethDetail=(ethFinal.native-ethFinal.ended)+' active · '+ethFinal.ended+' ended';
+      if(ethFinal.hsi>0)ethDetail+=' · '+ethFinal.hsi+' HSI';
+      updatePhase('eth',{status:'done',detail:ethDetail});
+      setProgress(95);
+
+      // Final render
+      stPrefix='';
+      activeFilter='all';chainFilter='all';
+      updateChainToggleUI(detectedMode);
+      rerenderFromCache();
+      // Clear the "Checking wallets…" / "Scanning stake history…" text banner. The scan-phases
+      // box (in its own slot since v54) stays visible with the completed checkmarks.
+      setSt('');
+      setProgress(100);
+    }
+
+  }catch(e){stPrefix='';clearScanStatus();setSt('Error: '+e.message,true);setProgress(100);}
+
+  document.getElementById('gobtn').disabled=false;
+  document.getElementById('addbtn').disabled=false;
+}
+
+// Re-render the dashboard from already-fetched walletData without refetching.
+// Re-render from cached walletData. Respects both wallet filter (activeFilter) and
+// chain filter — derived from chainMode when set to pls/eth, or from chainFilter pill
+// when in 'both' mode.
+function rerenderFromCache(){
+  clearCds();
+  // Effective chain filter: if user picked a single chain via the toggle, that takes
+  // precedence. In 'both' mode the chainFilter pill applies (default 'all').
+  const effectiveChain=chainMode!=='both'?chainMode:chainFilter;
+  let stakes=[],liquidByChain={pls:0n,eth:0n,bridgedEhex:0n};
+  walletData.forEach((d,k)=>{
+    if(activeFilter!=='all'&&d.addr!==activeFilter)return;
+    if(effectiveChain!=='all'&&d.chain!==effectiveChain)return;
+    stakes.push(...d.stakes);
+    liquidByChain[d.chain]+=d.liquidHearts;
+    if(d.chain==='pls')liquidByChain.bridgedEhex+=(d.bridgedEhex||0n);
+  });
+  renderWalletFilter();
+  // Set hasHSIStakes flag so visibleCols() shows/hides the Type column
+  hasHSIStakes=stakes.some(s=>s.stakeType&&s.stakeType!=='Native');
+  // Set hasHTT flag so the inline HTT Analysis section renders only when delegated stakes detected
+  hasHTT=stakes.some(s=>s.stakeType==='HTT');
+  lastStakes=stakes;lastLiquid=liquidByChain;
+  renderAll(stakes,liquidByChain);
+  // Trigger inline HTT Analysis section render (cached if data already fetched for this scan,
+  // otherwise shows skeleton + fetches in background — main dash never waits).
+  renderHTTInlineSection();
+}
+
+function setFilter(f){
+  if(activeFilter===f)return;
+  activeFilter=f;
+  rerenderFromCache();
+}
+function setChainFilter(f){
+  if(chainFilter===f)return;
+  chainFilter=f;
+  rerenderFromCache();
+}
+
+// Switch chain mode (PLS / ETH / Both). Re-fetches data if dashboard is showing.
+// Update the chain toggle button UI without triggering any data fetch
+function updateChainToggleUI(mode){
+  ['pls','eth','both'].forEach(m=>{
+    const btn=document.getElementById('ct-'+m);
+    if(btn){btn.classList.toggle('active',m===mode);btn.setAttribute('aria-selected',m===mode);}
+  });
+}
+
+function setChainMode(mode){
+  if(chainMode===mode)return;
+  chainMode=mode;
+  chainFilter='all'; // reset chain sub-filter when switching top-level mode
+  updateChainToggleUI(mode);
+  renderTicker();
+  fpr();
+  // Re-render from cache — both chains are always loaded so this is instant
+  const wasOpen=document.getElementById('dash').style.display==='block';
+  if(wasOpen&&wallets.length){
+    rerenderFromCache();
+  }
+}
+
+function renderWalletFilter(){
+  const el=document.getElementById('wfilter');
+  const showWalletPills=wallets.length>=2;
+  const row2=el.closest('.ctrl-row');
+
+  // Ranking moved to the Wallet Balance card (computed in renderAll) — no longer rendered here.
+  if(!showWalletPills){el.style.display='none';if(row2)row2.style.display='none';return;}
+  el.style.display='flex';if(row2)row2.style.display='';
+
+  const effectiveChain=chainMode!=='both'?chainMode:chainFilter;
+  const countByWallet={};
+  walletData.forEach(d=>{
+    if(effectiveChain==='all'||d.chain===effectiveChain){
+      countByWallet[d.addr]=(countByWallet[d.addr]||0)+d.stakes.length;
+    }
+  });
+
+  let html='<span class="wfilter-lbl">View:</span>';
+  const wAllCount=Object.values(countByWallet).reduce((a,n)=>a+n,0);
+  html+=`<button class="wpill${activeFilter==='all'?' active':''}" onclick="setFilter('all')">All wallets<span class="wpill-count">${wAllCount}</span></button>`;
+  wallets.forEach(a=>{
+    const n=countByWallet[a]||0;
+    html+=`<button class="wpill${activeFilter===a?' active':''}" onclick="setFilter('${a}')">${truncAddr(a)}<span class="wpill-count">${n}</span></button>`;
+  });
+  el.innerHTML=html;
+}
+
+function renderAll(stakes,liquidByChain){
+  updateDayBar();
+  const mm=moonPrice.pls>0||moonPrice.eth>0;  // Moon Math active?
+  const sorted=[...stakes].sort((a,b)=>a.lockedDay-b.lockedDay);
+  const gnum=new Map();sorted.forEach((s,i)=>gnum.set(s.stakeId.toString(),i+1));
+  const pend=[...stakes.filter(s=>sst(s)==='pending')].sort((a,b)=>a.lockedDay-b.lockedDay);
+  const ended=[...stakes.filter(s=>sst(s)==='ended')].sort((a,b)=>b.unlockedDay-a.unlockedDay);
+  const act=stakes.filter(s=>{const st=sst(s);return st==='active'||st==='overdue';});
+  const actC=act.filter(s=>sst(s)==='active').length;
+  const aH=act.reduce((a,s)=>a+s.stakedHearts,0n);
+  const aYH=act.reduce((a,s)=>a+yhDisplay(s),0n); // total active yield incl Big Pay Day (HEX, chain-agnostic)
+
+  // ── USD aggregations: each stake valued at ITS OWN chain's live price ──
+  // A pHEX stake valued at pHEX price; an eHEX stake at eHEX price. Summed in USD.
+  // This is the architectural correctness point: never naively multiply summed HEX by a single price.
+  let aCost=0,aCC=0,aNow=0;
+  act.forEach(s=>{
+    const ch=s.chain||'pls';
+    const startP=priceForStake(s,s.lockedDay);
+    const lp=priceFor(ch);
+    if(!isForkedCopy(s)&&startP!=null){aCost+=Number(s.stakedHearts)/1e8*startP;aCC++;}
+    else if(isForkedCopy(s)){aCC++;} // forked copy: cost $0, still counts as priced
+    if(lp>0){aNow+=Number(s.stakedHearts+yhDisplay(s))/1e8*lp;}
+  });
+  const anyLivePrice=livePrice.pls>0||livePrice.eth>0;
+  const aPnl=aCC>0&&anyLivePrice?aNow-aCost:null;
+  const aPct=aCost>0&&aPnl!==null?aPnl/aCost*100:null;
+
+  const pH=pend.reduce((a,s)=>a+s.stakedHearts,0n);
+  let pNow=0;
+  pend.forEach(s=>{const lp=priceFor(s.chain||'pls');if(lp>0)pNow+=Number(s.stakedHearts)/1e8*lp;});
+  const cH=aH+pH;
+  const hp=pend.length>0;
+  const actTS=act.reduce((a,s)=>a+s.stakeShares,0n);
+  const allTS=stakes.reduce((a,s)=>a+s.stakeShares,0n);
+  const pendTS=pend.reduce((a,s)=>a+s.stakeShares,0n);
+  const endedTS=ended.reduce((a,s)=>a+s.stakeShares,0n);
+
+  // T-Share holdings USD: per-chain T-Shares × that chain's T-Share price
+  let actTSVal=0;
+  const actTSValBy={pls:0,eth:0};
+  ['pls','eth'].forEach(ch=>{
+    const tsCh=act.filter(s=>(s.chain||'pls')===ch).reduce((a,s)=>a+s.stakeShares,0n);
+    if(tsharePriceBy[ch]>0){const v=Number(tsCh)/TSC*tsharePriceBy[ch];actTSVal+=v;actTSValBy[ch]=v;}
+  });
+
+  // Yield USD: per-stake at its chain price
+  let aYieldUSD=0;
+  act.forEach(s=>{const lp=priceFor(s.chain||'pls');if(lp>0)aYieldUSD+=Number(yhDisplay(s))/1e8*lp;});
+
+  // Per-chain T-Shares and yield for card breakdown
+  const tsByChainData={pls:{ts:0n,yh:0n,yUSD:0},eth:{ts:0n,yh:0n,yUSD:0}};
+  act.forEach(s=>{
+    const ch=s.chain||'pls';
+    tsByChainData[ch].ts+=s.stakeShares;
+    tsByChainData[ch].yh+=yhDisplay(s);
+    const lp=priceFor(ch);
+    if(lp>0)tsByChainData[ch].yUSD+=Number(yhDisplay(s))/1e8*lp;
+  });
+
+  // For display of pendingNow combined: same per-chain logic
+  const cNow=aNow+pNow;
+
+  const pr=(v,s='')=>`<hr class="cdiv"/><div class="plbl">Pending</div><div class="pval">${v}</div>${s?`<div class="psub">${s}</div>`:''}`;
+  const cr=(v)=>`<div class="clbl2">Combined</div><div class="cval2">${v}</div>`;
+  const pnlC=aPnl===null?'muted':aPnl>=0?'profit':'loss';
+  const pnlT=aPnl!==null?(aPnl>=0?'+':'')+' $'+fb(aPnl)+(aPct!==null?' ('+(aPnl>=0?'+':'')+aPct.toFixed(1)+'%)':''):'—';
+  const pnlInd=aPnl===null?`<div class="ci-dot"></div>`:aPnl>=0?`<div class="ci-up">▲</div>`:`<div class="ci-dn">▼</div>`;
+
+  // ── Daily yield rate from latest day's payout data, summed per chain ──
+  let dailyYieldHex=0,dailyYieldUSD=0;
+  const dyByChain={pls:{hex:0,usd:0},eth:{hex:0,usd:0}};
+  ['pls','eth'].forEach(ch=>{
+    const gdd=gddBy[ch];
+    if(!gdd||!gdd.data.length)return;
+    const lastDay=gdd.data[gdd.data.length-1];
+    const{pt,st}=ud(lastDay);
+    if(st<=0n)return;
+    let totalDailyYield=0n;
+    act.forEach(s=>{
+      if((s.chain||'pls')!==ch)return;
+      if(s.lockedDay<=hexDay&&!s.fromLog){
+        totalDailyYield+=s.stakeShares*pt/st;
+      }
+    });
+    const dyHex=Number(totalDailyYield)/1e8;
+    const dyUSD=priceFor(ch)>0?dyHex*priceFor(ch):0;
+    dyByChain[ch]={hex:dyHex,usd:dyUSD};
+    dailyYieldHex+=dyHex;
+    dailyYieldUSD+=dyUSD;
+  });
+
+  // ── Weighted average APY across all active stakes ──
+  let wApyNum=0,wApyDen=0;
+  act.forEach(s=>{
+    const ip=sst(s)==='pending';
+    if(ip)return;
+    const ha=Number(s.stakedHearts)/1e8;
+    const yh=Number(s.yh||0n)/1e8;
+    const sv=Math.max(0,(hexDay||chd())-s.lockedDay);
+    if(sv>0&&ha>0&&yh>0){
+      const apy=yh/ha*(365/sv)*100;
+      wApyNum+=apy*ha;
+      wApyDen+=ha;
+    }
+  });
+  const wApy=wApyDen>0?wApyNum/wApyDen:null;
+
+  // ── Weighted average APY across ended stakes ──
+  let eApyNum=0,eApyDen=0;
+  ended.forEach(s=>{
+    const ha=Number(s.stakedHearts)/1e8;
+    const yh=Number(s.yh||0n)/1e8;
+    const sv=s.unlockedDay>0?s.unlockedDay-s.lockedDay:0;
+    if(sv>0&&ha>0&&yh>0){
+      const apy=yh/ha*(365/sv)*100;
+      eApyNum+=apy*ha;
+      eApyDen+=ha;
+    }
+  });
+  const eApy=eApyDen>0?eApyNum/eApyDen:null;
+  // Combined APY (active + ended weighted together)
+  const cApy=(wApyDen+eApyDen)>0?(wApyNum+eApyNum)/(wApyDen+eApyDen):null;
+
+  // ── Yesterday's payout per T-Share per chain ──
+  let plsPayPerTS=0,ethPayPerTS=0;
+  ['pls','eth'].forEach(ch=>{
+    const gdd=gddBy[ch];
+    if(!gdd||!gdd.data.length)return;
+    const yesterday=(hexDay||chd())-1;
+    const idx=yesterday-gdd.bd;
+    if(idx<0||idx>=gdd.data.length)return;
+    const{pt,st}=ud(gdd.data[idx]);
+    if(st>0n){
+      const ppts=Number(pt)/Number(st)*1e4;
+      if(ch==='pls')plsPayPerTS=ppts;
+      else ethPayPerTS=ppts;
+    }
+  });
+  const plsPayStr=plsPayPerTS>0?plsPayPerTS.toFixed(3)+' HEX':'—';
+  const ethPayStr=ethPayPerTS>0?ethPayPerTS.toFixed(3)+' HEX':'—';
+  const showPayPerTS=plsPayPerTS>0||ethPayPerTS>0;
+  const ii=(tip)=>`<div class="info-i" onclick="this.classList.toggle('active')">i</div><div class="info-tip">${tip}</div>`;
+  const TIP_AS='Number of active stakes currently earning yield, including Native, HSI (Hedron Stake Instance), and HTT-backing (Actuator-delegated) stakes. Overdue stakes (past end day + 14-day grace) are included. Pending stakes (locked but not yet at first earning day) appear as "+N pending" — they do not yet earn yield.';
+  const TIP_SH='Total HEX principal locked across all active stakes — includes Native, HSI, and HTT-backing (Actuator-delegated) stake principal. Does not include earned yield. For HTT-backing stakes the HEX is still locked in the underlying HEX stake; outstanding HTT minted against it is tracked separately in the HTT Analysis section.';
+  const TIP_CV='Stake Value combines two figures. The headline is CURRENT VALUE — the USD worth of your active stakes (principal plus accumulated yield, including Big Pay Day), valued at each stake\'s chain live price (eHEX and pHEX trade at different prices). Below it, TOTAL STAKED is the HEX principal locked across all active stakes (yield not included). Both are GROSS for HTT-backed (delegated) stakes — outstanding HTT minted against them is NOT subtracted here. See the HTT Position section below for net figures.';
+  const TIP_CB='What you paid for your active stakes in USD, based on the HEX price the day each stake started, on its respective chain. PulseChain stakes that originated from the Ethereum fork (before Day 1256) have a $0 cost basis — they were free copies. HTT-backing stakes use the underlying HEX stake\'s start day for cost basis (Actuator delegation does not reset it).';
+  const TIP_PL='Unrealized P&L = Current Value minus Cost Basis across your active stakes. Green = profit, red = loss. Below the P&L, COST BASIS shows what you paid — HEX price on each stake\'s start day × principal (PulseChain fork-copy stakes from before Day 1256 carry $0 cost basis, they were free copies). Per-chain pricing: eHEX stakes use eHEX prices, pHEX stakes use pHEX prices. For HTT-backed stakes this is GROSS P&L on the underlying stake — outstanding HTT is NOT subtracted; the HTT Position section shows your figure after HTT.';
+  const TIP_TS='Your T-Share count across all active stakes (Native, HSI, and HTT-backing). T-Shares determine your share of daily HEX payouts (per chain). Yield shown is total earned so far, including the one-time Big Pay Day. HTT-backing stakes contribute their full T-Shares — yield they earn accrues to the underlying stake; if HTT has been extracted, that yield ultimately backs the HTT holders\' redemptions. Lifetime Total = all T-Shares ever minted by this wallet, including ended stakes whose T-Shares have been burned. Network share shows what percentage of all T-Shares on each chain belong to you.';
+  const TIP_TP='Current price to mint 1 T-Share, derived on-chain from the HEX contract\'s shareRate. Rises over time as more stakes end. The two chains have independent share rates since the PulseChain fork. Avg Paid shows your weighted average USD cost per T-Share across all active stakes. High/Low show the most and least expensive T-Shares you minted — green is your cheapest, red is your most expensive.';
+  const TIP_DY='How much HEX your active stakes are earning per day based on the most recent daily payout. Calculated from your T-Share count and the pool\'s daily payout distribution, per chain. Includes yield from HTT-backing stakes (yield accrues to the underlying stake regardless of HTT extraction status). "Yesterday per T-Share" shows the raw network payout per T-Share from the previous day — useful for comparing pHEX and eHEX chain yield independently of your stake size. Active APY: weighted average annualized yield across active stakes. Ended APY: weighted average across ended stakes using actual served days. Combined: all stakes weighted together. Formula: each stake\'s APY (yield / principal × 365 / days served) weighted by principal. Pending stakes and stakes with no yield are excluded.';
+  const TIP_RPL='Realized P&L from ended stakes. Cost = HEX price on the day the stake started × principal. Exit value = HEX price on the day the stake ended × (principal + yield). Per-chain pricing: eHEX stakes use eHEX prices, pHEX stakes use pHEX prices. This uses exit-day pricing (what you could have sold for when you unstaked), not today\'s live price. HTT-backing ended stakes show the residual exit value (what was left after HTT holders redeemed against the stake at maturity). Below the P&L, LIFETIME YIELD sums all HEX yield your ended stakes have earned (with its USD value at each stake\'s own exit-day price) and AVG SERVED is the mean number of days those stakes ran.';
+  const TIP_LIQ='Liquid (unstaked) HEX in the wallet — available to send, swap, or restake, not locked in any active stake. Includes bridged eHEX held on PulseChain (valued at eHEX price); when viewing both chains, balances are summed in USD. The HEX figure excludes HTT tokens, but any HTT you hold is listed on its own row below with its live USD value (PulseX v2 subgraph price) — HTT are separate ERC-20s with their own redemption mechanics, detailed in the HTT Position section. The badge in the top-right is your sea-creature rank by active T-Shares; click it for how ranks work.';
+
+  // ── Realized P&L from ended stakes — per-stake chain-aware pricing ──
+  let rCost=0,rExit=0,rCC=0;
+  const rPnlBy={pls:{cost:0,exit:0,cc:0},eth:{cost:0,exit:0,cc:0}};
+  // Lifetime yield totals — all ended stakes, priced at each stake's own exit day
+  let rYieldH=0n,rYieldUSD=0,rDaysSum=0,rDaysCount=0;
+  ended.forEach(s=>{
+    const ch=s.chain||'pls';
+    const endP=priceForStake(s,s.unlockedDay);
+    // Lifetime yield accumulates for every ended stake (price-independent for HEX total,
+    // priced when we have an exit-day price for USD)
+    const yhH=s.yh||0n;
+    rYieldH+=yhH;
+    if(endP!=null)rYieldUSD+=Number(yhH)/1e8*endP;
+    if(s.stakedDays>0){rDaysSum+=s.stakedDays;rDaysCount++;}
+    if(endP==null)return;
+    const ha2=Number(s.stakedHearts)/1e8;
+    const yh2=Number(yhH)/1e8;
+    // Forked copies have $0 cost basis — all exit value is pure profit
+    if(isForkedCopy(s)){rExit+=(ha2+yh2)*endP;rCC++;rPnlBy[ch].exit+=(ha2+yh2)*endP;rPnlBy[ch].cc++;return;}
+    const startP=priceForStake(s,s.lockedDay);
+    if(startP==null)return;
+    rCost+=ha2*startP;
+    rExit+=(ha2+yh2)*endP;
+    rCC++;
+    rPnlBy[ch].cost+=ha2*startP;
+    rPnlBy[ch].exit+=(ha2+yh2)*endP;
+    rPnlBy[ch].cc++;
+  });
+  const rDaysAvg=rDaysCount>0?Math.round(rDaysSum/rDaysCount):0;
+  const rPnl=rCC>0?rExit-rCost:null;
+  const rPct=rCost>0&&rPnl!==null?rPnl/rCost*100:null;
+  const rPnlC=rPnl===null?'muted':rPnl>=0?'profit':'loss';
+  const rPnlT=rPnl!==null?(rPnl>=0?'+':'')+' $'+fb(rPnl)+(rPct!==null?' ('+(rPnl>=0?'+':'')+rPct.toFixed(1)+'%)':''):'—';
+  const rPnlInd=rPnl===null?`<div class="ci-dot"></div>`:rPnl>=0?`<div class="ci-up">▲</div>`:`<div class="ci-dn">▼</div>`;
+
+  // ── Sell Pressure / Restake Analyzer (user's ended stakes) ──
+  let spRestaked=0,spHeld=0,spSold=0,spUnknown=0;
+  let spRestakedHex=0n,spHeldHex=0n,spSoldHex=0n;
+  const RESTAKE_WINDOW=14; // days after end-stake to look for a new stake
+  if(ended.length){
+    ended.forEach(es=>{
+      const endDay=es.unlockedDay||0;
+      if(endDay===0)return; // shouldn't happen for ended stakes
+      const ch=es.chain||'pls';
+      const principal=es.stakedHearts;
+      // Check if any stake (active or ended) on the same chain started within RESTAKE_WINDOW days after this stake ended
+      const restakeMatch=stakes.some(s=>{
+        if(s===es)return false;
+        if((s.chain||'pls')!==ch)return false;
+        const diff=s.lockedDay-endDay;
+        return diff>=0&&diff<=RESTAKE_WINDOW;
+      });
+      if(restakeMatch){spRestaked++;spRestakedHex+=principal;}
+      else{
+        // No restake found — check if ended recently (within 30 days). If ended long ago with no restake → sold
+        const daysSinceEnd=hexDay-endDay;
+        if(daysSinceEnd<=30){spHeld++;spHeldHex+=principal;} // too recent to tell — call it "held"
+        else{spSold++;spSoldHex+=principal;}
+      }
+    });
+  }
+  const spTotal=spRestaked+spHeld+spSold;
+  const spRestakedPct=spTotal>0?(spRestaked/spTotal*100).toFixed(1):0;
+  const spHeldPct=spTotal>0?(spHeld/spTotal*100).toFixed(1):0;
+  const spSoldPct=spTotal>0?(spSold/spTotal*100).toFixed(1):0;
+
+  // ── Liquid wallet balance, valued per chain ──
+  // liquidByChain: {pls: bigint, eth: bigint, bridgedEhex: bigint}
+  const bridgedEhex=liquidByChain.bridgedEhex||0n;
+  const totalLiquidHearts=(liquidByChain.pls||0n)+(liquidByChain.eth||0n)+bridgedEhex;
+  let liqUSD=0;
+  ['pls','eth'].forEach(ch=>{const lp=priceFor(ch);if(lp>0)liqUSD+=Number(liquidByChain[ch]||0n)/1e8*lp;});
+  const eLp=priceFor('eth');if(eLp>0&&bridgedEhex>0n)liqUSD+=Number(bridgedEhex)/1e8*eLp;
+
+  // T-Share Price card display: in single-chain mode show that chain's price; in 'both' show both side-by-side.
+  // ── Average T-Share Price Paid (across all stakes with known cost basis) ──
+  let tsPrices=[];
+  stakes.forEach(s=>{
+    const ts=Number(s.stakeShares)/TSC;
+    if(ts<=0)return;
+    if(isForkedCopy(s)){tsPrices.push({usd:0,ts});return;} // fork copies = $0/T-S
+    const sp=priceForStake(s,s.lockedDay);
+    if(sp==null)return;
+    const cost=Number(s.stakedHearts)/1e8*sp;
+    tsPrices.push({usd:cost/ts,ts});
+  });
+  let avgTSPaid=null,hiTSPaid=null,loTSPaid=null;
+  if(tsPrices.length){
+    // Weighted average by T-Share count
+    const totalTS=tsPrices.reduce((a,p)=>a+p.ts,0);
+    avgTSPaid=tsPrices.reduce((a,p)=>a+p.usd*p.ts,0)/totalTS;
+    const nonZero=tsPrices.filter(p=>p.usd>0);
+    if(nonZero.length){
+      hiTSPaid=Math.max(...nonZero.map(p=>p.usd));
+      loTSPaid=Math.min(...nonZero.map(p=>p.usd));
+    }
+  }
+  let tsPaidHTML='';
+  if(avgTSPaid!==null){
+    tsPaidHTML=`<div class="ts-sub" style="margin-top:4px;border-top:1px solid rgba(255,255,255,0.06);padding-top:5px;">Avg paid: <span class="ts-sub-v" style="color:#FFB800;">$${fb(avgTSPaid)}</span>/T-S</div>`;
+    if(hiTSPaid!==null&&loTSPaid!==null&&hiTSPaid!==loTSPaid){
+      tsPaidHTML+=`<div class="ts-sub">High: <span class="ts-sub-v" style="color:#ff5c5c;">$${fb(hiTSPaid)}</span> · Low: <span class="ts-sub-v" style="color:#00FF66;">$${fb(loTSPaid)}</span></div>`;
+    }
+  }
+
+  let tspCardVal,tspCardSub;
+  const tspBothPriced=chainMode==='both'&&tsharePriceBy.pls>0&&tsharePriceBy.eth>0;
+  if(chainMode==='both'){
+    const showPLS=tsharePriceBy.pls>0,showETH=tsharePriceBy.eth>0;
+    if(showPLS&&showETH){
+      tspCardVal='';tspCardSub='';
+    }else{
+      const ch=showPLS?'pls':'eth';
+      tspCardVal=tsharePriceBy[ch]>0?'$'+tsharePriceBy[ch].toFixed(2):'—';
+      tspCardSub=hexPerTShareBy[ch]>0?Math.round(hexPerTShareBy[ch]).toLocaleString()+' HEX / T-S':'loading…';
+    }
+  }else{
+    const ch=chainMode;
+    tspCardVal=tsharePriceBy[ch]>0?'$'+tsharePriceBy[ch].toFixed(2):'—';
+    tspCardSub=hexPerTShareBy[ch]>0?Math.round(hexPerTShareBy[ch]).toLocaleString()+' HEX / T-S':'loading…';
+  }
+
+  // Network share % — when in 'both', split per chain since totals differ; in single-chain, single number.
+  let networkShareHTML='';
+  if(chainMode==='both'){
+    const tsByChain={pls:0n,eth:0n};
+    act.forEach(s=>{tsByChain[s.chain||'pls']+=s.stakeShares;});
+    const rows=[];
+    if(globalSharesTotalBy.pls>0n&&tsByChain.pls>0n)rows.push(`<div class="wb-row"><span class="wb-tag" style="color:#FF00CC;">⬡ pHEX</span><span class="wb-amt">${(Number(tsByChain.pls)/Number(globalSharesTotalBy.pls)*100).toFixed(4)}%</span></div>`);
+    if(globalSharesTotalBy.eth>0n&&tsByChain.eth>0n)rows.push(`<div class="wb-row"><span class="wb-tag" style="color:#00CFFF;">◆ eHEX</span><span class="wb-amt">${(Number(tsByChain.eth)/Number(globalSharesTotalBy.eth)*100).toFixed(4)}%</span></div>`);
+    if(rows.length)networkShareHTML=`<div class="ts-sub" style="margin-top:4px;">Network share:</div><div class="wb-breakdown" style="margin-top:2px;">${rows.join('')}</div>`;
+  }else{
+    const ch=chainMode;
+    if(globalSharesTotalBy[ch]>0n){
+      networkShareHTML=`<div class="ts-sub">Network share: <span class="ts-sub-v">${(Number(actTS)/Number(globalSharesTotalBy[ch])*100).toFixed(4)}%</span></div>`;
+    }
+  }
+
+  // Card order (v52 — stake-first flow, left→right builds the story):
+  //   Row 1: Active Stakes · Active T-Shares · Total Staked HEX · Current Value · Wallet Balance
+  //   Row 2: T-Share Price · Daily Yield Rate · Total Cost Basis · Unrealized P&L · Realized P&L
+  // Row 1 reads "what I have staked → its size → its value → cash on hand"; Row 2 is the performance/economics layer.
+  // Order is stable across chain filters so the layout is learnable.
+  // Ranking badge — sea-creature tier from active T-Shares, shown top-right of the Wallet Balance card
+  // (moved from the top bar so users can screenshot their stack + rank without exposing addresses).
+  const rankTS=Number(actTS)/TSC;
+  let walletRankBadge='<div class="cinds"><div class="ci-dot"></div></div>';
+  if(rankTS>0){
+    const rtier=getSeaTier(rankTS);
+    const rtsLabel=rankTS>=1000?(rankTS/1000).toFixed(1)+'K':rankTS.toFixed(rankTS>=1?1:3);
+    walletRankBadge='<div class="wb-rank" onclick="openCreatureInfo('+rankTS+')" title="How rankings work"><span class="wb-rank-emoji">'+rtier.emoji+'</span><div class="wb-rank-txt"><span class="wb-rank-tier">'+rtier.name+'</span><span class="wb-rank-ts">'+rtsLabel+' T-S</span></div></div>';
+  }
+  document.getElementById('cards').innerHTML=`
+    <div class="card c-pls"><div class="ctop"><div class="clbl">Active Stakes</div><div class="cinds"><div class="ci-up">▲</div><div class="ci-dot"></div></div></div><div class="cval teal">${actC} <span style="font-size:13px;color:var(--mu);">/ ${act.length} total</span></div>${(()=>{const httCount=act.filter(s=>s.stakeType==='HTT').length;if(httCount===0)return '';const nativeCount=act.length-httCount;return '<div class="ts-sub" style="margin-top:4px;">'+nativeCount+' native · <span style="color:#c4a7ff;">'+httCount+' HTT-backed</span></div>';})()}${hp?pr(pend.length+' stake'+(pend.length!==1?'s':''),'starts tomorrow'):''}${ii(TIP_AS)}</div>
+    <div class="card c-ts"><div class="ctop"><div class="clbl">Active T-Shares</div><div class="cinds"><div class="ci-up">▲</div><div class="ci-dot"></div></div></div><div class="cval tsg">${ftsC(actTS)}</div>${chainMode==='both'&&tsByChainData.pls.ts>0n&&tsByChainData.eth.ts>0n?`<div class="wb-breakdown" style="margin-top:6px;"><div class="wb-row"><span class="wb-tag" style="color:#FF00CC;">⬡ pHEX</span><span class="wb-amt">${ftsC(tsByChainData.pls.ts)}</span><span class="wb-usd" style="color:#00FF66;">${fh(tsByChainData.pls.yh)} yield</span></div><div class="wb-row"><span class="wb-tag" style="color:#00CFFF;">◆ eHEX</span><span class="wb-amt">${ftsC(tsByChainData.eth.ts)}</span><span class="wb-usd" style="color:#00FF66;">${fh(tsByChainData.eth.yh)} yield</span></div></div>`:''}<div class="ts-sub">Yield: <span class="ts-sub-v" style="color:#00FF66;">${fh(aYH)} HEX</span> · <span class="ts-sub-v moon-val" style="color:#00FF66 !important">$${fb(aYieldUSD)}</span></div><div class="ts-sub">Lifetime total: <span class="ts-sub-v">${ftsC(allTS)}</span></div>${networkShareHTML}${hp?pr(ftsC(pendTS)+' T-S pending'):''}${ii(TIP_TS)}</div>
+    <div class="card c-pls"><div class="ctop"><div class="clbl">Stake Value</div><div class="cinds"><div class="ci-up">▲</div><div class="ci-dot"></div></div></div><div class="cval pg">${anyLivePrice?'<span class="moon-val">$'+fb(aNow)+'</span>':'—'}</div><div class="csub">current value · principal + accrued yield</div><div class="card-2nd"><span class="card-2nd-v">${fh(aH)} HEX</span><span class="card-2nd-l">total staked</span></div>${hp?pr(anyLivePrice?'+$'+fb(pNow):'—',fh(pH)+' HEX pending')+cr(anyLivePrice?'$'+fb(cNow):'—'):''}${ii(TIP_CV)}</div>
+    <div class="card c-hex"><div class="ctop"><div class="clbl">Wallet Balance</div>${walletRankBadge}</div><div class="cval hg">${fh(totalLiquidHearts)} HEX</div><div class="ts-sub">${liqUSD>0?'<span class="moon-val">$'+fb(liqUSD)+'</span>':'—'}</div>${(()=>{
+      const pBal=liquidByChain.pls||0n,eBal=liquidByChain.eth||0n,bBal=bridgedEhex;
+      const pP=priceFor('pls'),eP=priceFor('eth');
+      const pU=pP>0?Number(pBal)/1e8*pP:0,eU=eP>0?Number(eBal)/1e8*eP:0,bU=eP>0?Number(bBal)/1e8*eP:0;
+      const lines=[];
+      if(pBal>0n)lines.push('<div class="wb-row"><span class="wb-tag" style="color:#FF00CC;">⬡ pHEX</span><span class="wb-amt">'+fh(pBal)+'</span>'+(pU>0?'<span class="wb-usd moon-val">$'+fb(pU)+'</span>':'')+'</div>');
+      if(eBal>0n)lines.push('<div class="wb-row"><span class="wb-tag" style="color:#00CFFF;">◆ eHEX</span><span class="wb-amt">'+fh(eBal)+'</span>'+(eU>0?'<span class="wb-usd moon-val">$'+fb(eU)+'</span>':'')+'</div>');
+      if(bBal>0n)lines.push('<div class="wb-row"><span class="wb-tag" style="color:#a78bfa;">◇ eHEX<span class="wb-chain-tag">PLS</span></span><span class="wb-amt">'+fh(bBal)+'</span>'+(bU>0?'<span class="wb-usd moon-val">$'+fb(bU)+'</span>':'')+'</div>');
+      // HTT sub-line — only when HTT detected in wallet (v51: HTT-aware annotation on existing card).
+      // USD value uses each series' own live PulseX v2 price (v54); falls back to "across series" if no
+      // prices have loaded yet — thin-liquidity series that never route stay in the count but not the USD.
+      let totalHTT=0n,totalHTTUsd=0,htSeriesCount=0;
+      for(const [_,holdings] of httBalances){for(const h of holdings){totalHTT+=h.balance;totalHTTUsd+=httUsdOf(h.day,h.balance);htSeriesCount++;}}
+      if(totalHTT>0n){
+        const tail=totalHTTUsd>0
+          ? '<span class="wb-usd moon-val" title="Live PulseX v2 subgraph prices">$'+fb(totalHTTUsd)+'</span>'
+          : '<span class="wb-usd" style="color:rgba(255,255,255,0.5);">'+htSeriesCount+' series</span>';
+        lines.push('<div class="wb-row"><span class="wb-tag" style="color:#c4a7ff;">⬢ HTT</span><span class="wb-amt">'+fh(totalHTT)+'</span>'+tail+'</div>');
+      }
+      return lines.length>0?'<div class="wb-breakdown">'+lines.join('')+'</div>':'';
+    })()}${ii(TIP_LIQ)}</div>
+    <div class="card c-tsp"><div class="ctop"><div class="clbl">T-Share Price</div><div class="cinds"><div class="ci-up">▲</div><div class="ci-dot"></div></div></div>${tspBothPriced?`<div id="tsp-val" style="display:none"></div><div id="tsp-breakdown" class="wb-breakdown" style="margin-top:10px;border-top:none;padding-top:0;"><div class="wb-row"><span class="wb-tag" style="color:#FF00CC;">⬡ pHEX</span><span class="wb-amt" style="color:#FF00CC;">$${tsharePriceBy.pls.toFixed(2)}</span><span class="wb-usd">${Math.round(hexPerTShareBy.pls).toLocaleString()} HEX</span></div><div class="wb-row"><span class="wb-tag" style="color:#00CFFF;">◆ eHEX</span><span class="wb-amt" style="color:#00CFFF;">$${tsharePriceBy.eth.toFixed(2)}</span><span class="wb-usd">${Math.round(hexPerTShareBy.eth).toLocaleString()} HEX</span></div></div>`:`<div class="cval tspg" id="tsp-val">${tspCardVal}</div>${tspCardSub?`<div class="ts-sub">${tspCardSub}</div>`:''}`}${tsPaidHTML}${ii(TIP_TP)}</div>
+    <div class="card c-dy"><div class="ctop"><div class="clbl">Daily Yield Rate</div><div class="cinds"><div class="ci-up">▲</div><div class="ci-dot"></div></div></div><div class="cval dyg">${dailyYieldHex>0?fb(dailyYieldHex)+' HEX':'—'}</div><div class="ts-sub">${dailyYieldUSD>0?'<span class="moon-val">$'+fb(dailyYieldUSD)+'</span> / day':'—'}</div>${chainMode==='both'&&dyByChain.pls.hex>0&&dyByChain.eth.hex>0?`<div class="wb-breakdown" style="margin-top:6px;"><div class="wb-row"><span class="wb-tag" style="color:#FF00CC;">⬡ pHEX</span><span class="wb-amt">${fb(dyByChain.pls.hex)}</span>${dyByChain.pls.usd>0?'<span class="wb-usd moon-val">$'+fb(dyByChain.pls.usd)+'</span>':''}</div><div class="wb-row"><span class="wb-tag" style="color:#00CFFF;">◆ eHEX</span><span class="wb-amt">${fb(dyByChain.eth.hex)}</span>${dyByChain.eth.usd>0?'<span class="wb-usd moon-val">$'+fb(dyByChain.eth.usd)+'</span>':''}</div></div>`:''}${dailyYieldHex>0?`<div class="ts-sub"${chainMode==='both'&&dyByChain.pls.hex>0&&dyByChain.eth.hex>0?' style="margin-top:6px;"':''}>Monthly: <span class="ts-sub-v" style="color:#00FF66;">~${fb(dailyYieldHex*30)} HEX</span> · <span class="ts-sub-v moon-val" style="color:#00FF66 !important">$${fb(dailyYieldUSD*30)}</span></div>`:''}${wApy!==null||eApy!==null?`<div class="ts-sub" style="margin-top:4px;border-top:1px solid rgba(255,255,255,0.06);padding-top:5px;">${wApy!==null?`Active APY: <span class="ts-sub-v" style="color:#00d4aa;">${wApy.toFixed(1)}%</span>`:''}${eApy!==null?`${wApy!==null?'<br>':''}Ended APY: <span class="ts-sub-v" style="color:#00d4aa;">${eApy.toFixed(1)}%</span>`:''}${cApy!==null&&wApy!==null&&eApy!==null?`<br>Combined: <span class="ts-sub-v" style="color:#FFD700;">${cApy.toFixed(1)}%</span>`:''}</div>`:''}${ii(TIP_DY)}</div>
+    <div class="card c-plsx"><div class="ctop"><div class="clbl">Unrealized P&amp;L</div><div class="cinds">${pnlInd}<div class="ci-dot"></div></div></div><div class="cval ${pnlC}">${pnlT}</div><div class="csub">vs cost basis · active stakes</div><div class="card-2nd"><span class="card-2nd-v">${aCC>0?'$'+fb(aCost):'—'}</span><span class="card-2nd-l">cost basis</span><div class="card-2nd-sub">${aCC===act.length&&act.length>0?'all '+act.length+' at price':aCC>0?aCC+' of '+act.length+' priced':''}</div></div>${hp?pr('—','Excluded until active'):''}${ii(TIP_PL)}</div>
+    <div class="card c-plsx"><div class="ctop"><div class="clbl">Realized P&amp;L</div><div class="cinds">${rPnlInd}<div class="ci-dot"></div></div></div><div class="cval ${rPnlC}">${rPnlT}</div><div class="csub">${rCC>0?rCC+' of '+ended.length+' ended priced':'no priced ended stakes'}</div>${chainMode==='both'&&rPnlBy.pls.cc>0&&rPnlBy.eth.cc>0?`<div class="wb-breakdown" style="margin-top:6px;"><div class="wb-row"><span class="wb-tag" style="color:#FF00CC;">⬡ pHEX</span><span class="wb-amt" style="color:${(rPnlBy.pls.exit-rPnlBy.pls.cost)>=0?'#00FF66':'#ff5c5c'};">${(rPnlBy.pls.exit-rPnlBy.pls.cost)>=0?'+':''} $${fb(Math.abs(rPnlBy.pls.exit-rPnlBy.pls.cost))}</span></div><div class="wb-row"><span class="wb-tag" style="color:#00CFFF;">◆ eHEX</span><span class="wb-amt" style="color:${(rPnlBy.eth.exit-rPnlBy.eth.cost)>=0?'#00FF66':'#ff5c5c'};">${(rPnlBy.eth.exit-rPnlBy.eth.cost)>=0?'+':''} $${fb(Math.abs(rPnlBy.eth.exit-rPnlBy.eth.cost))}</span></div></div>`:''}${ended.length>0?`<div class="card-2nd"><span class="card-2nd-v">${fh(rYieldH)} HEX</span><span class="card-2nd-l">lifetime yield</span><div class="card-2nd-sub">${rYieldUSD>0?'$'+fb(rYieldUSD)+' at exit-day prices':''}${rDaysAvg>0?(rYieldUSD>0?' · ':'')+rDaysAvg.toLocaleString()+'d avg served':''}</div></div>`:''}${ii(TIP_RPL)}</div>`;
+
+  const contractLockedHearts=stakes.filter(s=>s.unlockedDay===0).reduce((a,s)=>a+s.stakedHearts,0n);
+  clearSkeletonOverlays();   // remove any overlays before charts paint into the canvases
+  buildCharts(act,gnum,contractLockedHearts,totalLiquidHearts,ended);
+
+  // ── Sell Pressure Analyzer UI ──
+  const spEl=document.getElementById('sp-section');
+  if(spTotal>0){
+    spEl.className='sp-section show';
+    spEl.innerHTML=`<div class="sp-box">
+      <div class="sp-title">Restake Behavior · ${spTotal} ended stake${spTotal!==1?'s':''}</div>
+      <div class="sp-bars">
+        <div class="sp-bar-group">
+          <div class="sp-bar-pct" style="color:#00FF66;">${spRestakedPct}%</div>
+          <div class="sp-bar-val" style="color:#00FF66;">${spRestaked}</div>
+          <div class="sp-bar-track"><div class="sp-bar-fill" style="width:${spRestakedPct}%;background:#00FF66;"></div></div>
+          <div class="sp-bar-label">Restaked</div>
+          <div class="sp-bar-hex">${fh(spRestakedHex)} HEX</div>
+        </div>
+        <div class="sp-bar-group">
+          <div class="sp-bar-pct" style="color:#FFB800;">${spHeldPct}%</div>
+          <div class="sp-bar-val" style="color:#FFB800;">${spHeld}</div>
+          <div class="sp-bar-track"><div class="sp-bar-fill" style="width:${spHeldPct}%;background:#FFB800;"></div></div>
+          <div class="sp-bar-label">Held</div>
+          <div class="sp-bar-hex">${fh(spHeldHex)} HEX</div>
+        </div>
+        <div class="sp-bar-group">
+          <div class="sp-bar-pct" style="color:#ff5c5c;">${spSoldPct}%</div>
+          <div class="sp-bar-val" style="color:#ff5c5c;">${spSold}</div>
+          <div class="sp-bar-track"><div class="sp-bar-fill" style="width:${spSoldPct}%;background:#ff5c5c;"></div></div>
+          <div class="sp-bar-label">Not Restaked</div>
+          <div class="sp-bar-hex">${fh(spSoldHex)} HEX</div>
+        </div>
+      </div>
+      <div class="sp-note">Based on ${RESTAKE_WINDOW}-day window after each end-stake. "Held" = ended within 30 days (too recent to classify). "Not Restaked" = no new stake detected on the same chain.</div>
+      <div class="info-i" onclick="this.classList.toggle('active')">i</div>
+      <div class="info-tip">Analyzes post-end-stake behavior for these wallets. For each ended stake, checks if a new stake on the same chain started within ${RESTAKE_WINDOW} days. Restaked = new stake found. Held = ended too recently to classify. Not Restaked = no follow-up stake detected.</div>
+    </div>`;
+  }else{
+    spEl.className='sp-section';
+    spEl.innerHTML='';
+  }
+
+  // Next Stake Ending indicator
+  const nseEl=document.getElementById('nse');
+  const ctrlNse=document.getElementById('ctrl-nse');
+  const ctrlNseSep=document.getElementById('ctrl-nse-sep');
+  const activeNotOverdue=act.filter(s=>sst(s)==='active');
+  if(activeNotOverdue.length){
+    const nearest=activeNotOverdue.reduce((best,s)=>{const ed=s.lockedDay+s.stakedDays;const dl=ed-hexDay;return(dl>0&&dl<best.dl)?{s,dl,ed,gn:gnum.get(s.stakeId.toString())}:best;},{dl:Infinity,s:null,gn:'',ed:0});
+    if(nearest.s){
+      const urgency=nearest.dl<=7?'nse-red':nearest.dl<=30?'nse-amb':'nse-grn';
+      nseEl.className='nse-bar show '+urgency;
+      document.getElementById('nse-val').innerHTML=`Stake #${nearest.gn} ends in ${nearest.dl} day${nearest.dl!==1?'s':''}`;
+      document.getElementById('nse-sub').textContent='End date: '+d2d(nearest.ed)+' · '+fh(nearest.s.stakedHearts)+' HEX · '+fts(nearest.s.stakeShares)+' T-Shares';
+      // Also populate inline ctrl-nse
+      if(ctrlNse){
+        const col=nearest.dl<=7?'#ff5c5c':nearest.dl<=30?'#ff9900':'#00FF66';
+        ctrlNse.classList.add('show');
+        ctrlNse.querySelector('.nse-icon').style.color=col;
+        ctrlNse.querySelector('.nse-val').style.color=col;
+        document.getElementById('ctrl-nse-val').innerHTML=`Stake #${nearest.gn} ends in ${nearest.dl}d`;
+        document.getElementById('ctrl-nse-sub').textContent='· '+d2d(nearest.ed)+' · '+fh(nearest.s.stakedHearts)+' HEX';
+        if(ctrlNseSep)ctrlNseSep.style.display='';
+      }
+    } else {nseEl.className='nse-bar';if(ctrlNse)ctrlNse.classList.remove('show');}
+  } else {nseEl.className='nse-bar';if(ctrlNse)ctrlNse.classList.remove('show');}
+
+  const ps=document.getElementById('psec');
+  if(hp){
+    ps.style.display='block';
+    document.getElementById('pmeta').textContent=`${pend.length} stake${pend.length!==1?'s':''} · ${fh(pH)} HEX · ${ftsC(pendTS)} T-S · starts tomorrow`;
+    document.getElementById('plist').innerHTML=buildStakeTable(pend,gnum,false);
+    // No countdown timers needed in compact table view
+  } else ps.style.display='none';
+
+  // Active stakes table (includes overdue)
+  document.getElementById('slist').innerHTML=buildStakeTable(act,gnum,false);
+
+  // Tab toggle between Active and Ended
+  const tabBar=document.getElementById('stake-tabs');
+  tabBar.style.display='flex';
+  document.getElementById('tab-act-count').textContent=act.length+(pend.length?'+'+pend.length:'');
+  document.getElementById('tab-end-count').textContent=ended.length;
+  const tabEndBtn=document.getElementById('tab-ended');
+  if(ended.length>0){
+    tabEndBtn.disabled=false;tabEndBtn.style.opacity='1';
+    const endedPrinc=ended.reduce((a,s)=>a+s.stakedHearts,0n);
+    const endedYield=ended.reduce((a,s)=>a+(s.yh||0n),0n);
+    // Total USD value at exit — each stake valued at its own chain's price on end day
+    let endedExitUSD=0,endedExitCount=0;
+    ended.forEach(s=>{
+      const ep=priceForStake(s,s.unlockedDay);
+      if(ep==null)return;
+      endedExitUSD+=(Number(s.stakedHearts)/1e8+Number(s.yh||0n)/1e8)*ep;
+      endedExitCount++;
+    });
+    const hb2=document.getElementById('hist-bar-inline');
+    hb2.style.display='flex';
+    document.getElementById('h-count2').textContent=ended.length;
+    document.getElementById('h-princ2').textContent=fh(endedPrinc)+' HEX';
+    document.getElementById('h-ts2').textContent=ftsC(endedTS);
+    document.getElementById('h-yield2').textContent=fh(endedYield)+' HEX';
+    const exitEl=document.getElementById('h-exit2');
+    if(exitEl)exitEl.textContent=endedExitCount>0?'$'+fb(endedExitUSD):'—';
+    document.getElementById('ended-list').innerHTML=buildStakeTable(ended,gnum,true);
+  }else{
+    tabEndBtn.disabled=true;tabEndBtn.style.opacity='0.4';
+    document.getElementById('hist-bar-inline').style.display='none';
+    document.getElementById('ended-list').innerHTML='<div style="text-align:center;padding:20px;color:var(--mu);font-size:13px;">No ended stakes found for these wallets.</div>';
+  }
+  // Note: tab state is NOT reset here. That only happens on fresh analysis (in go()).
+  // This allows sort clicks, filter changes, and chain toggles to preserve the current tab.
+}
+
+function buildCharts(stakes,gnum,lockedHearts,liquidHearts,endedStakes=[]){
+  const labels=stakes.map(s=>'#'+gnum.get(s.stakeId.toString()));
+
+  // Update chain context pills on the three chart cards. Users scrolling past the chain
+  // toggle at the top still need to know which chain(s) the charts represent.
+  const chainPillCls=chainMode==='pls'?'pls':chainMode==='eth'?'eth':'both';
+  const chainPillHTML=chainMode==='pls'?'<span class="cp-pls">⬡ pHEX</span>':chainMode==='eth'?'<span class="cp-eth">◆ eHEX</span>':'<span class="cp-pls">⬡ pHEX</span><span class="cp-plus">+</span><span class="cp-eth">◆ eHEX</span>';
+  ['cpie-chain-pill','cyield-chain-pill','cmat-chain-pill'].forEach(id=>{const el=document.getElementById(id);if(el){el.className='chart-chain-pill '+chainPillCls;el.innerHTML=chainPillHTML;}});
+
+  // ── 1. Locked vs Liquid Pie ──
+  const lv=Number(lockedHearts)/1e8,qv=Number(liquidHearts)/1e8,total=lv+qv;
+  const lp=total>0?parseFloat((lv/total*100).toFixed(1)):0;
+  const qp=total>0?parseFloat((100-lp).toFixed(1)):0;
+  const CL='#FF00CC',CQ='#FFB800';
+  document.getElementById('pie-pct-num').innerHTML=`${lp}<span class="pie-pct-unit">%</span>`;
+  if(cpieC)cpieC.destroy();
+  cpieC=new Chart(document.getElementById('cpie'),{type:'doughnut',data:{labels:['Locked','Liquid'],datasets:[{data:[lv,qv],backgroundColor:[CL,CQ],borderColor:['#0e1220','#0e1220'],borderWidth:3,hoverOffset:6}]},options:{responsive:true,maintainAspectRatio:true,cutout:'68%',plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>{const v=ctx.raw;const pct=total>0?(v/total*100).toFixed(1):0;const lbl=v>=1e9?(v/1e9).toFixed(2)+'B':v>=1e6?(v/1e6).toFixed(2)+'M':v>=1e3?(v/1e3).toFixed(2)+'K':v.toFixed(2);return` ${lbl} HEX (${pct}%)`;}}}}}});
+  let lockedUSD=0;
+  stakes.forEach(s=>{if(s.unlockedDay===0){const lpr=priceFor(s.chain||'pls');if(lpr>0)lockedUSD+=Number(s.stakedHearts)/1e8*lpr;}});
+  const lockedByChain={pls:0n,eth:0n};
+  stakes.forEach(s=>{if(s.unlockedDay===0)lockedByChain[s.chain||'pls']+=s.stakedHearts;});
+  const lockedTot=Number(lockedByChain.pls+lockedByChain.eth);
+  let liquidUSD=0;
+  if(lockedTot>0){
+    const fracPLS=Number(lockedByChain.pls)/lockedTot;
+    const fracETH=Number(lockedByChain.eth)/lockedTot;
+    if(livePrice.pls>0)liquidUSD+=Number(liquidHearts)/1e8*fracPLS*livePrice.pls;
+    if(livePrice.eth>0)liquidUSD+=Number(liquidHearts)/1e8*fracETH*livePrice.eth;
+  }else{
+    const lpr=livePrice.pls||livePrice.eth||0;
+    if(lpr>0)liquidUSD=Number(liquidHearts)/1e8*lpr;
+  }
+  document.getElementById('pie-legend').innerHTML=`
+    <div class="pie-leg-row"><div class="pie-leg-left"><div class="pie-dot" style="background:${CL};box-shadow:0 0 5px ${CL}55;"></div><span class="pie-leg-lbl">Locked</span></div><span class="pie-leg-val" style="color:${CL};">${fh(lockedHearts)}</span><span class="pie-leg-val" style="color:${CL};opacity:.7;font-size:12px;">$${fb(lockedUSD)}</span><span class="pie-leg-pct">${lp}%</span></div>
+    <div class="pie-leg-row"><div class="pie-leg-left"><div class="pie-dot" style="background:${CQ};box-shadow:0 0 5px ${CQ}55;"></div><span class="pie-leg-lbl">Liquid</span></div><span class="pie-leg-val" style="color:${CQ};">${fh(liquidHearts)}</span><span class="pie-leg-val" style="color:${CQ};opacity:.7;font-size:12px;">$${fb(liquidUSD)}</span><span class="pie-leg-pct">${qp}%</span></div>`;
+
+  // ── 3. Yield Accumulation — Active vs Active+Ended, summed across all chains & wallets in scope ──
+  // 'stakes' is the active+overdue set (one or many wallets, pHEX and/or eHEX). endedStakes adds the
+  // ended history for the upper "total" line. Yield is summed chain-agnostically in HEX.
+  if(cyieldC)cyieldC.destroy();
+  {
+    const activeY=stakes.filter(s=>s.yh&&s.yh>0n);
+    const endedY=endedStakes.filter(s=>s.yh&&s.yh>0n);
+    const allY=[...activeY,...endedY];
+    if(allY.length){
+      // Day milestones across both sets, plus ~30 intermediate points for a smooth curve.
+      const daySet=new Set();
+      allY.forEach(s=>{
+        daySet.add(s.lockedDay);
+        const endDay=s.lockedDay+s.stakedDays;
+        daySet.add(s.unlockedDay>0?s.unlockedDay:Math.min(hexDay,endDay));
+      });
+      const sd=[...daySet].sort((a,b)=>a-b);
+      const firstDay=sd[0],lastDay=sd[sd.length-1];
+      const step=Math.max(Math.floor((lastDay-firstDay)/30),1);
+      for(let d=firstDay;d<=lastDay;d+=step)daySet.add(d);
+      const allDays=[...daySet].sort((a,b)=>a-b);
+      // Cumulative yield (incl Big Pay Day) for a stake set at a given day — linear-accrual approximation.
+      const cumAt=(arr,day)=>{let c=0;arr.forEach(s=>{const yh=Number(yhDisplay(s))/1e8;const startD=s.lockedDay;const endD=s.lockedDay+s.stakedDays;const servedEnd=s.unlockedDay>0?s.unlockedDay:Math.min(hexDay,endD);const totalServed=servedEnd-startD;if(day<=startD||totalServed<=0)return;c+=yh*(Math.min(day-startD,totalServed)/totalServed);});return c;};
+      if(allDays.length>1){
+        const labels=allDays.map(d=>d2d(d));
+        const activeData=allDays.map(d=>cumAt(activeY,d));
+        const hasEnded=endedY.length>0;
+        const datasets=[];
+        // Draw the total behind (purple band); active green sits on top, so the gap above green = ended yield.
+        if(hasEnded){
+          const totalData=allDays.map(d=>cumAt(allY,d));
+          datasets.push({label:'Active + Ended',data:totalData,borderColor:'#a78bfa',backgroundColor:'rgba(167,139,250,0.10)',fill:true,tension:0.3,pointRadius:0,pointHoverRadius:4,pointHoverBackgroundColor:'#a78bfa',borderWidth:2});
+        }
+        datasets.push({label:'Active',data:activeData,borderColor:'#00FF66',backgroundColor:'rgba(0,255,102,0.10)',fill:true,tension:0.3,pointRadius:0,pointHoverRadius:4,pointHoverBackgroundColor:'#00FF66',borderWidth:2});
+        cyieldC=new Chart(document.getElementById('cyield'),{type:'line',data:{labels,datasets},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:hasEnded,position:'top',align:'end',labels:{color:'rgba(255,255,255,0.85)',font:{size:isMobileWidth()?9:11,family:'Space Mono'},boxWidth:10,boxHeight:10,padding:8,usePointStyle:true}},tooltip:{callbacks:{label:ctx=>` ${ctx.dataset.label}: ${fb(ctx.raw)} HEX`}}},scales:{x:{ticks:{color:'rgba(255,255,255,0.9)',font:{size:isMobileWidth()?10:12,family:'Space Mono'},maxTicksLimit:isMobileWidth()?4:6,maxRotation:0},grid:{color:'rgba(255,255,255,0.06)'}},y:{ticks:{color:'rgba(255,255,255,0.9)',font:{size:isMobileWidth()?10:12,family:'Space Mono'},callback:v=>v>=1e6?(v/1e6).toFixed(1)+'M':v>=1e3?(v/1e3).toFixed(0)+'K':v.toFixed(0)},grid:{color:'rgba(255,255,255,0.06)'},beginAtZero:true}}}});
+      }
+    }
+  }
+
+  // ── 4. Stake Maturity Calendar (bar chart by month) ──
+  if(cmatC)cmatC.destroy();
+  const activeForMat=stakes.filter(s=>sst(s)==='active'||sst(s)==='overdue'||sst(s)==='pending');
+  if(activeForMat.length){
+    // Group stakes by end month
+    const monthBuckets={};
+    activeForMat.forEach(s=>{
+      const endDay=s.lockedDay+s.stakedDays;
+      const endDate=new Date((HTS+endDay*86400)*1000);
+      const key=endDate.getFullYear()+'-'+String(endDate.getMonth()+1).padStart(2,'0');
+      const label=endDate.toLocaleDateString('en-US',{month:'short',year:'2-digit'});
+      if(!monthBuckets[key])monthBuckets[key]={label,count:0,hex:0n};
+      monthBuckets[key].count++;
+      monthBuckets[key].hex+=s.stakedHearts;
+    });
+    const sortedMonths=Object.keys(monthBuckets).sort();
+    const matLabels=sortedMonths.map(k=>monthBuckets[k].label);
+    const matData=sortedMonths.map(k=>monthBuckets[k].count);
+    const matHex=sortedMonths.map(k=>Number(monthBuckets[k].hex)/1e8);
+    // Color: months in the past/near = red/amber, far future = green
+    const matColors=sortedMonths.map(k=>{
+      const[y,m]=k.split('-').map(Number);
+      const now=new Date();
+      const monthDiff=(y-now.getFullYear())*12+(m-now.getMonth()-1);
+      if(monthDiff<=0)return'rgba(255,32,32,0.7)';
+      if(monthDiff<=3)return'rgba(255,184,0,0.7)';
+      if(monthDiff<=12)return'rgba(0,170,255,0.7)';
+      return'rgba(148,0,255,0.7)';
+    });
+    cmatC=new Chart(document.getElementById('cmaturity'),{type:'bar',data:{labels:matLabels,datasets:[{data:matData,backgroundColor:matColors,borderRadius:6,borderSkipped:false}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:(ctx)=>{const i=ctx.dataIndex;return[` ${ctx.raw} stake${ctx.raw!==1?'s':''}`,` ${fb(matHex[i])} HEX maturing`];}}}},scales:{x:{ticks:{color:'rgba(255,255,255,0.9)',font:{size:isMobileWidth()?9:12,family:'Space Mono'},maxRotation:45,maxTicksLimit:isMobileWidth()?8:20,autoSkip:true},grid:{display:false}},y:{ticks:{color:'rgba(255,255,255,0.9)',font:{size:isMobileWidth()?10:12,family:'Space Mono'},stepSize:1},grid:{color:'rgba(255,255,255,0.06)'},beginAtZero:true}}}});
+  }
+}
+
+// ── Sort state ──
+let sortCol='start',sortDir='asc'; // default: sorted by start date ascending
+let endedSortCol='end',endedSortDir='desc'; // ended: sorted by end date descending
+
+function setSortActive(col){
+  if(sortCol===col){sortDir=sortDir==='asc'?'desc':'asc';}
+  else{sortCol=col;sortDir='asc';}
+  rerenderFromCache();
+}
+function setSortEnded(col){
+  if(endedSortCol===col){endedSortDir=endedSortDir==='asc'?'desc':'asc';}
+  else{endedSortCol=col;endedSortDir='asc';}
+  rerenderFromCache();
+}
+
+// Sortable column definitions
+// key: sort key, lbl: header label
+// Chain column shows pHEX/eHEX badge — only displayed in 'both' mode (auto-hidden via CSS in single-chain mode)
+const COLS=[
+  {key:'num',lbl:'#',tip:'Global stake number, ordered by start date across all wallets'},
+  {key:'chain',lbl:'Chain',tip:'Which blockchain this stake lives on. ⬡ = PulseChain (pHEX) · ◆ = Ethereum (eHEX). The two chains have independent stake state since the May 2023 fork.',chainOnly:true},
+  {key:'type',lbl:'Type',tip:'Stake type — Native = standard HEX stake · HSI = Hedron Stake Instance (untokenized) · HSI-T = Tokenized HSI (ERC-721 NFT) · HTT = HEX Time Token via Actuator (PulseChain only)',hsiOnly:true},
+  {key:'status',lbl:'Status',tip:'Active = earning yield · Pending = not yet started · Overdue = past end + 14 day grace · Ended = unstaked'},
+  {key:'start',lbl:'Start',tip:'The HEX day this stake was locked (start date)'},
+  {key:'end',lbl:'End',tip:'Scheduled end date of the stake'},
+  {key:'dleft',lbl:'Days Left',tip:'Days remaining until stake ends. Red < 7 days, amber < 30 days'},
+  {key:'progress',lbl:'Prog',tip:'Percentage of the total stake duration that has been served'},
+  {key:'principal',lbl:'Principal',tip:'Original HEX amount locked in this stake'},
+  {key:'tshares',lbl:'T-Shares',tip:'T-Shares minted for this stake. T-Shares determine your share of daily HEX payouts'},
+  {key:'yield',lbl:'Yield',tip:'Total HEX yield — daily-payout inflation plus the one-time Big Pay Day (broken out in the next column). Ended stakes show the settled amount received; active stakes show the amount accrued so far.'},
+  {key:'bpd',lbl:'Big Pay Day',tip:'HEX received from the one-time Big Pay Day (Day 352, Nov 19 2020) — all unclaimed BTC-holder HEX distributed to active stakers. PulseChain forked from Ethereum and inherited this event, so pHEX stakes open on Day 352 also received BPD. ENDED stakes show the exact settled amount derived from the on-chain StakeEnd record. ACTIVE stakes show an estimate (~) calculated from on-chain data with a historical correction factor validated to 0.00% error against reference data — the actual settled value will be very close. Stakes that started after Day 352 or ended before it show —. This Big Pay Day amount is included in the stake\'s Yield and Value.'},
+  {key:'apy',lbl:'APY',tip:'Effective annualized yield — (yield / principal) × (365 / days served) × 100. The TOTALS row shows the weighted average APY across all stakes in this tab, weighted by principal. Ended stakes use actual served days.'},
+  {key:'daily',lbl:'Daily',tip:'Current daily HEX yield based on the most recent payout distribution'},
+  {key:'cost',lbl:'Cost',tip:'USD cost basis — principal × HEX price (chain-specific) on the day the stake started'},
+  {key:'value',lbl:'Value',tip:'Current USD value of principal + accumulated yield (including Big Pay Day) at this stake\'s chain live price'},
+  {key:'change',lbl:'% Chg',tip:'Profit/loss percentage — (Value − Cost) / Cost × 100. Green = profit, red = loss'},
+];
+
+// Show Chain column only in both mode. Type column only when HSI/HTT stakes in view.
+let hasHSIStakes=false; // set by rerenderFromCache before table render
+let hasHTT=false; // set by rerenderFromCache; gates "Analyze HTTs" button visibility
+let walletHSIProbes=new Map(); // per-wallet HSI activity from chain probes
+// Returns current working ETH RPCs. Starts with just publicnode.
+// If publicnode fails, probeEthFallbacks() tests candidates and adds any that respond.
+function ethUrls(){return ETH_RPCS;}
+
+// Quick health check — confirms publicnode is reachable. If not, probes fallbacks immediately.
+async function checkEthRpcHealth(){
+  const url=ETH_RPCS[0];
+  try{
+    const ac=new AbortController();
+    const t=setTimeout(()=>ac.abort(),5000);
+    const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({jsonrpc:'2.0',id:1,method:'eth_blockNumber',params:[]}),signal:ac.signal});
+    clearTimeout(t);
+    if(r.ok){const j=await r.json();if(j.result&&parseInt(j.result,16)>0){console.log('[eth] RPC health: publicnode reachable');return;}}
+  }catch(e){}
+  console.warn('[eth] publicnode unreachable — probing fallback RPCs…');
+  await probeEthFallbacks();
+}
+
+// Only called when primary RPC fails. Tests all candidates in parallel, adds any that respond.
+async function probeEthFallbacks(){
+  if(ethFallbackProbed)return;
+  ethFallbackProbed=true;
+  const tests=ETH_RPC_CANDIDATES.map(async url=>{
+    try{
+      const ac=new AbortController();
+      const t=setTimeout(()=>ac.abort(),4000);
+      const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({jsonrpc:'2.0',id:1,method:'eth_blockNumber',params:[]}),signal:ac.signal});
+      clearTimeout(t);
+      if(!r.ok)return null;
+      const j=await r.json();
+      if(j.result&&parseInt(j.result,16)>0)return url;
+    }catch(e){}
+    return null;
+  });
+  const results=await Promise.all(tests);
+  const working=results.filter(Boolean);
+  if(working.length>0){
+    ETH_RPCS.push(...working);
+    console.log(`[eth] Fallback probe found ${working.length} working RPC(s): ${working.map(u=>new URL(u).hostname).join(', ')}`);
+  }else{
+    console.warn('[eth] No fallback RPCs available — explorer API is the only data path');
+  }
+}
+function visibleCols(){
+  return COLS.filter(c=>{
+    if(c.chainOnly&&chainMode!=='both')return false;
+    if(c.hsiOnly&&!hasHSIStakes)return false;
+    return true;
+  });
+}
+
+function buildTableHeader(isEnded){
+  const sc=isEnded?endedSortCol:sortCol;
+  const sd=isEnded?endedSortDir:sortDir;
+  const fn=isEnded?'setSortEnded':'setSortActive';
+  return '<thead><tr>'+visibleCols().map(c=>{
+    let cls='';
+    if(c.key===sc)cls=sd==='asc'?' sorted-asc':' sorted-desc';
+    return `<th class="${cls}" onclick="${fn}('${c.key}')" title="${c.tip}">${c.lbl}</th>`;
+  }).join('')+'</tr></thead>';
+}
+
+function sortStakes(arr,col,dir,gnum){
+  const m=dir==='asc'?1:-1;
+  return[...arr].sort((a,b)=>{
+    let va,vb;
+    switch(col){
+      case'num':va=gnum.get(a.stakeId.toString())||0;vb=gnum.get(b.stakeId.toString())||0;break;
+      case'chain':va=(a.chain||'pls')==='pls'?0:1;vb=(b.chain||'pls')==='pls'?0:1;break;
+      case'type':{const to={Native:0,HSI:1,'HSI-U':1,'HSI-T':2,HTT:3};va=to[a.stakeType||'Native']||0;vb=to[b.stakeType||'Native']||0;break;}
+      case'status':{const o={pending:0,active:1,overdue:2,ended:3};va=o[sst(a)]||0;vb=o[sst(b)]||0;break;}
+      case'start':va=a.lockedDay;vb=b.lockedDay;break;
+      case'end':va=a.lockedDay+a.stakedDays;vb=b.lockedDay+b.stakedDays;break;
+      case'dleft':{const ea=a.lockedDay+a.stakedDays-hexDay;const eb=b.lockedDay+b.stakedDays-hexDay;va=ea;vb=eb;break;}
+      case'progress':va=spg(a);vb=spg(b);break;
+      case'principal':va=Number(a.stakedHearts);vb=Number(b.stakedHearts);break;
+      case'tshares':va=Number(a.stakeShares);vb=Number(b.stakeShares);break;
+      case'yield':va=Number(yhDisplay(a));vb=Number(yhDisplay(b));break;
+      case'bpd':{const ba=bpdYield(a),bb=bpdYield(b);va=ba?Number(ba.amount):0;vb=bb?Number(bb.amount):0;break;}
+      case'apy':{
+        const sa=ssv(a),sb=ssv(b);
+        const ha2=Number(a.stakedHearts)/1e8,hb2=Number(b.stakedHearts)/1e8;
+        const ya=Number(a.yh||0n)/1e8,yb=Number(b.yh||0n)/1e8;
+        va=(sa>0&&ha2>0&&ya>0)?(ya/ha2)*(365/sa):0;
+        vb=(sb>0&&hb2>0&&yb>0)?(yb/hb2)*(365/sb):0;break;
+      }
+      case'daily':{
+        const gddA=gddBy[a.chain||'pls'],gddB=gddBy[b.chain||'pls'];
+        const ldA=gddA?.data?.length?gddA.data[gddA.data.length-1]:null;
+        const ldB=gddB?.data?.length?gddB.data[gddB.data.length-1]:null;
+        const{pt:ptA,st:stA}=ldA?ud(ldA):{pt:0n,st:0n};
+        const{pt:ptB,st:stB}=ldB?ud(ldB):{pt:0n,st:0n};
+        va=stA>0n?Number(a.stakeShares*ptA/stA):0;
+        vb=stB>0n?Number(b.stakeShares*ptB/stB):0;break;
+      }
+      case'cost':{
+        const spa=priceForStake(a,a.lockedDay)??-1,spb=priceForStake(b,b.lockedDay)??-1;
+        va=spa>=0?Number(a.stakedHearts)/1e8*spa:-1;
+        vb=spb>=0?Number(b.stakedHearts)/1e8*spb:-1;break;
+      }
+      case'value':{
+        const lpa=priceFor(a.chain||'pls'),lpb=priceFor(b.chain||'pls');
+        const ya2=Number(a.yh||0n)/1e8,yb2=Number(b.yh||0n)/1e8;
+        va=lpa>0?(Number(a.stakedHearts)/1e8+ya2)*lpa:0;
+        vb=lpb>0?(Number(b.stakedHearts)/1e8+yb2)*lpb:0;break;
+      }
+      case'change':{
+        const fPct=s=>{
+          const sp2=priceForStake(s,s.lockedDay);
+          const lp=priceFor(s.chain||'pls');
+          const h=Number(s.stakedHearts)/1e8;
+          const y=Number(s.yh||0n)/1e8;
+          const cb2=sp2!==null?h*sp2:null;
+          const cv2=lp>0?(h+y)*lp:null;
+          if(cb2===null||cb2<=0||cv2===null)return-9999;
+          return(cv2-cb2)/cb2*100;
+        };
+        va=fPct(a);vb=fPct(b);break;
+      }
+      default:va=0;vb=0;
+    }
+    if(va<vb)return-1*m;if(va>vb)return 1*m;return 0;
+  });
+}
+
+// Big Pay Day (BPD) was HEX Day 352 — November 19, 2020.
+// All unclaimed HEX from the 50-week Adoption Amplifier launch phase was distributed to active stakers.
+// It was a one-time event, never to be repeated.
+//
+// BPD is stored in dayUnclaimedSatoshisTotal (bits 144-199 of the dailyData packed uint256).
+// cy() never sees it — only stakeEnd() distributes it at unstake time.
+//
+// Base formula: sat * HEARTS_PER_SATOSHI * stakeShares / dayStakeSharesTotal
+//
+// dayStakeSharesTotal on Day 352 = 28.1M T-Shares, recorded AFTER many stakes exited.
+// The true share pool during BPD distribution was ~49.9M T-Shares (close to Day 352).
+// Raw formula overstates BPD by BPD_CORRECTION = 1.7747 (= 49.9M / 28.1M).
+// Cross-validated against 6 go.hex.com reference ended stakes: error = 0.00%.
+// BPD_CORRECTION is a historical constant — BPD happened once in 2020 and is immutable.
+//
+// TWO PATHS:
+// 1. Ended stakes (fromLog=true): exact BPD = s.yh (settled total) − gy(s) (regular inflation)
+// 2. Active/pending: approximate with BPD_CORRECTION applied
+// We always use ETH dailyData[353] — PulseChain forked from ETH and inherited this data.
+const BPD_DAY=352;
+const M56=(1n<<56n)-1n;
+const HEARTS_PER_SATOSHI=10000n;
+const BPD_CORRECTION=1.7747;
+function bpdYield(s){
+  if(s.lockedDay>BPD_DAY)return null;
+  if(s.unlockedDay>0&&s.unlockedDay<=BPD_DAY)return null;
+
+  // Path 1: ended stake — exact BPD from settled StakeEnd payout
+  if(s.fromLog&&s.yh!=null){
+    const bpd=s.yh-gy(s);
+    if(bpd>0n)return{amount:bpd,exact:true};
+  }
+
+  // Path 2: active/pending — corrected approximation
+  // Static cache (from HEXDailyStats) only has pt+st, NOT satoshi bits.
+  // The unclaimed satoshis value is immutable (BPD happened once, Nov 19 2020).
+  // Fetched from contract: dailyDataRange(352,353) → sat(144-199) = 1786651846416372
+  // st from contract = 50499329839740027369, but we use the cache st which matches.
+  const BPD_SAT=1786651846416372n;
+  const gdd=gddBy['eth'];
+  if(!gdd||!gdd.data||!gdd.data.length)return null;
+  const idx=BPD_DAY-gdd.bd;
+  if(idx<0||idx>=gdd.data.length)return null;
+  const raw=gdd.data[idx];
+  const st=(raw>>72n)&M72;
+  if(st===0n)return null;
+  const rawAmt=BPD_SAT*HEARTS_PER_SATOSHI*s.stakeShares/st;
+  return{amount:BigInt(Math.round(Number(rawAmt)/BPD_CORRECTION)),exact:false};
+}
+
+// Displayed yield = regular daily-payout inflation + Big Pay Day (go.hex parity).
+// Ended stakes (fromLog): s.yh is the settled StakeEnd payout — it ALREADY includes BPD, so never add it again.
+// Active/pending: s.yh is regular inflation only — add the (corrected) BPD estimate so Yield & Value match go.hex.
+function bpdHeartsOf(s){const r=bpdYield(s);return r?r.amount:0n;}
+function yhDisplay(s){return s.fromLog?(s.yh||0n):((s.yh||0n)+bpdHeartsOf(s));}
+
+function mkRow(s,gnum){
+  const ch=s.chain||'pls';
+  const lp=priceFor(ch);   // this stake's chain live price (respects Moon Math)
+  const st=sst(s),pg=spg(s),sv=ssv(s);
+  const ed=s.lockedDay+s.stakedDays,ip=st==='pending',ie=st==='ended';
+  const dl=st==='active'?Math.max(ed-hexDay,0):0;
+  const bdg=st==='overdue'?'bo':ie?'be':ip?'bp':'ba';
+  // For pending stakes use the live price (no historical anchor yet); otherwise use the stake's start-day chain price
+  // Forked PLS copies (lockedDay < PLS_DAY) have zero cost — they were free at the fork.
+  const sp=ip?lp:(priceForStake(s,s.lockedDay)??null);
+  const ha=Number(s.stakedHearts)/1e8;
+  const cb=isForkedCopy(s)?0:sp!==null?ha*sp:null;
+  const bpdResult=bpdYield(s);
+  const yhHearts=yhDisplay(s);          // regular inflation + Big Pay Day (go.hex parity)
+  const yhReg=Number(s.yh||0n)/1e8;     // regular only — APY must exclude the one-time BPD
+  const yh=Number(yhHearts)/1e8;        // displayed yield, includes Big Pay Day
+  const totalHex=ha+yh;
+  // Ended stakes: value = (principal + yield) × price on the day the stake ended
+  // Active/pending: value = (principal + yield) × live price
+  const ep=ie?(priceForStake(s,s.unlockedDay)??null):null;
+  const cv=ie?(ep!==null?totalHex*ep:null):(lp>0&&!ip?totalHex*lp:null);
+  const pnl=(!ip&&cb!==null&&cv!==null)?cv-cb:null;
+  const pct=(cb!==null&&cb>0&&pnl!==null)?pnl/cb*100:null;
+  const gn=gnum.get(s.stakeId.toString())||'?';
+
+  // Progress class
+  const pgCls=ie?'r-prog-m':pg>=100?'r-prog-g':dl<=7&&dl>0?'r-prog-c':dl<=30&&dl>0?'r-prog-w':'r-prog-g';
+
+  // Days left
+  let dlStr,dlCls;
+  if(ie){dlStr=d2d(s.unlockedDay);dlCls='r-dl-m';}
+  else if(ip){dlStr='pending';dlCls='r-dl-m';}
+  else if(st==='overdue'){dlStr='OVERDUE';dlCls='r-dl-c';}
+  else{dlStr=dl.toLocaleString()+'d';dlCls=dl<=7?'r-dl-c':dl<=30?'r-dl-w':'r-dl-g';}
+
+  // APY
+  let apyStr='—';
+  if(!ip&&sv>0&&ha>0&&yhReg>0){
+    apyStr=(yhReg/ha*(365/sv)*100).toFixed(1)+'%';
+  }
+
+  // Daily yield — chain-specific gdd
+  let dailyStr='—';
+  const gdd=gddBy[ch];
+  if(!ip&&!ie&&!s.fromLog&&gdd&&gdd.data.length>0){
+    const lastD=gdd.data[gdd.data.length-1];
+    const{pt:lpt,st:lst}=ud(lastD);
+    if(lst>0n){
+      const sdy=Number(s.stakeShares*lpt/lst)/1e8;
+      dailyStr=fb(sdy);
+    }
+  }
+
+  // P&L
+  const pnlCls=isForkedCopy(s)?'r-pnl-g':pct===null?'r-pnl-n':pct>=0?'r-pnl-g':'r-pnl-r';
+  const sgn=pct!==null&&pct>=0?'+':'';
+  const pnlStr=isForkedCopy(s)&&cv!==null?'<span style="font-size:11px;line-height:1;">∞</span>':pct!==null?sgn+pct.toFixed(1)+'%':'—';
+
+  // Big Pay Day — exact for ended stakes (settled on-chain), approximate for active/pending
+  // (bpdResult computed above, where it's folded into Yield & Value)
+  const bpdCell=bpdResult
+    ?`<td class="r-yield r-bpd">${bpdResult.exact?'':'~'}${fh(bpdResult.amount)}</td>`
+    :`<td class="r-yield">—</td>`;
+
+  // Chain badge — only included in 'both' mode
+  const chainBadge=chainMode==='both'
+    ?`<td><span class="r-chain cb-${ch}"><span class="r-chain-icon">${ch==='pls'?'⬡':'◆'}</span>${ch==='pls'?'pHEX':'eHEX'}</span></td>`
+    :'';
+
+  // Type badge — only shown when HSI/HTT stakes exist in current view
+  const sType=s.stakeType||'Native';
+  const isHSI=sType==='HSI'||sType==='HSI-U'||sType==='HSI-T';
+  const typeCls=isHSI?'rt-hsi':sType==='HTT'?'rt-htt':'rt-native';
+  const typeLabel=sType==='HSI-U'?'HSI':sType==='HSI-T'?'HSI-T':sType;
+  const typeBadge=hasHSIStakes
+    ?`<td><span class="r-type ${typeCls}">${typeLabel}</span></td>`
+    :'';
+
+  const rowCls=ie?'row-ended':st==='overdue'?'row-overdue':ip?'row-pending':'';
+
+  return`<tr class="${rowCls}"><td><span class="r-gn tsg">#${gn}</span></td>${chainBadge}${typeBadge}<td><span class="r-badge ${bdg}">${st.toUpperCase()}</span></td><td>${d2d(s.lockedDay)}</td><td>${d2d(ed)}</td><td><span class="r-dleft ${dlCls}">${dlStr}</span></td><td><span class="r-prog ${pgCls}">${pg}%</span></td><td class="r-hex">${fh(s.stakedHearts)}</td><td class="r-ts">${seaCreature(s.stakeShares)} ${fts(s.stakeShares)}</td><td class="r-yield">${yhHearts>0n?fh(yhHearts):'—'}</td>${bpdCell}<td class="r-apy">${apyStr}</td><td class="r-daily">${dailyStr}</td><td class="r-cost">${isForkedCopy(s)?'<span title="Free fork copy — $0 cost basis" style="color:var(--mu);">$0 fork</span>':cb!==null?'$'+fb(cb):'—'}</td><td class="r-val">${cv!==null?'$'+fb(cv):'—'}</td><td class="${pnlCls}">${pnlStr}</td></tr>`;
+}
+
+function buildStakeTable(stakes,gnum,isEnded){
+  if(!stakes.length)return'<div style="text-align:center;padding:20px;color:var(--mu);font-size:13px;">No stakes to display.</div>';
+  const sorted=sortStakes(stakes,isEnded?endedSortCol:sortCol,isEnded?endedSortDir:sortDir,gnum);
+  // Compute totals for footer
+  let tPrinc=0n, tTS=0n, tYield=0n, tBpd=0n, tCost=0, tVal=0, costCount=0, valCount=0;
+  let tApyNum=0,tApyDen=0;
+  stakes.forEach(s=>{
+    tPrinc+=s.stakedHearts;
+    tTS+=s.stakeShares;
+    const bpdR=bpdYield(s);
+    const bpdH=bpdR?bpdR.amount:0n;
+    tBpd+=bpdH;
+    // Yield & Value include Big Pay Day (go.hex parity). Ended stakes' s.yh already includes it — yhDisplay won't double-count.
+    const yhHearts=yhDisplay(s);
+    tYield+=yhHearts;
+    const ch=s.chain||'pls';
+    const lp=priceFor(ch);
+    const ie=sst(s)==='ended';
+    const ip=sst(s)==='pending';
+    const ha=Number(s.stakedHearts)/1e8;
+    const yh=Number(yhHearts)/1e8;        // includes BPD — for Value
+    const yhReg=Number(s.yh||0n)/1e8;     // regular only — for APY
+    // Cost
+    const sp=ip?lp:(priceForStake(s,s.lockedDay)??null);
+    const cb=isForkedCopy(s)?0:sp!==null?ha*sp:null;
+    if(cb!==null){tCost+=cb;costCount++;}
+    // Value
+    const ep=ie?(priceForStake(s,s.unlockedDay)??null):null;
+    const cv=ie?(ep!==null?(ha+yh)*ep:null):(lp>0&&!ip?(ha+yh)*lp:null);
+    if(cv!==null){tVal+=cv;valCount++;}
+    // Weighted APY (active uses hexDay-lockedDay, ended uses unlockedDay-lockedDay) — excludes the one-time BPD
+    if(!ip){
+      const sv=ie?(s.unlockedDay>0?s.unlockedDay-s.lockedDay:0):Math.max(0,(hexDay||chd())-s.lockedDay);
+      if(sv>0&&ha>0&&yhReg>0){
+        const apy=yhReg/ha*(365/sv)*100;
+        tApyNum+=apy*ha;
+        tApyDen+=ha;
+      }
+    }
+  });
+  const tApy=tApyDen>0?tApyNum/tApyDen:null;
+  const tPnl=(costCount>0&&valCount>0&&tCost>0)?tVal-tCost:null;
+  const tPct=(tPnl!==null&&tCost>0)?tPnl/tCost*100:null;
+  // Build footer cells matching column order
+  const cols=visibleCols();
+  const footCells=cols.map(c=>{
+    switch(c.key){
+      case'num':return`<td><span class="tf-lbl">TOTALS</span></td>`;
+      case'principal':return`<td class="tf-hex"><span class="tf-sub">Principal</span>${fh(tPrinc)}</td>`;
+      case'tshares':return`<td class="tf-ts"><span class="tf-sub">T-Shares</span>${fts(tTS)}</td>`;
+      case'yield':return`<td class="tf-yield"><span class="tf-sub">Yield</span>${tYield>0n?fh(tYield):'—'}</td>`;
+      case'bpd':return`<td class="tf-bpd"><span class="tf-sub">Big Pay Day</span>${tBpd>0n?fh(tBpd):'—'}</td>`;
+      case'cost':return`<td class="tf-cost"><span class="tf-sub">Cost</span>${costCount>0?'$'+fb(tCost):'—'}</td>`;
+      case'value':return`<td class="tf-val"><span class="tf-sub">Value</span>${valCount>0?'$'+fb(tVal):'—'}</td>`;
+      case'change':{
+        const cls=tPct===null?'tf-pnl-n':tPct>=0?'tf-pnl-g':'tf-pnl-r';
+        const sgn=tPct!==null&&tPct>=0?'+':'';
+        return`<td class="${cls}"><span class="tf-sub">P&L</span>${tPct!==null?sgn+tPct.toFixed(1)+'%':'—'}</td>`;
+      }
+      case'apy':return`<td class="tf-val"><span class="tf-sub">Avg APY</span>${tApy!==null?tApy.toFixed(1)+'%':'—'}</td>`;
+      default:return'<td></td>';
+    }
+  }).join('');
+  return`<div class="stbl-wrap"><table class="stbl">${buildTableHeader(isEnded)}<tbody>${sorted.map(s=>mkRow(s,gnum)).join('')}</tbody><tfoot><tr>${footCells}</tr></tfoot></table></div>`;
+}
+
+document.getElementById('addr').addEventListener('keydown',e=>{
+  if(e.key==='Enter'){
+    e.preventDefault();
+    // Enter always means "analyze". If the field has addresses pasted but not yet added,
+    // go() picks them up automatically via its fallback path.
+    go();
+  }
+});
+// Info tooltip positioning - float every info tip as position:fixed and clamp it into the viewport,
+// so it can never be clipped by scroll position, an overflow container, or a small screen.
+function infoTipOf(icon){const t=icon&&icon.nextElementSibling;return t&&t.classList&&(t.classList.contains('info-tip')||t.classList.contains('t-info-tip'))?t:null;}
+function resetInfoTip(t){if(t){t.style.cssText='';t.classList.remove('tip-floating');}}
+function placeInfoTip(icon){
+  const t=infoTipOf(icon);if(!t)return;const M=8;
+  t.classList.add('tip-floating');
+  t.style.position='fixed';t.style.left='0';t.style.top='0';t.style.right='auto';t.style.bottom='auto';t.style.transform='none';
+  t.style.maxWidth=Math.min(340,window.innerWidth-2*M)+'px';
+  t.style.maxHeight=(window.innerHeight-2*M)+'px';t.style.overflowY='auto';t.style.pointerEvents='auto';
+  const ir=icon.getBoundingClientRect(),tr=t.getBoundingClientRect();
+  const vw=window.innerWidth,vh=window.innerHeight,tw=tr.width,th=tr.height;
+  const left=Math.max(M,Math.min(ir.right-tw,vw-tw-M));
+  let top;
+  if(th+6<=ir.top)top=ir.top-th-6;
+  else if(th+6<=vh-ir.bottom)top=ir.bottom+6;
+  else top=M;
+  top=Math.max(M,Math.min(top,vh-th-M));
+  t.style.left=left+'px';t.style.top=top+'px';
+}
+document.addEventListener('click',e=>{
+  const icon=e.target.closest('.info-i,.t-info-i');
+  document.querySelectorAll('.info-i.active,.t-info-i.active').forEach(el=>{if(el!==icon){el.classList.remove('active');resetInfoTip(infoTipOf(el));}});
+  if(icon){if(icon.classList.contains('active'))placeInfoTip(icon);else resetInfoTip(infoTipOf(icon));}
+});
+window.addEventListener('resize',()=>{const a=document.querySelector('.info-i.active,.t-info-i.active');if(a)placeInfoTip(a);});
+window.addEventListener('scroll',e=>{if(e.target&&e.target.closest&&e.target.closest('.info-tip,.t-info-tip'))return;document.querySelectorAll('.info-i.active,.t-info-i.active').forEach(el=>{el.classList.remove('active');resetInfoTip(infoTipOf(el));});},true);
+
+// ── Snapshot sharing ──
+let snapCanvas=null,snapAddrs=[];
+function openSnapshot(){
+  // Snapshot shows whichever wallets the filter is currently targeting
+  if(activeFilter==='all'){snapAddrs=[...wallets];}
+  else{snapAddrs=[activeFilter];}
+  document.getElementById('snap-overlay').classList.add('open');
+  document.getElementById('snap-addr-toggle').checked=true;
+  regenerateSnapshot();
+}
+function closeSnapshot(){
+  document.getElementById('snap-overlay').classList.remove('open');
+}
+async function regenerateSnapshot(){
+  const preview=document.getElementById('snap-preview');
+  preview.innerHTML='<div style="text-align:center;padding:40px;color:var(--mu);font-size:12px;">Generating…</div>';
+  const showAddr=document.getElementById('snap-addr-toggle').checked;
+  const wrap=document.createElement('div');
+  wrap.style.cssText='position:absolute;left:-9999px;top:0;width:760px;background:#07090f;padding:20px 20px 14px;font-family:Inter,sans-serif;color:#eef0f8;';
+  // Header
+  const hdr=document.createElement('div');
+  hdr.style.cssText='display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;';
+  const scopeLabel=snapAddrs.length>1?`${snapAddrs.length} wallets`:(snapAddrs.length===1?'1 wallet':'');
+  // Chain label + color
+  let chainLabel,chainColor;
+  if(chainMode==='eth'){chainLabel='Ethereum';chainColor='#00CFFF';}
+  else if(chainMode==='both'){chainLabel='PulseChain · Ethereum';chainColor='#FF00CC';}
+  else{chainLabel='PulseChain';chainColor='#FF00CC';}
+  hdr.innerHTML=`<div style="font-family:Space Mono,monospace;font-size:18px;font-weight:700;"><span style="color:#FFB800;">HEX</span><span style="color:rgba(255,255,255,0.2);margin:0 4px;">/</span><span style="color:${chainColor};">${chainLabel}</span><span style="font-size:12px;color:#7a8599;font-weight:400;margin-left:6px;">Stake Analyzer${scopeLabel?' · '+scopeLabel:''}</span></div><div style="font-family:Space Mono,monospace;font-size:11px;color:#7a8599;">${new Date().toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'})}</div>`;
+  wrap.appendChild(hdr);
+  // Address line(s)
+  if(showAddr&&snapAddrs.length){
+    const addrEl=document.createElement('div');
+    addrEl.style.cssText='font-family:Space Mono,monospace;font-size:10px;color:#2e3a4e;margin-bottom:10px;word-break:break-all;line-height:1.5;';
+    addrEl.textContent=snapAddrs.join('  ·  ');
+    wrap.appendChild(addrEl);
+  }
+  // Moon Math banner in snapshot
+  const moonActive=(moonPrice.pls>0||moonPrice.eth>0);
+  if(moonActive){
+    const mb=document.createElement('div');
+    mb.style.cssText='background:#1a1500;border:1px solid #FFD700;border-radius:8px;padding:7px 14px;margin-bottom:10px;display:flex;align-items:center;gap:14px;font-family:Space Mono,monospace;font-size:11px;color:#FFD700;';
+    const parts=['🌙 Moon Math (hypothetical prices)'];
+    if(moonPrice.pls>0)parts.push(`pHEX $${moonPrice.pls.toFixed(6)}`);
+    if(moonPrice.eth>0)parts.push(`eHEX $${moonPrice.eth.toFixed(6)}`);
+    mb.textContent=parts.join('  ·  ');
+    wrap.appendChild(mb);
+  }
+  // Clone the cards grid
+  const cardsEl=document.getElementById('cards');
+  const clone=cardsEl.cloneNode(true);
+  clone.querySelectorAll('.info-i,.info-tip').forEach(el=>el.remove());
+  clone.style.margin='0';
+  clone.style.border=moonActive?'2px solid #FFD700':'1px solid rgba(255,255,255,0.07)';
+  clone.style.borderRadius='12px';
+  clone.style.overflow='hidden';
+  // html2canvas cannot render -webkit-background-clip:text gradients — they show as colored highlight blocks.
+  // Fix: replace all gradient text classes with clean solid colors before capture.
+  const gradientFix=[
+    ['.pg',  '#FF00CC'],
+    ['.hg',  '#FFB800'],
+    ['.dyg', '#00FF66'],
+    ['.tspg','#FFB800'],
+    ['.tsg', '#FF00CC'],
+  ];
+  gradientFix.forEach(([sel,color])=>{
+    const goldOverride=moonActive&&['.pg','.dyg','.tspg'].includes(sel);
+    const finalColor=goldOverride?'#FFD700':color;
+    clone.querySelectorAll(sel).forEach(el=>{
+      el.style.background='none';
+      el.style.webkitBackgroundClip='unset';
+      el.style.backgroundClip='unset';
+      el.style.webkitTextFillColor=finalColor;
+      el.style.color=finalColor;
+    });
+  });
+  if(moonActive){
+    clone.querySelectorAll('.moon-val,.profit,.pos,.loss').forEach(el=>{
+      el.style.background='none';
+      el.style.webkitTextFillColor='#FFD700';
+      el.style.color='#FFD700';
+    });
+  }
+  wrap.appendChild(clone);
+  document.body.appendChild(wrap);
+  try{
+    snapCanvas=await html2canvas(wrap,{backgroundColor:'#07090f',scale:2,logging:false,useCORS:true});
+    preview.innerHTML='';
+    const img=document.createElement('img');
+    img.src=snapCanvas.toDataURL('image/png');
+    preview.appendChild(img);
+  }catch(e){
+    preview.innerHTML='<div style="text-align:center;padding:40px;color:#ff5c5c;font-size:12px;">Could not generate snapshot</div>';
+  }
+  document.body.removeChild(wrap);
+}
+function downloadSnapshot(){
+  if(!snapCanvas)return;
+  const link=document.createElement('a');
+  link.download='hex-stake-snapshot-'+new Date().toISOString().slice(0,10)+'.png';
+  link.href=snapCanvas.toDataURL('image/png');
+  link.click();
+}
+
+// ── About modal ──
+function openAbout(){document.getElementById('about-overlay').classList.add('open');}
+function closeAbout(){document.getElementById('about-overlay').classList.remove('open');}
+function copyDonateAddr(btnId){
+  btnId=btnId||'donate-copy-btn';
+  const addr='0xcE814f3042bD70aCE79f7d40cAdb719B3824067d';
+  navigator.clipboard.writeText(addr).then(()=>{
+    const btn=document.getElementById(btnId);
+    btn.textContent='COPIED!';
+    btn.style.color='#00FF66';
+    btn.style.borderColor='rgba(0,255,102,0.4)';
+    setTimeout(()=>{btn.textContent='COPY';btn.style.color='';btn.style.borderColor='';},2000);
+  }).catch(()=>{
+    const ta=document.createElement('textarea');
+    ta.value=addr;ta.style.position='fixed';ta.style.opacity='0';
+    document.body.appendChild(ta);ta.select();document.execCommand('copy');
+    document.body.removeChild(ta);
+    const btn=document.getElementById(btnId);
+    btn.textContent='COPIED!';
+    setTimeout(()=>{btn.textContent='COPY';},2000);
+  });
+}
+function openSupport(){document.getElementById('support-overlay').classList.add('open');}
+function closeSupport(){document.getElementById('support-overlay').classList.remove('open');}
+
+fpr();setInterval(fpr,60000);
+
+// ── Version check — detect stale cached pages ──
+// Fetches a small range of the local application script, extracts the
+// HSA_VERSION string, and compares it to the running version. If they differ,
+// shows a banner prompting the user to refresh. Runs once 5s after load, then
+// every 30 minutes. Silent on failure (offline, local file, CORS).
+(function(){
+  function checkVersion(){
+    fetch('./app.js',{cache:'no-store',headers:{'Range':'bytes=0-8000'}})
+    .then(r=>{if(!r.ok)return;return r.text()})
+    .then(t=>{
+      if(!t)return;
+      const m=t.match(/HSA_VERSION\s*=\s*'([^']+)'/);
+      if(m&&m[1]!==HSA_VERSION){
+        document.getElementById('hsa-update-banner').classList.add('show');
+      }
+    }).catch(()=>{});
+  }
+  setTimeout(checkVersion,5000);
+  setInterval(checkVersion,1800000);
+})();

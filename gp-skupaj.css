@@ -1,0 +1,19 @@
+/* kartica Total HEX (gp-skupaj.js) */
+#gp-skupaj{position:relative;background:var(--gp-card);border:1px solid var(--gp-bd);border-radius:20px;padding:22px 24px 18px;margin:0 0 18px;overflow:hidden;font-family:var(--wb-sans)}
+#gp-skupaj::before{content:"";position:absolute;left:0;right:0;top:0;height:3px;background:var(--gp-grad)}
+#gp-skupaj .gp-sk-lbl{font-size:11px;font-weight:700;letter-spacing:2.6px;color:var(--gp-dim);text-transform:uppercase}
+#gp-skupaj .gp-sk-mreza{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:18px 40px;margin-top:10px}
+#gp-skupaj .gp-sk-ime{font-size:13px;font-weight:800;letter-spacing:1px}
+#gp-skupaj .pls .gp-sk-ime{color:#FF00CC}
+#gp-skupaj .eth .gp-sk-ime{color:#00CFFF}
+#gp-skupaj .gp-sk-val{font-size:44px;font-weight:800;letter-spacing:-1px;line-height:1.1;color:#f2f0fa;font-variant-numeric:tabular-nums}
+#gp-skupaj .gp-sk-val span{font-size:20px;font-weight:300;color:var(--gp-dim)}
+#gp-skupaj .gp-sk-usd{font-size:15px;color:#cfcbe6;margin:2px 0 10px;font-variant-numeric:tabular-nums}
+#gp-skupaj .gp-sk-vrst{display:flex;justify-content:space-between;gap:12px;font-size:13.5px;padding:5px 0;border-top:1px solid #241e44;color:var(--gp-dim)}
+#gp-skupaj .gp-sk-vrst b{color:#f2f0fa;font-weight:700;font-variant-numeric:tabular-nums}
+#gp-skupaj .gp-sk-opomba{margin-top:12px;font-size:12px;color:var(--gp-dim2)}
+@media (max-width:900px){#gp-skupaj .gp-sk-val{font-size:34px}}
+/* stolpec Total HEX v tabelah stakov */
+#app .stbl .gp-tot-th{color:#cfe9ff!important;cursor:default}
+#app .stbl td.r-tot{font-weight:800;color:#fff;white-space:nowrap}
+#app .stbl td.tf-tot{font-weight:800;color:#fff}

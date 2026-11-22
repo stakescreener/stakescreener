@@ -1,0 +1,1056 @@
+Modifications for the static Apache/cPanel export
+=================================================
+
+Date: 2026-08-16
+
+- Split the original single-file application into index.html, slog.css and
+  app.js without changing the analyzer calculations or data-source logic.
+- Replaced the Chart.js CDN reference with a local Chart.js 4.4.1 file.
+- Replaced the Google Fonts import with local Inter and Space Mono files.
+- Made every packaged asset reference explicitly relative for subfolder use.
+- Changed the version check to read ./app.js instead of the HTML document.
+- Added a persistent GPL/source attribution footer and local deployment/CSP
+  documentation.
+- Added a local Open Graph preview image.
+
+Original source:
+https://github.com/hexstakeanalyzer/Hex-Stake-Analyzer
+
+
+Additions for stakescreener.com (2026-08-16)
+--------------------------------------------
+- Added denarnica.js and denarnica.css: a read-only wallet balance overview.
+  Token lists come from the Blockscout API, native balances from JSON-RPC and
+  prices from DexScreener (deepest pool per token; below $2,000 of liquidity a
+  token is listed without a USD value). No wallet connection, no writes, no
+  storage.
+- app.js and slog.css are unchanged from the upstream export; the addition
+  wraps go() at runtime rather than editing it, so upstream updates can be
+  dropped in without merging.
+
+Fixes found while testing against a live wallet (2026-08-16)
+-----------------------------------------------------------
+Three separate faults, none of which produced an error message:
+
+1. The section was injected inside #dash, a container hidden until an analysis
+   finishes, so it rendered correctly into something invisible. Moved out.
+
+2. DexScreener's /latest/dex/tokens caps the RESPONSE at 30 pairs, not 30
+   tokens. Measured: 30 addresses -> 30 pairs covering 5 distinct tokens;
+   a single address (HEX) -> 19 pulsechain + 11 ethereum pairs. Tokens with
+   many pools starved both the other tokens and the other chain. Replaced with
+   /tokens/v1/{chainId}/{addrs}, which is chain-scoped and returns the top pool
+   per token.
+
+3. The two block explorers name the same field differently:
+   api.scan.pulsechain.com -> token.address
+   eth.blockscout.com      -> token.address_hash
+   Reading only the first gave every Ethereum token an empty address, so every
+   lookup missed and the entire Ethereum side showed as unpriced. Both names
+   are now accepted.
+
+Shareable wallet-set codes (2026-08-16)
+---------------------------------------
+koda.php stores a set of addresses outside public_html and returns a 10-character
+code, restoring the feature GoPulse.com had before it shut down. A short code
+cannot contain the data (20 bytes per address), so it can only ever be a key —
+hence the small server side. Stored: addresses only, no IP, no user agent.
+Deleted after 180 days; re-saving the same set returns the same code.
+Alternative without any storage: /#w=0xaddr,0xaddr — the fragment is never sent
+to a server.
+
+Wallet names (2026-08-16)
+-------------------------
+Click the short address in a wallet card to name it (e.g. "S/1 Hex Stakes").
+Names live in localStorage on the device AND travel inside a saved code, so a
+set imported in another browser arrives already labelled. Server side they are
+control-character stripped and capped at 40 characters.
+
+Collapse, refresh, build number (2026-08-16)
+--------------------------------------------
+- Each wallet card has a chevron that collapses it to a single line: name,
+  address, Rename and the total. The choice is remembered per address in
+  localStorage (gopulse_collapsed) and survives a reload.
+- Refresh button: adding a wallet chip does not re-run the analyzer, so the
+  section could show one card while the chips showed two — and a missing card
+  meant no Rename button for that wallet. Refresh reloads balances only.
+- The build number is printed next to the section title. Twice during
+  development a fix appeared not to work purely because the browser was serving
+  a cached index.html; there was no way to see that from the screen. The
+  .htaccess now also sends no-cache for .html and a long max-age for the
+  versioned assets.
+
+Own wallet list, up to 30 (2026-08-16)
+--------------------------------------
+app.js refuses more than 10 wallets per session ("Maximum 10 wallets per
+session") because a HEX stake scan is expensive. Reading balances is not, so
+this section now keeps its OWN list in localStorage (gopulse_wallets, cap 30)
+with its own add field and a per-card remove button. The first 10 entries are
+mirrored into the analyzer's own `wallets` array so stake analysis still works
+on them, and anything typed into the analyzer's field is merged back into our
+list after go() — the two never silently disagree.
+
+app.js remains untouched: raising its limit there was considered and rejected,
+because it would break the rule that a new upstream export can simply be copied
+over this one. koda.php MAX_ADDRS raised 10 -> 30 to match.
+
+Ecosystem ticker, manual tokens, data status (2026-08-22)
+---------------------------------------------------------
+Three ideas taken from hexologist.com (HEXO Market Lab) after reviewing it:
+
+- Ecosystem ticker at the very top: pHEX, eHEX, PLS, PLSX, INC, PRVX with
+  price and 24h change. Prices come from DexScreener, deepest pool per token,
+  same rule as everywhere else. Token addresses were verified against
+  /tokens/v1 on 22.8.2026, not guessed.
+- "Add token by contract": a token the block explorer does not return can be
+  added by hand. Read directly from the contract (symbol, decimals,
+  balanceOf) over JSON-RPC. A zero balance is not shown. Stored in this
+  browser only.
+- Data status line: which source, when fetched, how many priced vs unpriced,
+  and whether any wallet's token list came back incomplete. Their principle,
+  worth copying: if data is stale, partial or unavailable, say so instead of
+  letting it look fresh.
+
+NOT taken: the technical-analysis apparatus (regime, breakout pressure,
+patterns, price simulator). Factually hedged or not, it invites trading, and
+this site sits under the same s.p. as mojdelez.si.
+
+Ticker icons (2026-08-22)
+-------------------------
+Token logos are stored LOCALLY in slike/zetoni/ because the Content-Security-
+Policy allows img-src 'self' data: only — a CDN URL would simply be blocked.
+Downloaded once from the DexScreener CDN and served from this site.
+
+Two things went wrong first, both worth remembering:
+- Requesting the CDN with ?format=png returns HTTP 422 and a JSON error, not
+  an image. The plain URL without query parameters returns a proper PNG.
+- Running the downloaded PNGs through `sips -Z 96` produced files that loaded
+  fine (naturalWidth 96) but rendered as empty circles: the palette/alpha was
+  mangled. The originals are already 200x200 and ~8-12 KB, so they are now
+  served untouched. Checking img.complete && naturalWidth > 0 was NOT enough
+  here — the image was "loaded" and still invisible.
+
+Summary cards, totals, validators (2026-08-22)
+----------------------------------------------
+- Stake Value and Wallet Balance are MIRRORED from the analyzer's own cards,
+  not recalculated here. My price source differs from his, so computing them
+  myself would put two different numbers for the same thing on one screen and
+  nobody would know which is right. If a card is missing, mine shows "—" and
+  "available after Analyze" — never a zero.
+- Total = wallets + stakes + validators. The three parts are disjoint (liquid,
+  staked, locked), so nothing is double counted. Labelled an approximation
+  because the price sources are not the same and validators are typed in.
+- Validators: count is entered by hand, 32M PLS per validator is fixed, value
+  uses the on-chain PLS price from the ticker. It cannot be read from chain —
+  the validators run at a provider and are not tied to any wallet address.
+  The watchdog solves it the same way (VALIDATOR_COUNT in .env), so both sides
+  stay consistent. The count travels inside a shared code (koda.php field
+  "val"), otherwise the same code would give a different total elsewhere.
+- Mobile: the five-column table scrolls horizontally with a STICKY first
+  column, so the token name stays visible while scrolling. owner preferred this
+  over breaking rows into blocks.
+
+--- 22.8.2026 · pHEX / eHEX razdelitev v povzetnih karticah -------------------
+
+Kartici Stake Value in Wallet Balance sta poleg skupne stevilke dobili se
+razdelitev po verigah. Dve razlicni poti, ker analizator ponuja razlicno:
+
+  Wallet Balance  PREZRCALJENA. Analizator to razdelitev ze izrisuje v
+                  .wb-breakdown (pHEX, eHEX, eHEX-na-PLS most, HTT). Vrstice
+                  samo preberem in prerisem, vkljucno z njegovimi barvami.
+                  Nic ne racunam — nic se ne more raziti.
+
+  Stake Value     IZRACUNANA, ker te razdelitve analizator NIMA. Uporabim
+                  NJEGOVE globalne funkcije in NJEGOVE cene, ne svojega vira:
+                      lastStakes, sst(), yhDisplay(), priceFor()
+                  Isti izraz kot aNow v app.js:
+                      sum (stakedHearts + yhDisplay(s)) / 1e8 * priceFor(chain)
+                  Kljucno: vsak stake se vrednoti po ceni SVOJE verige. Vsota
+                  HEX pomnozena z eno ceno bi bila napacna.
+
+VAROVALKA: ce se vsota mojih dveh stevil ne ujema s prikazano skupno vrednostjo
+(1 % tolerance zaradi zaokrozevanja "$10.39K"), razdelitve NE pokazem. Raje
+prazno kot dve stevilki, ki se ne sestejeta v tretjo na istem zaslonu.
+
+Preverjeno na zivi strani 22.8.2026 (366 stakeov, 112+107 aktivnih):
+  Stake Value     466.51K + 407.76K = 874.27K HEX  proti prikazanih 874.28K
+                  $7,493 + $2,894 = $10,387        proti prikazanih $10.39K
+  Wallet Balance  $395.64 + $213.16 = $608.80      proti prikazanih $608.80
+
+MIMOGREDE POPRAVLJENO: kartica Wallet Balance je doslej kazala samo HEX brez
+dolarjev. Analizator ima pri tej kartici podnapis v .ts-sub, ne v .csub kot
+druge kartice, jaz pa sem bral samo .csub. Zdaj berem obe.
+
+Brez pripone " HEX" v vrsticah: kartice so ozke in "466.51K HEX" se je lomil v
+dve vrstici. Enota je ze v vrstici nad razdelitvijo.
+
+Datoteke: denarnica.js (vrsticeIz, dodajVrstice, stakeiPoVerigi), denarnica.css
+(.pov-brk/.pov-row/.pov-tag/.pov-amt/.pov-usd/.pov-chip). app.js NEDOTAKNJEN.
+
+--- 23.8.2026 · trak "stanje omrezja" (promet / gas / blok) ------------------
+
+Nov trak med ekosistemskimi cenami in karticami denarnic. Tri stvari o VERIGI,
+ne o denarnici — zato svoje mesto, med "kaj je koliko vredno" in "koliko imam".
+
+  BLOK      eth_blockNumber                   z verige
+  GAS       eth_gasPrice z DVEH RPC, nizji    z verige
+  24H PROMET DeFiLlama /overview/dexs/pulse   POSREDNIK — in kartica to pove
+
+Zakaj gas z dveh RPC in nizji od obeh: isto pravilo kot v GAS-FEE.md in v
+oracle-commit.js. 9.8.2026 je en RPC javljal 117.549.435 Gwei, ko sta druga dva
+javljala 1 — in oracle mu je verjel ter placeval ~29.000 PLS na commit. Tukaj
+se ne placuje nic, a ista laz bi pomenila napacno stevilko na zaslonu.
+
+Zakaj je promet edini od posrednika: 24-urnega prometa CELE verige na verigi ni.
+Dobiti bi ga bilo mogoce le s prestevanjem vseh Swap dogodkov na vseh DEX-ih od
+zadnjih ~86.400 sekund, kar v brskalniku ni izvedljivo. Zato velja druga polovica
+3. stalnega pravila (PULSECHAIN-NATIVE.md): ce ze mora biti posrednik, naj bo
+POVEDANO. Na kartici pise "vir DeFiLlama (ne z verige)" in koliko DEX-ov steje.
+
+⚠️ NE UJEMA SE Z DEXSCREENERJEM in to je pricakovano. DexScreener je 23.8.2026
+kazal $9,4M, DeFiLlama $11,32M. Razlog ni napaka nobenega od njiju, ampak razlicen
+obseg: DexScreener sesteje pare, ki jih indeksira (pretezno PulseX), DeFiLlama pa
+7 DEX-ov (PulseX V1/V2/StableSwap, 9mm V2/V3, PHUX, SwitchX). Ce bosta stevilki
+kdaj zamenjani za "napako", je odgovor tukaj.
+
+Gas se ne izpisuje samo v Gwei — Gwei sam nikomur nic ne pove. Zraven je cena ene
+menjave (~150k gasa) v PLS in v dolarjih: "≈ 117 PLS za menjavo ($0.0016)".
+Prva razlicica je pisala "<$0.01", kar je na PulseChainu vedno res in zato
+neuporabno.
+
+Izris ceka na renderEko, ker ta nastavi cenaPls — sicer bi se dolarska vrstica
+vcasih pojavila in vcasih ne, odvisno od tega, kateri fetch je bil prvi.
+Klic je EN sam; dvakratni izris bi pomenil dvojne zahtevke in viden poskok.
+
+CSP: v .htaccess dodan https://api.llama.fi (connect-src).
+Datoteke: denarnica.js (omrezjePodatki, renderOmrezje, rpcKlic), denarnica.css
+(.net-trak/.net-card/.net-lbl/.net-val/.net-spr/.net-vir). app.js NEDOTAKNJEN.
+
+--- 23.8.2026 · gas za send PLS + osvezevanje na 10 s -------------------------
+
+Kartica GAS ima zdaj dve vrstici namesto ene:
+
+    ≈ 17 PLS ($0.0002) · send PLS      21.000 gasa — TOCNO, fiksna cena prenosa
+    ≈ 120 PLS ($0.0016) · menjava     150.000 gasa — PRIBLIZEK, odvisen od poti
+
+Send je prvi, ker je to tisto, kar clovek dejansko naredi najveckrat.
+
+Gas in blok se osvezujeta vsakih 10 s. Promet NE — DeFiLlama racuna 24-urno
+okno, ki se v desetih sekundah ne premakne, zato gre le vsak 30. utrip (~5 min).
+Osvezevati podatek pogosteje, kot se spreminja, ni svezina, ampak samo promet.
+
+TRI STVARI, KI SO MORALE BITI RESENE, DA OSVEZEVANJE NI SKODLJIVO:
+
+1. Trak se zgradi ENKRAT, nato se spreminja samo besedilo v vozliscih.
+   Ponoven izris vsakih 10 s bi pomenil, da trak vsakih 10 s izgine in se vrne.
+
+2. Utrip se USTAVI, ko zavihek ni viden (visibilitychange). Brez tega bi odprt
+   zavihek v ozadju do konca dneva poslal ~26.000 zahtevkov na tuja javna RPC
+   vozlisca za podatek, ki ga nihce ne gleda. Ob vrnitvi se osvezi takoj.
+   Preverjeno v zivo: v skritem zavihku se blok NI premikal, po
+   visibilitychange se je v 25 s premaknil za 7 blokov.
+
+3. Ob neuspehu se stara vrednost OHRANI, kartica pa dobi razred `zastarelo`
+   (oranzen rob, bleda stevilka) in vrstico "zadnji uspeh pred N s".
+   Razlika med "veriga javlja 0" in "nisem je uspel vprasati" je pomembna;
+   izpis "—" bi ju zlil v isto.
+
+Vrednost ob DEJANSKI spremembi na kratko posvetli (`.utrip`, 0,7 s). Brez tega
+se ne loci "osvezuje se" od "obticalo je". Ob nespremenjeni stevilki utripa ni —
+to bi bila lazna zivahnost. Upostevan `prefers-reduced-motion`.
+
+Modulska spremenljivka se imenuje `netUI`, ne `net`: v header() ze obstaja
+lokalni `net` = element .net-trak. Ono je skatla, to je vsebina.
+
+--- 23.8.2026 · vse uporabnisko besedilo v anglescino + izrecno "PulseChain" --
+
+Stran je bila mesanica: analizator (app.js) v anglescini, moji dodatki v
+slovenscini. Poenoteno v ANGLESCINO — 34 nizov v denarnica.js.
+
+  Validatorji            -> VALIDATORS
+  Skupaj                 -> TOTAL
+  denarnice/stakei       -> wallets/stakes
+  priblizek — vira ...   -> approximate — the two price sources are not the same
+  z verige · nizji od N  -> from chain · lower of N RPC · live
+  noben RPC ni odgovoril -> no RPC answered
+  zadnji uspeh pred N s  -> last good read N s ago
+  berem stanje omrezja   -> reading network status
+  ni podatka             -> no data
+  dodan rocno            -> added manually
+  ... in ostali
+
+Trak omrezja ima zdaj verigo IMENOVANO na vsaki kartici:
+
+  PULSECHAIN 24H VOLUME · PULSECHAIN GAS · PULSECHAIN BLOCK
+
+Prej je pisalo samo "GAS" in "BLOK". Stran prikazuje DVE verigi (PulseChain in
+Ethereum) — pHEX proti eHEX, stanja na obeh — zato "GAS" brez oznake ni bil
+nedvoumen. Zdaj je. Vrstica "PulseChain · 369" pod blokom je postala
+"chain ID 369", ker bi bilo ime verige dvakrat.
+
+Ekosistemski trak NAMENOMA nima oznake PulseChain: v njem so tudi eHEX, BTC in
+ETH z Ethereuma, zato bi bila napacna. Vsaka kartica ze nosi svoje ime
+("PulseChain HEX" proti "Ethereum HEX").
+
+KOMENTARJI V KODI OSTAJAJO V SLOVENSCINI. Namenjeni so vzdrzevalcu, ne
+obiskovalcu, in nosijo razloge (zakaj dva RPC, zakaj prag, kaj se je pokvarilo
+in kdaj). Prevesti jih bi pomenilo izgubiti natancnost brez koristi za kogarkoli.
+Iz istega razloga ostaja slovenska ta datoteka — GPL zahteva, da so spremembe
+OZNACENE, ne v dolocenem jeziku.
+
+Preverjeno na zivi strani: v razdelku wbal-sec ni vec nobenega slovenskega niza.
+
+--- 23.8.2026 · predogled povezave (Open Graph) --------------------------------
+
+Ob deljenju povezave se je kazalo "HEX Stake Analyzer" in promocijska slika
+IZVIRNEGA projekta. Dvojno napacno: skrilo je to, kar je na strani zares (moj
+razdelek WALLETS Analyzer), in prikazovalo tujo blagovno znamko kot svojo.
+Fork mora biti razlocljiv od izvirnika — to ni samo lepsi videz, ampak
+postenje do avtorjev, ki so tisto sliko naredili.
+
+  <title>            HEX Stake Analyzer -> WALLETS Analyzer · PulseChain + Ethereum
+  og:title           (ni obstajal)      -> WALLETS Analyzer
+  og:description     (ni obstajal)      -> kaj stran je + "nothing stored"
+  og:url, og:type, og:site_name, og:image:width/height/alt   dodani
+  twitter:card       (ni obstajal)      -> summary_large_image
+
+⚠️ DVE TIHI NAPAKI, KI STA BILI ZRAVEN:
+
+1. og:image je bil RELATIVEN ("./og.png"). Telegram ga je razresil, vecina
+   pajkov ga ne — pri njih bi kartica ostala brez slike in tega ne bi opazil,
+   ker sam vedno preizkusas v Telegramu. Zdaj je absoluten.
+
+2. Predogledi se AGRESIVNO PREDPOMNIJO. Brez ?v= v naslovu slike bi se stara
+   slika kazala se tedne po popravku in izgledalo bi, kot da sprememba ne
+   deluje. Isti razlog kot ?v= pri denarnica.js/css.
+
+Nova og.png je narejena z Pillow iz PISAV SAME STRANI (Inter, Space Mono) in
+njenih barv (#07090f ozadje, prehod #ff00cc -> #c04ae6 -> #00cfff, isti kot
+.wbal-title). Prva razlicica je imela dve napaki, obe vidni sele na sliki:
+prehod se je raztezal cez celo sirino slike, zato se je beseda koncala pri
+vijolicni in cyan se sploh ni pokazal; in sij v ozadju je bil brez zabrisa,
+zato je izgledal kot nalepljen disk. Popravljeno: prehod cez sirino BESEDILA,
+sij skozi GaussianBlur(150).
+
+Velikost: 812 kB -> 80 kB.
+
+Preverjeno s pravim User-Agentom pajka (TelegramBot): vseh 13 oznak se
+odda pravilno, slika vrne HTTP 200 in image/png.
+
+⚠️ OB SELITVI NA gopulse.cash: og:url, og:image in twitter:image so ABSOLUTNI
+naslovi in vsebujejo stakescreener.com. Popraviti jih je treba, sicer bo
+predogled nove domene kazal na staro.
+
+--- 23.8.2026 · "24H VOLUME" je bila napacna oznaka --------------------------
+
+owner je opazil: kartica je kazala $11,32M, DexScreener pa $5,4M. Videti je bilo,
+kot da se je stevilka zataknila — ves dan ista.
+
+Ni bila zataknjena in DeFiLlama ne dela narobe. NAPACNO SEM JO POIMENOVAL.
+
+Izmerjeno 23.8.2026 ob 19:41 UTC, iz totalDataChart istega odgovora:
+
+    total24h        = 11.315.086
+    graf 22.08.     = 11.315.086   <- ISTO. to je zadnji POLN dan (UTC)
+    graf 23.08.     =  7.211.142   <- danes, se se nabira
+    change_1d       = -32,7 %      <- 22.08. proti 21.08., preverjeno rocno
+
+`total24h` torej NI drsecih zadnjih 24 ur, ampak zadnji koledarski dan UTC.
+`change_1d` je dan na dan. DexScreener meri drsece okno — zato se stevilki
+nista in se ne bosta nikoli ujeli. Primerjal sem dve razlicni meritvi in
+razliko pripisal napaki.
+
+Popravljeno tako, da kartica pove, kaj stevilka JE, namesto da bi ugibal:
+
+    PULSECHAIN DEX VOLUME
+    $11.32M
+    22 Aug · -32.7% vs day before
+    today so far $7.21M
+    7 DEXes · DeFiLlama · full UTC day, not rolling 24h
+
+Cena: URL ne izklaplja vec totalDataChart (37 kB namesto 12 kB), ker iz grafa
+jemljeva datum in "danes doslej". Vredno je — brez tega kartica ne more povedati,
+katerega dne se stevilka tice.
+
+NAUK, ki je isti kot pri DexScreener /latest/dex/tokens (30 parov, ne 30
+zetonov): ime polja v API-ju ni obljuba o njegovem pomenu. `total24h` zveni kot
+"zadnjih 24 ur" in ni. Preveri s podatkom, ki ga API vrne zraven — graf je bil
+tu ves cas in bi to razkril takoj, ce bi ga pogledal.
+
+--- 23.8.2026 · promet: DeFiLlama VEN, PulseX subgraph NOTER ------------------
+
+owner: "Spremeni na DexScreener in ne uporabljaj vec DeFiLlama."
+
+DexScreener tega ne zmore: javnega vmesnika za promet CELE verige nima, samo
+po parih in zetonih. Stevilka na dexscreener.com je njihov notranji izracun.
+Zato PulseX subgraph — PulseX-ov LASTEN indekser, ki ga app.js ze uporablja za
+HTT cene in je ze na seznamu CSP. Za ta podatek je to najblizje verigi, kar je
+mogoce, in ni vec nobenega agregatorja.
+
+    https://graph.pulsechain.com/subgraphs/name/pulsechain/pulsexv2
+    {pulsexDayDatas(first:3, orderBy:date, orderDirection:desc)
+     {date dailyVolumeUSD totalLiquidityUSD}}
+
+    PULSEX VOLUME
+    $1.69M
+    -47% vs same time yesterday
+    yesterday $3.89M  ·  pools $32.59M
+    PulseX v2 subgraph · today so far, UTC
+
+⚠️ OBSEG JE MANJSI IN TO NI NAPAKA. pulsexDayDatas pokriva PulseX v2, ne vseh
+sedmih DEX-ov. 23.8. je bilo to $1,69M proti $11,3M za celo verigo. Kartica
+obseg izpise, da cez pol leta ne bo spet videti kot okvara.
+
+SPREMEMBA SE MERI PROTI ENAKEMU DELEZU VCERAJSNJEGA DNE, ne proti celemu.
+Dan tece; primerjava z vcerajsnjo celotno vsoto bi bila zjutraj vedno globoko
+negativna in bi lagala. Ob 19:50 UTC je preteklo 82,6 % dneva, vceraj skupaj
+$3,89M, torej pricakovano do zdaj $3,21M — dejansko $1,69M — od tod -47 %.
+Prvih 30 minut dneva se tempo ne racuna (delilo bi se z drobcem); takrat pise
+"day just started".
+
+⚠️ NAPAKA, KI SEM JO NAREDIL OB ZAMENJAVI IN UJEL SELE OB PREVERBI:
+varovalka je se vedno preverjala `p.usd`, ki ga po zamenjavi ni bilo vec.
+`isFinite(undefined)` je false, zato bi kartica VEDNO pisala "source
+unreachable right now" — in izgledalo bi, kot da je subgraph nedosegljiv.
+Zamenjava polj v podatkovni strukturi zahteva pregled VSEH mest, ki jih
+berejo, ne samo tistega, ki izrisuje.
+
+api.llama.fi je odstranjen tudi iz connect-src v .htaccess. Pravilo zdaj
+uveljavlja brskalnik, ne le dogovor: ce bi ga kdaj kdo znova poklical,
+zahtevek ne bo odsel.
+
+--- 23.8.2026 · promet: DexScreener, sestevek parov (koncna resitev) ---------
+
+owner: "DexScreener 30 parov bo bolse."
+
+DexScreener nima vmesnika za promet CELE verige, ima pa
+/token-pairs/v1/pulsechain/{token}, ki vrne do 30 parov na zeton. Vprasamo ga
+za 10 glavnih zetonov (WPLS, pHEX, PLSX, INC, DAI, USDC, USDT, PRVX, eHEX,
+WETH) in pare zlozimo skupaj po pairAddress. Rezultat so PRAVIH drsecih 24 ur,
+ne koledarski dan kot pri DeFiLlami.
+
+    PULSECHAIN 24H VOLUME
+    $4.20M
+    272 pairs · rolling 24h
+    pools $29.46M  ·  11 dead pools excluded
+    DexScreener · major pairs, not the whole chain
+
+Izmerjeno 23.8.2026 ob 20:00 UTC: $4,20M proti ~$5,4M na dexscreener.com,
+torej okoli 78 %. Odstotka NE izpisujemo — izmerjen je bil v enem trenutku in
+bi se tiho postaral. Kartica pise "major pairs", ne "chain".
+
+DEDUPLIKACIJA PO pairAddress je nujna: par WPLS/PLSX vrneta OBA zetona. Brez
+zlaganja skupaj bi vsak tak par steli dvakrat in promet bi bil precenjen —
+napaka, ki bi izgledala povsem verjetno.
+
+⚠️⚠️ NAJDBA, KI JE PRISLA ZRAVEN — LIKVIDNOST BREZ PROMETA NI LIKVIDNOST.
+Prva razlicica je sestela globino vseh 273 parov in izpisala "pools $28.97B".
+Milijarde na verigi, kjer je vsega skupaj kaksnih 30 milijonov. Vzrok:
+
+    BXUSD/USDC   liberty-swap   globina $9.640.629.440   promet 24h  $128
+    BXUSD/USDT   liberty-swap   globina $9.640.629.366   promet 24h  $128
+    BXUSD/DAI    liberty-swap   globina $9.639.717.721   promet 24h    $0
+
+Trije pari so prispevali 99,9 % vsote in v njih se ne trguje nic. Nic ni javilo
+napake; DexScreener je posteno vrnil, kar mu je povedala pogodba.
+
+Popravek: v vsoto gre samo par, v katerem se v dnevu obrne vsaj ENA MILIJONINA
+bazena (vol/liq >= 1e-6). Prag je namenoma zelo ohlapen — pravi bazen ga
+preseze brez tezav, napihnjen pa ne more, ker bi za to moral nekdo zares
+trgovati. Ucinek: $28,97 mrd -> $29,46 mio, izkljucenih 11 parov.
+
+To je isti nauk kot povsod v tem projektu, le da tokrat ni lagal posrednik
+ampak veriga sama: stevilka je bila natanko taka, kot jo je zapisala pogodba,
+in vseeno brez pomena. Zato stran ze od zacetka kaze stolpec Pool ob ceni —
+prav zato, da se vidi, na cem cena stoji.
+
+--- 23.8.2026 · promet: PulseX-ovi lastni indekserji (koncno) -----------------
+
+owner: "Ali ne mores narediti enako kot dela DexScreener?"
+
+Ne cisto — DexScreener poganja LASTEN indekser cez vse DEX-e; tega v brskalniku
+ni mogoce. Lahko pa berem indekserje, ki jih borze objavljajo same. PulseX jih
+objavlja tri, in tam ni nobene omejitve na 30 parov.
+
+    graph.pulsechain.com/subgraphs/name/pulsechain/pulsex        (v1)
+    graph.pulsechain.com/subgraphs/name/pulsechain/pulsexv2
+    graph.pulsechain.com/subgraphs/name/pulsechain/stableswap
+    (9mm, phux, switchx tam NIMAJO subgraphov)
+
+    {pairHourDatas(first:1000, skip:N, orderBy:hourlyVolumeUSD,
+                   orderDirection:desc, where:{hourStartUnix_gte: zdaj-86400})
+     {hourlyVolumeUSD}}
+
+    PULSEX 24H VOLUME
+    $4.47M
+    rolling 24h · v1 + v2 + StableSwap
+    PulseX subgraph · not 9mm / PHUX / SwitchX
+
+ZAKAJ JE TO BOLJSE OD PREJSNJEGA SESTEVKA PREK DexScreenerja:
+Vseh 10 zetonov je vracalo natanko 30 parov — VSI so bili odrezani. Manjkali
+so pari kot PTIGER/WPLS ($101K) in ZELDA/WPLS ($72K): WPLS je bil na eni
+strani, a izven njegovih 30 najvecjih. Ista stena kot 16.8. pri
+/latest/dex/tokens. Zdaj ni ne omejitve ne seznama zetonov za vzdrzevanje.
+
+REP: zapisi so urejeni po prometu padajoce. 1. stran $1,85M, 2. stran $113K,
+3. $37K, 4. $17K. Dve strani zajameta nad 98 %, zato jemljemo dve.
+
+⚠️⚠️ NAPAKA, KI JO JE RAZKRILA SELE PRIMERJAVA S SAMIM SEBOJ.
+Kartica je kazala $4,13M, rocni izracun ISTE stvari v ISTI strani pa $4,46M.
+Razlika $326K = natanko StableSwap.
+
+Vzrok: GraphQL javi napako s HTTP 200 in telesom {"errors":[…]} BREZ polja
+data. Koda je v tem primeru dobila prazno polje in pristela 0 — torej se je
+napaka stela kot "ta borza danes ni imela prometa". Opozorila ni bilo, ker se
+je neuspeh stel med uspehe: vseh 6 poizvedb je veljalo za uspesne.
+
+Popravek: odgovor z `errors` ali brez `data.pairHourDatas` VRZE napako.
+Prazno polje je legitimno samo pri drugi strani (skip=1000), ko zapisov res ni
+vec — napaka in praznina zato ne smeta biti isto.
+
+Ce kdaj kaksna poizvedba res odpove, kartica to zdaj napise:
+"incomplete — N of 6 queries failed".
+
+Preverjeno po popravku: kartica $4.47M, rocni izracun $4.47M, opozorilo prazno.
+
+NAUK: HTTP 200 ne pomeni, da je odgovor uporaben. Isti dan sta padli dve
+razlicici te napake — pri DeFiLlami je bilo pravilno ime polja z napacnim
+pomenom, tukaj pravilen status s praznim telesom. Preverjaj OBLIKO odgovora,
+ne le tega, ali je prisel.
+
+--- 23.8.2026 · promet cele verige: dva vira, vsak za svoj del ---------------
+
+Cilj (owner): "priblizno tocen kot DexScreenerjev in se spreminja tako kot pri
+DexScreenerju; ni potrebno da je do $ natancen".
+
+    del A   PulseX v1 + v2 + StableSwap   graph.pulsechain.com   POPOLNO
+    del B   vsi OSTALI DEX-i              DexScreener /token-pairs
+
+    PULSECHAIN 24H VOLUME
+    $5.54M
+    rolling 24h
+    PulseX $4.60M  ·  other DEXes $939.1K
+    PulseX subgraph + DexScreener · approximate
+
+Preverjeno v zivo 23.8.2026 ob 20:30 UTC: kartica $5,54M, dexscreener.com
+$5,9M -> 94 %. Oba sta drseca, zato se tudi premikata enako.
+
+⚠️ DVOJNO STETJE PREPRECENO STRUKTURNO, ne s previdnostjo: iz dela B se
+izpustijo VSI pari z dexId === 'pulsex'. PulseX pride izkljucno iz subgraphov,
+ostali izkljucno z DexScreenerja. Noben par ne more priti po obeh poteh.
+
+ZAKAJ PulseX NE prek DexScreenerja: tam velja omejitev 30 parov na zeton in
+vseh 10 zetonov jo je dosegalo — manjkali so pari kot PTIGER/WPLS ($101K).
+PulseX je 80 % prometa, zato je odrezovanje tam bolelo najbolj. Subgraph te
+omejitve nima.
+ZAKAJ ostali DEX-i VSEENO prek DexScreenerja: 9mm, PHUX, SwitchX, Liberty in
+ostali na graph.pulsechain.com subgraphov nimajo. Odrezovanje na 30 parov jih
+prizadene bistveno manj, ker so majhni in njihovi pari visijo na WPLS in
+stabilnih kovancih, ki so na seznamu.
+
+PREIZKUSENO IN ZAVRNJENO: dodati 7 trending zetonov (PTIGER, ZELDA, PCOCK,
+ATROPA, pTGC, MOST, TEDDY BEAR). Prinesli bi 32 novih ne-PulseX parov in
+$79.521, torej 1,4 %, za ceno 7 dodatnih zahtevkov ob vsaki osvezitvi IN
+seznama, ki bi ga bilo treba vzdrzevati, ko se trending zetoni zamenjajo.
+Seznam, ki se tiho postara, je slabsi od 1,4 % nenatancnosti, ki je priznana.
+
+Ce katerakoli poizvedba odpove, kartica napise
+"INCOMPLETE — N queries failed, figure is too low" — ker je takrat stevilka
+prenizka in bi brez opozorila izgledala kot padec prometa.
+
+--- 24.8.2026 · rezervni vir cen: PulseX subgraph -----------------------------
+
+Zjutraj so DexScreenerjeve poti za `pulsechain` nehale odgovarjati — HTTP 000,
+povezava se sploh ni vzpostavila — medtem ko so poti za `ethereum` delovale
+normalno. Preverjeno z dveh neodvisnih mest (Juretov Mac in peskovnik), zato ni
+slo za lokalno tezavo.
+
+KAKO JE IZGLEDALA STRAN:
+    pHEX, PLS, PLSX, INC, PRVX      "no data"
+    BTC, ETH, eHEX                  delujejo   (vsi z Ethereuma)
+    zetoni v denarnicah             9 s ceno, 38 brez
+    Stake Value                     $2,79K   namesto $10,36K
+    TOTAL                           $3.184   namesto $13.105
+
+Uporabnik bi razumno sklepal, da je izgubil 75 % premozenja. Nic ni javilo
+napake — cene so preprosto manjkale.
+
+Cene so bile edina stvar na strani z ENIM SAMIM virom. Vse ostalo je ze imelo
+dva: gas z dveh RPC, promet iz subgraphov in DexScreenerja, stanja z verige.
+To je natanko tisto, pred cimer svari 3. stalno pravilo — posrednik nikoli sam.
+
+POPRAVEK: PulseX subgraph kot rezervni vir za PulseChain cene. Uporabi se SAMO
+za zetone, ki jih DexScreener ni vrnil. Ostane glavni, ker pokriva tudi zetone
+brez bazena na PulseX-u (9mm, Liberty …). Ena poizvedba (id_in) za vse manjkajoce
+naslove hkrati, ne po kosih.
+
+Vgrajeno na treh mestih, ker so vsa tri padla:
+    priceMap()    tabela zetonov v denarnici
+    priceOne()    nativni PLS — sicer bi ostal brez cene najpomembnejsi podatek
+    ekoFetch()    ekosistemski trak
+
+REZULTAT, izmerjen ob se vedno mrtvem DexScreenerju:
+    pHEX  $0.00406592   PLS $0.00001449   PLSX $0.00001328
+    INC   $0.707830     PRVX $0.00008495
+    Stake Value  $2,79K -> $9,99K
+    TOTAL        $3.184 -> $12.594
+    zetoni       9 s ceno -> 17 s ceno
+    promet       $6,98M z odkritim opozorilom "INCOMPLETE — 5 queries failed"
+
+Razlike v ceni proti DexScreenerju so pod ~2 % (HEX $0,004066 proti $0,004201).
+PulseX je EN DEX, DexScreener vzame najgloblji bazen kjerkoli. Za prikaz stanja
+je to povsem dovolj — bistveno bolje kot "no data".
+
+⚠️ totalLiquidity iz subgrapha je v ENOTAH ZETONA, ne v dolarjih. Brez mnozenja
+s ceno bi stolpec Pool pri PLSX kazal 126 milijard. Pretvorjeno ob branju.
+
+Popravljena tudi opomba pod tabelo: prej je pisala "Prices: DexScreener (deepest
+pool)", kar od danes ni vec cela resnica.
+
+--- 24.8.2026 · krajsi casi cakanja + oznaka rezervnega vira ------------------
+
+DexScreenerjeve poti za `pulsechain` tega dne NE odgovorijo — ne vrnejo napake,
+ampak VISIJO. Preizkuseno do 75 s brez odgovora, medtem ko `ethereum` isti hip
+odgovori v ~6 s. Njihova SPLETNA STRAN je pri tem delovala normalno, kar pomeni,
+da uporablja drugo pot kot javni API. Izpad je bil OBCASEN: kasneje istega dne
+so odgovori spet prihajali in 24-urne spremembe so se vrnile.
+
+Posledica dolgega cakanja: stran je ob vsakem izrisu najprej 20 sekund gledala
+v prazno in sele nato preklopila na PulseX subgraph, ki odgovori v manj kot
+sekundi. Rezerva je delovala, a prepozno, da bi se to opazilo kot hitrost.
+
+    DexScreener /tokens/v1     20 s -> 10 s   (2 mesti)
+    DexScreener /token-pairs   15 s -> 10 s
+    Zdrav odgovor pride v ~6 s, zato je 10 s dovolj velikodusno.
+
+Popravljena tudi vrstica pod ceno v ekosistemskem traku. Ko je cena prisla iz
+rezervnega vira, je pod njo pisalo "no data" — ker PulseX subgraph 24-urne
+spremembe nima. Delujoca cena z napisom "no data" pod sabo izgleda kot okvara.
+Zdaj pise "via PulseX", torej OD KOD je cena, kar je tudi bolj posteno.
+
+⚠️ Za prihodnjic: "ni odgovora" in "visi" nista isto. Prvo koda ujame takoj,
+drugo pa stane toliko casa, kolikor mu ga das. Cas cakanja je zato del
+zasnove, ne podrobnost — kratek cas je tisti, ki naredi rezervni vir uporaben.
+
+--- 24.8.2026 · rezerva se za ETHEREUMSKO stran: CoinGecko --------------------
+
+Popoldne se je slika obrnila. DexScreenerjeve poti za `pulsechain` so si
+opomogle, poti za `ethereum` pa so odpovedale — eHEX, BTC in ETH so pisali
+"no data", PulseChain stran pa je delovala prek PulseX subgrapha.
+
+Rezerva je torej obstajala samo za eno stran verige. PulseX Ethereuma ne
+indeksira, zato je bilo treba tam poiskati drug vir.
+
+⚠️ PREIZKUSENO IN ZAVRNJENO: Blockscout vrne polje `exchange_rate` pri KLICU,
+KI GA ZE DELAMO — torej zastonj, brez dodatnega zahtevka. A za eHEX je javljal
+$0,0004338 namesto $0,001538, torej 3,5-krat premalo. Preverjeno pri CoinGecku
+in DexScreenerju, ki se ujemata ($0,001538 / $0,001532).
+Cena, ki je brezplacna in napacna, je SLABSA od nobene cene, ker se je ne da
+lociti od prave. Isti dan smo to ze videli pri BXUSD z devetimi milijardami
+lazne globine — stevilka je bila tam, samo pomenila ni nicesar.
+
+IZBRAN VIR: CoinGecko, SAMO za vnose z oznako `cg`, in ti so samo ethereumski
+(hex, bitcoin, ethereum). Ena poizvedba za vse tri.
+
+⚠️ ZAKAJ NE POVSOD: 17.8.2026 je CoinGecko cenil PLS 40 % PRENIZKO in z
+obrnjenim predznakom dneva, ker je bral z borze z 2.713 $ dnevnega prometa
+(PULSECHAIN-NATIVE.md). Za PulseChain zetone je torej neuporaben. Za HEX, BTC
+in ETH na Ethereumu pa gre za globoke, dobro pokrite trge — preverjeno isti dan
+na 0,4 % natancno. Vir je izbran glede na TRG, ne glede na priljubljenost vira.
+
+VERIGA VIROV JE ZDAJ:
+    PulseChain zetoni   DexScreener -> PulseX subgraph
+    Ethereum zetoni     DexScreener -> CoinGecko (samo eHEX, BTC, ETH)
+
+Vsaka kartica IZPISE, od kod je cena, kadar ne pride od glavnega vira:
+"via PulseX" ali "via CoinGecko". Vir je pomembnejsi od 24-urne spremembe in
+je zato dobil njeno mesto — ker je 17.8.2026 ravno napacen vir dal 40 %
+napacno ceno, ne da bi to kdo opazil.
+
+Preverjeno v zivo, ko DexScreener ni odgovarjal za NOBENO verigo:
+    pHEX $0.00400335 [via PulseX]      eHEX $0.00153946 [via CoinGecko]
+    PLS  $0.00001437 [via PulseX]      BTC  $78,742     [via CoinGecko]
+    PLSX $0.00001319 [via PulseX]      ETH  $2,497      [via CoinGecko]
+    INC  $0.702864   [via PulseX]      PRVX $0.00008511 [via PulseX]
+Vseh osem s ceno, brez glavnega vira.
+
+ODPRTO: tabela zetonov v denarnici na ETHEREUMSKI strani rezerve nima.
+CoinGecko po naslovu pogodbe dovoli le 1 naslov na zahtevek (brezplacni nacrt),
+kar za 19 zetonov pomeni 19 zahtevkov in blokado. Zato ostaja "N without price"
+— kar je posteno, ne pa napacno.
+
+--- 24.8.2026 · CoinGecko rezerva se shranjuje (sicer pade, ko jo rabis) ------
+
+owner je poslal posnetek: eHEX, BTC in ETH so pisali "no data", ceprav je bila
+rezerva prek CoinGecka ze vgrajena. Tabela pod tem je pri istih zetonih imela
+ceno — torej DexScreener je delal za tabelo, ne pa za trak, CoinGecko pa ni
+zapolnil luknje.
+
+IZMERJENO, ne ugibano — osem hitrih klicev na CoinGecko z Maca:
+
+    1..5   HTTP 200
+    6..8   HTTP 429
+
+Brezplacni nacrt zavrne ze sesti hitri klic. Med izpadom DexScreenerja se stran
+veckrat osvezi, torej se ta meja doseze natanko takrat, ko rezervo rabis.
+Rezervni vir, ki pade pod bremenom izpada, ni rezerva.
+
+(Iz brskalnika je istih osem klicev vrnilo 200 — ker jih Chrome postreze iz
+lastnega predpomnilnika. Meritev z ukazne vrstice pokaze resnico o omrezju,
+meritev iz brskalnika pa resnico o tem, kaj uporabnik vidi. Rabis obe.)
+
+POPRAVEK: odgovor CoinGecka se shrani v localStorage (`gopulse_cg_cache`).
+Svez je 5 minut; ce vir zavrne, se uporabi shranjeni NE GLEDE NA STAROST.
+Cena BTC ali ETH izpred nekaj minut je neprimerno bolje kot "no data" — pri
+teh dveh se v petih minutah ne zgodi nic, kar bi spremenilo pomen stevilke.
+
+Preverjeno v brskalniku, s tocno to logiko in zavestno pokvarjenim naslovom:
+    shramba 10 min stara + vir pade   -> vrne staro ceno    ✓ ($0,00151986)
+    brez shrambe + vir pade           -> vrne {} , ne sesuje ✓
+    vir dela                          -> shrani in vrne sveze ✓
+
+--- 24.8.2026 · zakaj je nas "send PLS" nizji od denarnic -------------------
+
+owner: stran kaze ~17 PLS, ZKX 20,59 PLS, OKX 22,46 PLS. "Stran kar odstopa."
+
+Izmerjeno na obeh RPC hkrati:
+
+    baseFeePerGas    804.674 Gwei   ENAK na obeh -> to je vrednost VERIGE
+    eth_gasPrice     805.159 Gwei   (g4mm4, tip     485 Gwei)
+    eth_gasPrice     835.478 Gwei   (pulsechain.com, tip 30.804 Gwei)
+
+    nasa stevilka    21.000 x 805.159  = 16,91 PLS
+    ZKX              20,59 PLS  =  base x ~1,22
+    OKX              22,46 PLS  =  base x ~1,33
+
+NOBENA NI NAPACNA. Denarnice ne kazejo STROSKA, ampak ZGORNJO MEJO
+(maxFeePerGas x gasLimit). Osnovna cena sme zrasti do 12,5 % na blok, zato
+denarnica postavi rezervo, da transakcija vseeno gre skozi. Dejansko placas
+(base + tip) x porabljen gas — torej priblizno nasih 17 PLS, ne 22.
+
+Isti vzorec kot pri prometu (drsece 24 h proti koledarskemu dnevu): dve
+stevilki, ki merita razlicni stvari, in razlika izgleda kot napaka.
+
+Vir na kartici zato zdaj pise:
+    "base fee + tip · what you pay, not the wallet ceiling"
+
+Gas limit 21.000 je za nativni prenos PLS FIKSEN in ni predmet ocene — razlika
+je izkljucno v ceni gasa, ne v kolicini.
+
+--- 9.9.2026 · zakaj se je stran nalagala 10-20 s (in ni bila kriva stran) ---
+
+owner: "zakaj toliko dolgo traja, da se stran nalozi".
+
+Izmerjeno, ne ocenjeno. Streznik je bil ves cas hiter:
+
+    HTML                     0,16 s   (32 KB)
+    app.js 514 KB            0,10 s
+    chart.js 200 KB          0,08 s
+    denarnica.js 78 KB       0,07 s
+    ogrodje strani (load)    0,34 s
+    TABELA Z DENARNICAMI     9,7 s ... 21,0 s      <-- to je cakal uporabnik
+
+Ob prvi meritvi se je tabela pojavila ob 21,0 s in TOCNO TEDAJ je koncal en
+sam zahtevek:
+
+    eth.blockscout.com/api/v2/addresses/0x4b31da64.../token-balances
+    start 1,5 s -> konec 21,0 s   (19,5 s)
+
+Ostalih sest istih klicev je odgovorilo v 0,3-2,3 s. Blockscout sicer NI
+pocasen: isti naslov z Maca 0,4-0,6 s, sedem hkratnih klicev iz brskalnika
+0,1-0,3 s. Gre za obcasnega zamudnika, ne za stalno stanje.
+
+Napaka je bila nasa, v denarnica.js:
+
+    Promise.all(list.map(loadWallet))          // 7 denarnic
+      .then(all => all.forEach(renderWallet))  // izris SELE, ko so vse gotove
+
+Sest gotovih denarnic je torej cakalo v pomnilniku, ker sedma se ni bila.
+tokenBalances je imel rok 25 s, kar pomeni v najslabsem primeru pol minute
+praznega zaslona ob podatkih, ki so bili ze prebrani.
+
+Popravek je trojen:
+
+  1. Vsaka denarnica se izrise TAKOJ, ko je gotova. Mesta (prazni <div>) so
+     ustvarjena vnaprej, zato vrstni red ostane vrstni red seznama in ne
+     vrstni red odgovorov.
+  2. Rok za seznam zetonov 25 s -> 8 s. Normalen odgovor je 0,3-2,3 s; cakati
+     25 s pomeni cakati na izjemo.
+  3. Delna vsota se pokaze, a NIKOLI kot koncna. Med nalaganjem pise
+     ">= $X" in "Loading wallets - 4 of 7 done"; ce je katera denarnica
+     vrnila nepopoln seznam zetonov, znak ">=" ostane tudi na koncu, z
+     razlago v namigu in v vrstici stanja. Prava vsota je tedaj VISJA.
+     Skrajsan rok brez tega znaka bi hitrost placal z necim slabsim od
+     pocasnosti: s prenizko vsoto, ki izgleda koncna.
+
+Vsota gre v povzetek (TOTAL) sele, ko so vse denarnice stete — delna vsota,
+pokazana kot koncna, je napacna stevilka, ki izgleda pravilno.
+
+Preizkuseno s podtaknjeno napako, ne le napisano. Seznam zetonov ene
+denarnice na ETH je bil prisiljen viseti:
+
+    a) visi in ignorira prekinitev  -> 6 od 7 denarnic izrisanih,
+       stran pise "6 of 7 done" (prej: prazno)
+    b) visi in spostuje prekinitev  -> rok 8 s se sprozi, vseh 7 izrisanih,
+       vsota ">=$951,42", namig "1 wallet(s) returned an incomplete token
+       list, so the real total is higher", vrstica stanja z oranzno piko,
+       kartica "Token list unavailable for ETH"
+    c) brez podtaknjene napake       -> "$951,38", brez znaka ">="
+
+Po objavi izmerjeno v zivo: 6 denarnic ob 0,6 s, vseh 7 ob 1,6 s.
+
+Poduk, ki ni vezan na to stran: Promise.all je ZDRUZEVANJE USODE. Ce se z njim
+izrisuje, potem najpocasnejsi vir doloca, kdaj uporabnik vidi karkoli — tudi
+tisto, kar je bilo prebrano v pol sekunde.
+
+--- 9.9.2026 · Ethereum zgodovina obstane pri 21 % (ni nasa napaka) --------
+
+owner: "stran se odpira ze 2 minuti in se ni odprta". Na zaslonu obstane
+"Scanning Ethereum history... 21 %", PulseChain del pa se konca normalno
+("complete, 201 stakes").
+
+Konzola pove vse:
+
+    POST https://ethereum-rpc.publicnode.com  403 (Forbidden)   app.js:2800
+    [eth] FAILED chunk #192 blocks 18.599.808-18.649.806
+          after 5 attempts                                      app.js:3048
+
+Telo odgovora:
+
+    {"error":{"code":-32602,
+      "message":"Archive requests require a personal token"}}
+
+PublicNode je torej nehal brezplacno streci ARHIVSKE poizvedbe. Branje
+zgodovine HEX stakeov je natanko to (eth_getLogs cez stare bloke), zato pade
+vsakomur, ne le nam, in osvezevanje ne pomaga. app.js vsak kos poskusi 5-krat
+in tiho nadaljuje, zato se odstotek premika po minutah namesto po sekundah.
+
+Preizkuseni vsi stirje rezervni naslovi iz app.js — noben ne dovoli arhivskega
+eth_getLogs:
+
+    ethereum-rpc.publicnode.com   403  "Archive requests require a personal token"
+    eth.merkle.io                 400  "Method not found"
+    eth.drpc.org                  400  "Can't route your request to suitable provider"
+    eth-mainnet.g.alchemy.com/public  400  omejitev obsega pri eth_getLogs
+    endpoints.omniatech.io/.../public 521  (Cloudflare, streznik ne odgovarja)
+
+⚠️ PAST, KI ME JE UJELA: najprej sem preveril eth_blockNumber na istem
+naslovu -> 200 v 0,04 s, in sklepal, da RPC dela. Arhivska in navadna
+poizvedba gresta na isti naslov in vrneta razlicno. Isto kot pri Pinati
+(testAuthentication 200 / pinJSONToIPFS 403): PREVERI TISTO POT, KI JO
+UPORABNIK RES UBERE, NE SOSEDNJE.
+
+ODLOCITEV 9.9.2026 (owner): ZAENKRAT NIC. Moznosti sta bili se (a) prestreci
+403 v denarnica.js in to izpisati namesto obstalega odstotka, (b) arhivski
+kljuc (Alchemy/dRPC) prek PHP posrednika na Neoservu, da kljuc ni v strani.
+Nobena ni izbrana; PulseChain del deluje naprej.
+
+--- 9.9.2026 · Tenderly dodan v CSP (samo nastavitev, koda nedotaknjena) ----
+
+Iskanje nadomestila za publicnode, izmerjeno z ISTO poizvedbo kot app.js
+(logi pogodbe HEX cez 50.000 blokov, leto 2023), 20 javnih Ethereum RPC-jev:
+
+    gateway.tenderly.co/public/mainnet   OK   11.913 logov,  0,8 s
+    eth.api.onfinality.io/public         OK   isti logi,    23,8 s  (prepocasi)
+    publicnode/llamarpc/1rpc/cloudflare/blastapi/drpc/mevblocker/meowrpc  403
+    rpc.ankr.com          zahteva prijavo
+    eth-pokt.nodies.app   "Block range too large"
+    alchemy javni 400 · merkle 400 · omniatech 521
+
+⚠️ PRVI POSKUS IZ BRSKALNIKA JE VSE ZAVRNIL z "Failed to fetch" in skoraj sem
+zapisal, da je kriv CORS. Ni bil — bila je NASA LASTNA CSP: connect-src v
+.htaccess je nastel pet ethereumskih naslovov in Tenderlyja ni bilo med njimi,
+zato zahtevek brskalnika sploh ni zapustil. Sosednja pot spet: streznik je
+odgovoril, brskalnik ni niti vprasal.
+
+Narejeno: v ~/stakescreener.com/.htaccess je v connect-src dodan
+https://gateway.tenderly.co (za eth.merkle.io). Varnostna kopija na strezniku:
+.htaccess.pred-tenderly-20260909  — vrnitev je en cp.
+
+Dokazano po spremembi, ne domnevano:
+  - stran vrne 200, glava, ki jo streznik RES posilja, ima vseh 16 starih
+    naslovov + Tenderly (17)
+  - iz brskalnika na stakescreener.com: Tenderly -> 200, 12.155 logov, 0,6 s
+    (torej CORS deluje; do tega odgovora prej ni bilo mogoce priti)
+  - publicnode -> se vedno 403 "Archive requests require a personal token"
+  - PODTAKNJENO: eth.llamarpc.com (NI v CSP) -> se vedno blokiran, torej je
+    politika razsirjena, ne izklopljena
+
+⚠️ To je SAMO nastavitev. app.js se naprej klice publicnode in Ethereum
+zgodovina se naprej ne nalozi — Tenderly je zdaj le DOVOLJEN, ne uporabljen.
+Preusmeritev bi zahtevala ovoj fetch() v denarnica.js (vzorec kot pri go()),
+kar je koda in ni odloceno.
+
+--- 9.9.2026 · Ethereum zgodovina spet dela — Tenderly pred publicnode -----
+
+owner: "in zakaj ne spremenis na Tenderly?"
+
+Zakaj se ni bilo: Tenderly je bil dodan samo v CSP (dovoljen), naslov pa je
+zapisan v app.js, ki ga po dogovoru s 16.8.2026 ne spreminjava.
+
+Pot mimo tega obstaja in ne zahteva niti enega spremenjenega bajta v app.js:
+
+    const ETH_RPCS=['https://ethereum-rpc.publicnode.com'];      app.js:162
+
+`const` prepove PRIREDITEV, ne pa spremembe VSEBINE polja. denarnica.js se
+nalozi za app.js, zato lahko Tenderly postavi na prvo mesto z ETH_RPCS.unshift().
+publicnode ostane drugi — ce Tenderly kdaj odpove, smo tam, kjer smo bili, ne
+slabse.
+
+⚠️ ZAKAJ APP.JS TEGA NI OPAZIL SAM — ista napaka kot moja pri Pinati in danes
+pri eth_blockNumber, le v njihovi kodi:
+
+    async function checkEthRpcHealth(){
+      ... method:'eth_blockNumber' ...            // preveri SOSEDNJO pot -> 200
+      if(r.ok){ console.log('publicnode reachable'); return; }
+      await probeEthFallbacks();                  // do sem nikoli ne pride
+    }
+
+Imajo delujoc mehanizem rezervnih RPC-jev (probeEthFallbacks) in ga nikoli ne
+sprozijo, ker zdravstveni pregled meri drugo pot kot delo. Njihov dnevnik je
+med nasim popravkom se vedno pisal "[eth] RPC health: publicnode reachable".
+
+IZMERJENO PO POPRAVKU (7 denarnic, ista povezava #c=TSJW5CW6QU):
+
+    [eth] batch scan complete: 339/339 chunks OK, 0 failed,
+          89 end events, 195 start events, 34.3s
+    klicev na Tenderly 56 · na publicnode 37 (nearhivski klici)
+    412 vrstic v tabeli
+
+    prej: "Scanning Ethereum history... 21 %", vsak kos 5 poskusov, brez konca
+
+PODTAKNJENA NAPAKA: prvi naslov nastavljen na mrtvo pot
+(gateway.tenderly.co/tale-poti-ni) -> ta() je presel na publicnode in vrnil
+odgovor. Rezerva torej res deluje, ni domneva.
+
+Vrnitev nazaj: denarnica.js.pred-tenderly-202609091050 (lokalno) ali izbris
+bloka tenderlyPredPublicnode(); CSP kopija .htaccess.pred-tenderly-20260909.
+
+⚠️ Tenderly je javni brezplacni prehod brez kljuca. Ce zacne omejevati, se to
+pokaze kot padli kosi v konzoli — takrat je naslednji korak arhivski kljuc
+prek PHP posrednika na Neoservu (kljuc ne sme v stran).
+
+========================================================================
+31.10.2026 — app.js dobi oznako razlicice (?v=) v index.html
+========================================================================
+app.js se je nalagal kot "./app.js" BREZ ?v=, .htaccess pa za .js nastavi
+Cache-Control max-age=31536000 (1 leto). Brskalnik, ki je app.js ze imel,
+popravka app.js ne bi nikoli videl (razen ob rocnem praznjenju predpomnilnika).
+denarnica.js je ?v= ze imel. Zdaj: <script src="./app.js?v=XXXXXXXXXX">, kjer je
+XXXXXXXXXX prvih 10 znakov SHA-256 vsebine app.js.
+PRAVILO: ob vsaki spremembi app.js ali denarnica.js posodobi ?v= v index.html.
+(Odkrito med preizkusom rezerve FusionScan 31.10.; ta rezerva NI objavljena —
+FusionScan getLogs na HEX vrne Query Timeout, token-balances vrne prazno.)
+Vrnitev: index.html.pred-v-20261031 na strezniku.
+
+========================================================================
+31.10.2026 — preobleka v slogu mojdelež.si (samo videz)
+========================================================================
+Nova datoteka gp-preobleka.css (nalozi se ZADNJA, za slog.css). Prepise samo
+videz dodatka (denarnica.css) in ozadje strani; app.js in logika denarnica.js
+sta NESPREMENJENA. Vrstni red delov v #wbal-sec je spremenjen s CSS `order`
+(cene -> TOTAL in kartice -> stanje verige -> WALLETS), ne s premikanjem vozlisc.
+  - glava .gp-hdr (znak + stakescreener.com + povezave) in noga .gp-noga v index.html
+  - cene kot tanek trak; povezava na trg pokrije celo kartico
+  - TOTAL velik v PulseChain prelivu, ozadje: slike/veriga-hero.jpg (mojdelež.si, lastna grafika)
+  - pisava Raleway (fonts/raleway-*.ttf, staticne instance, SIL OFL 1.1 — fonts/RALEWAY-OFL.txt)
+  - izvorni del HEX Stake Analyzer spodaj ostane v izvornem videzu
+Vrnitev: index.html.pred-preobleko-20261031 na strezniku (gp-preobleka.css nato ni vec nalozen).
+31.10.2026 (dopolnitev) — gp-trak.js: trak cen tece samodejno (kartice zavite v .gp-tir in enkrat
+podvojene; kopije aria-hidden; ustavi se ob miski; pri prefers-reduced-motion stoji). Logika cen nespremenjena.
+31.10.2026 (dopolnitev) — znak gopulse: diamant mojdelež.si s pulzom namesto vodoravne crte (glava in
+favicon.svg/.png/.ico, apple-touch-icon.png). Stare ikone: *.pred-znak-20261031 na strezniku.
+
+31. 10. 2026: iz glave in noge index.html odstranjeni povezavi na mojdelez.si in Podpri razvoj (locitev gopulse od mojdelez.si). Ostane povezava na stakescreener.com.
+31. 10. 2026: gp-preobleka.css dopolnjen z videzom dela HEX Stake Analyzer (pisava Raleway, kartice, gumbi, tabele, okna; popravek mreze primerjave pHEX/eHEX na telefonu). Samo CSS, app.js nespremenjen. Napis HEX Stake Analyzer in pripis izvora ostaneta.
+31. 10. 2026: naslov Stake Analyzer v debelini 800, enako kot WALLETS Analyzer.
+31. 10. 2026: cena pHEX, Total Available in gumb Thanks v beli namesto oranzne/rumene.
+31. 10. 2026: dodana gp-skupaj.js in gp-skupaj.css - kartica Total HEX (pHEX in eHEX loceno: glavnica, nabrani donos, denarnica) in stolpec Total HEX (glavnica + donos) v tabelah stakov in vrstici TOTALS. Ovije renderAll, buildTableHeader, mkRow in buildStakeTable; app.js nespremenjen.
+1. 11. 2026: logotip v glavi cisto levo (glava cez vso sirino), iz napisa odstranjen dodatek .stakescreener.com.
+1. 11. 2026: meni za telefon (gumb ☰ desno, povezave pod glavo), samo HTML+CSS.
+
+========================================================================
+5.11.2026 — FusionScan glavni raziskovalec za PulseChain, uradni je rezerva
+========================================================================
+Nova datoteka gp-vir.js (nalozi se PRED app.js). Ovije window.fetch: vsak klic
+na api.scan.pulsechain.com gre najprej na scan.pulsefusion.io (ista pot in
+poizvedba). Ce FusionScan ne odgovori v 7 s, vrne HTTP napako ali status "0"
+(razen "No records found"), se isti klic ponovi na uradnem. Po 2 zaporednih
+napakah gre do konca obiska vse na uradnega. app.js in denarnica.js NESPREMENJENA.
+Avtor FusionScana je 4.11. popravil getLogs s filtrom topic (prej Query Timeout)
+in token-balances (prej prazno). Preizkus 5.11.: naslov z vlozki HEX — FusionScan
+in uradni dasta isto (17 StakeEnd + 18 StakeStart, 77 vrstic).
+Noga: <span id="gp-vir"> pove, kateri vir je v uporabi.
+.htaccess: connect-src + https://scan.pulsefusion.io
+Vrnitev: odstrani <script src="./gp-vir.js"> iz index.html (kopije *.pred-fusion-glavni-20261105).
+
+========================================================================
+10.11.2026 — PWA: stran se namesti kot aplikacija
+========================================================================
+site.webmanifest (ime gopulse, ikone gp-icon-192/512 in gp-maskable-192/512 —
+narisane iz favicon.svg, temno ozadje, maskable z robom za okrogle ikone Androida).
+index.html <head>: link rel=manifest, ikona 192, Apple meta, theme-color #06050a.
+.htaccess: AddType application/manifest+json .webmanifest (CSP ze ima manifest-src self).
+favicon.svg: odstranjeni metapodatki C2PA (videz enak). Brez service workerja
+(worker-src none ostane). app.js NESPREMENJEN.
+Vrnitev: kopije *.pred-pwa-20261110.
+
+========================================================================
+10.11.2026 — imetje, vredno vec kot cel bazen, se ne steje v vsoto
+========================================================================
+denarnica.js (dodatek, ne app.js): ce je kolicina × cena VECJA od globine bazena
+(DexScreener/PulseX; CoinGecko nima podatka o bazenu in je izvzet), vrednost = »— not
+counted« z razlago v title, vrstica gre med necenjene, vsota denarnice je ne steje.
+Povod: lazni zeton ePEPE (20 kosov × 481 mio $, bazen 0,04 $) je pokazal 9,6 mrd $.
+Pravi zetoni z normalnimi bazeni nespremenjeni. ?v denarnica.js posodobljen.
+Vrnitev: *.pred-plitev-20261110.
+
+19. 11. 2026 — g4mm4.io ugasne 21. 11. 2026
+denarnica.js (dodatek): GAS_RPC = rpc.pulsechain.com + pulsechain-rpc.publicnode.com (prej g4mm4).
+.htaccess: rpc-pulsechain.g4mm4.io odstranjen iz connect-src. app.js NESPREMENJEN — njegov seznam
+PLS_RPCS ima g4mm4 se vedno, a ga CSP zdaj takoj zavrne in app.js preide na naslednji RPC.
+?v denarnica.js posodobljen. Vrnitev: *.pred-g4mm4-20261119.
+
+21. 11. 2026 — rpc.libertyswap.finance kot tretja rezerva
+denarnica.js (dodatek): GAS_RPC = rpc.pulsechain.com, pulsechain-rpc.publicnode.com, rpc.libertyswap.finance.
+.htaccess: rpc.libertyswap.finance dodan v connect-src. app.js NESPREMENJEN. ?v denarnica.js posodobljen.
+Vrnitev: *.pred-liberty-20261121.
+
+22. 11. 2026 — preimenovanje v StakeScreener (stakescreener.com)
+Stran se seli z stakescreener.com na stakescreener.com (nov paket, sh16). Vidna imena:
+napis v glavi Stake|Screener, <title>, og/twitter naslovi, apple-mobile-web-app-title,
+site.webmanifest name/short_name, noga »stakescreener.com — based on HEX Stake Analyzer«,
+og:url/og:image na stakescreener.com, nova og.png (1200×630). app.js NESPREMENJEN.
+Kljuci localStorage (gopulse_*) in mapa ~/gopulse-kode OSTANEJO — shranjene denarnice,
+oznake in kode za deljenje uporabnikov delujejo naprej.
+
+22. 11. 2026 — gp-prenos.js: uvoz shranjenih nastavitev (#gp-prenos=…) ob preusmeritvi z stakescreener.com; nalozi se pred app.js. app.js NESPREMENJEN.
+
+22. 11. 2026 — vidni napisi Analyzer → Screener (og:image:alt, obvestilo o novi verziji, Stake Screener v glavi analizatorja, WALLETS Screener v denarnica.js). Obvestila o avtorstvu/licenci (HexStakeAnalyzer, GPL-3.0) in »based on HEX Stake Analyzer« OSTANEJO. app.js NESPREMENJEN.
+
+22. 11. 2026 — povezava na stakescreener.com odstranjena iz noge; omembe stakescreener.com v komentarjih zamenjane s StakeScreener.
+
+22. 11. 2026 — nova stran info.html (Disclaimer, Privacy, Support; gp-info.css, gp-info.js) in povezave v nogi; »nothing stored on a server unless you save a code«.
+
+22. 11. 2026 — noga na sredini (v slogu mojdelez.si): crta z ikono, kontakt, Disclaimer/Privacy/Support, opombe, vir podatkov (#gp-vir ostane), © StakeScreener · based on HEX Stake Analyzer (GPL-3.0). Stil v gp-preobleka.css.
+22. 11. 2026 — locili (crta z ikono, kot v nogi) med povzetkom in Wallets ter med Wallets in HEX Stake Screener; samo CSS (#wbal-sec::before/::after v gp-preobleka.css), app.js in denarnica.js nespremenjena.
+22. 11. 2026 — izvirna licencna vrstica (footer.copyright) premaknjena dobesedno v zadnjo vrstico noge gp-noga (© 2026 HexStakeAnalyzer · GPL-3.0 · Source), da ni podvojena; obvestilo v app.js nespremenjeno.
+22. 11. 2026 — povezava Support preimenovana v "Support the project" (noga index.html, meni info.html).
+22. 11. 2026 — novo: gp-podpora.js (enkratno okno "Enjoying StakeScreener? / Support the project" po prvi nalozeni denarnici, localStorage gopulse_podpora; slog v gp-preobleka.css); gp-prenos.js ob prenosu nastavitev nastavi gopulse_podpora=prenos (okna ne pokaze). app.js in denarnica.js nespremenjena.
+22. 11. 2026 — novo: gp-validatorji.js — odsek VALIDATOR Screener (PulseChain): validatorji iz izplacil na denarnice (FusionScan), rocni vnos (gopulse_val_ids), status/stanje iz PublicNode beacon API, izplacila 24h/7d/30d, ocena APR; samodejno nastavi kartico Validators (gopulse_val_auto), rocno vpisanega stevila ne prepise. CSP connect-src + pulsechain-beacon-api.publicnode.com. Slog in razred .gp-loc v gp-preobleka.css. app.js in denarnica.js nespremenjena.
+22. 11. 2026 — denarnica.js: opomba v kartici TOTAL pove, ali je stevilo validatorjev nasel Validator Screener ali ga je vpisal uporabnik.
+22. 11. 2026 — VALIDATOR Screener: povezava s priporocilom Allnodes (rel=sponsored, oznacena "referral link"; vidnejsa, ko validatorjev ni). info.html: odstavek o referral povezavah v Disclaimer, beacon vozlisca med viri, stevilke validatorjev v Privacy.
+22. 11. 2026 — VALIDATOR Screener: Vouch referral (ID 20, refwidget.vouch.run/?ref=20) z jasno navedeno pristojbino (0.3%, max 5,000 PLS, placa uporabnik); info.html Disclaimer: pristojbina Vouch in tveganja liquid stakinga.
+22. 11. 2026 — vPLS (Vouch): denarnica.js vrednoti vPLS po tecaju pogodbe getRate() x cena PLS (oznaka "at Vouch rate"), ne vec "not counted"; gp-validatorji.js: del "Liquid staking · Vouch (vPLS)" (samo pregled, ne pristeva se dvakrat).
+22. 11. 2026 — denarnica.js: cakanje na seznam zetonov (token-balances) 8 s -> 15 s (velike denarnice potrebujejo 7-10 s).
+22. 11. 2026 — dodana robots.txt in sitemap.xml (Search Console).
+22. 11. 2026 — index.html: <link rel=canonical href=https://stakescreener.com/>.
+22. 11. 2026 — Save as code prenese tudi rocno dodane validatorje (koda.php polje vids, max 50; denarnica.js saveCode/fetchCode; gp-validatorji.js zazna spremembo); info.html Privacy posodobljen.
+22. 11. 2026 — denarnica.js: brez dodane denarnice TOTAL pokaze "Add a wallet address to get started" z gumbom Add wallet (premik do vnosa); kartice "add a wallet below"; Validators "found automatically from your wallets, or enter a count".
+22. 11. 2026 — og.png: odstranjen temnejsi kvadrat okoli ikone; og:description "nothing stored unless you save a code"; og:image ?v=20261122b.
+22. 11. 2026 — veriga (slike/veriga-hero.jpg) cez celo sirino povzetka, spodaj zbledi; telefon nespremenjen.
+22. 11. 2026 — veriga: visina sledi sirini zaslona (cela veriga tudi na sirokih zaslonih).
+22. 11. 2026 — novo: gp-communis.js — odsek COMMUNIS Screener (samo branje): Staked COM, End Bonus Debt, stake bonus, Restake; po HEX stakih Max COM, Start/End bonus (37-dnevno okno), opozorila. Izracuni po pogodbi 0x5A97…34A8 (preverjeno 16/16). Ovije renderAll kot gp-skupaj.js; app.js nespremenjen.
+22. 11. 2026 — novo: gp-hedron.js — odsek HEDRON Screener (samo branje): HDRN na voljo za mint po stakih (Native, HSI, HSI-NFT), na dan, posojilo/tokenizirano; formula po mintNative/mintInstanced (preverjeno 6/6 native, 12/12 HSI proti eth_call). Ovije renderAll; app.js nespremenjen.
+22. 11. 2026 — novo: gp-icosa.js — odsek ICOSA Screener (samo branje): HDRN stake (ICSA), ICSA stake (ICSA+HDRN) s simulacijo konca (eth_call hdrnStakeEnd/icsaStakeEnd, kazni pred minimalno dolzino), WAATSA NFT stake-i (formula nftStakeEnd, preverjeno 16/16).
+22. 11. 2026 — ciscenje pred javnim repozitorijem: stare omembe domene in imena v komentarjih zamenjane (stakescreener.com, owner); README.txt (star izvoz) odstranjen.

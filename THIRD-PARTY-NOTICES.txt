@@ -1,0 +1,23 @@
+Third-party notices
+===================
+
+HEX Stake Analyzer
+Source: https://github.com/hexstakeanalyzer/Hex-Stake-Analyzer
+License: GNU General Public License v3.0
+License file: ./LICENSE
+
+Chart.js 4.4.1
+Source: https://www.chartjs.org/
+License: MIT
+License file: ./vendor/CHARTJS-LICENSE.md
+
+Inter
+Source: https://fonts.google.com/specimen/Inter
+License: SIL Open Font License 1.1
+License file: ./fonts/INTER-OFL.txt
+
+Space Mono
+Source: https://fonts.google.com/specimen/Space+Mono
+License: SIL Open Font License 1.1
+License file: ./fonts/SPACE-MONO-OFL.txt
+

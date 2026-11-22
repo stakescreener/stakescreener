@@ -1,0 +1,406 @@
+/* gp-preobleka.css — videz StakeScreener (31. 10. 2026)
+ *
+ * SAMO videz. Nalozi se ZADNJI (za slog.css in denarnica.css) in prepise njune
+ * barve, pisave in postavitev. app.js (izvorni HEX Stake Analyzer, GPL-3.0) in
+ * logika denarnica.js ostaneta nespremenjeni; vrstni red delov v #wbal-sec se
+ * spremeni s CSS `order`, ne s premikanjem vozlisc.
+ * Vrnitev: odstrani <link> na to datoteko, <header class="gp-hdr"> in <footer class="gp-noga"> v index.html.
+ */
+@font-face{font-family:"Raleway";src:url(fonts/raleway-300.ttf) format("truetype");font-weight:300;font-display:swap}
+@font-face{font-family:"Raleway";src:url(fonts/raleway-400.ttf) format("truetype");font-weight:400;font-display:swap}
+@font-face{font-family:"Raleway";src:url(fonts/raleway-500.ttf) format("truetype");font-weight:500;font-display:swap}
+@font-face{font-family:"Raleway";src:url(fonts/raleway-600.ttf) format("truetype");font-weight:600;font-display:swap}
+@font-face{font-family:"Raleway";src:url(fonts/raleway-700.ttf) format("truetype");font-weight:700;font-display:swap}
+@font-face{font-family:"Raleway";src:url(fonts/raleway-800.ttf) format("truetype");font-weight:800;font-display:swap}
+
+:root{
+  --gp-bg:#06050a; --gp-card:#110e22; --gp-bd:#2a2350; --gp-txt:#f2f0fa; --gp-dim:#9a94b8; --gp-dim2:#6f6990;
+  --gp-grad:linear-gradient(90deg,#22d3ee,#4f86ff 30%,#8b3cf6 60%,#d946ef 85%,#f43f5e);
+  --wb-sans:"Raleway",system-ui,-apple-system,"Segoe UI",sans-serif;
+}
+html,body{background:var(--gp-bg)}
+
+/* ---------- glava ---------- */
+.gp-hdr{border-bottom:1px solid #1c1836;background:#07060c;font-family:var(--wb-sans)}
+.gp-hdr-in{max-width:1400px;margin:0 auto;padding:0 20px;display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:74px;flex-wrap:wrap}
+.gp-brand{display:flex;align-items:center;gap:12px;text-decoration:none;color:var(--gp-txt)}
+.gp-brand svg{width:38px;height:38px;flex:0 0 38px}
+.gp-wm{font-size:28px;letter-spacing:-.5px;line-height:1}
+.gp-wm .a{font-weight:300}.gp-wm .b{font-weight:800}.gp-wm .c{font-weight:400;color:#d946ef;font-size:19px}
+.gp-tag{display:block;font-size:11px;color:var(--gp-dim);letter-spacing:.5px;margin-top:4px;font-weight:500}.gp-tag b{color:#4f8bff;font-weight:800}
+.gp-nav{display:flex;gap:8px;flex-wrap:wrap}
+.gp-nav a{font-weight:700;font-size:13.5px;color:#cfe9ff;border:1px solid #2d3a55;border-radius:11px;padding:8px 14px;text-decoration:none}
+.gp-nav a:hover{border-color:#4f86ff}
+.gp-nav a.pod{border-color:#6d28d9;color:#e9d5ff}
+
+/* ---------- vrstni red delov ---------- */
+#wbal-sec.on{display:flex;flex-direction:column}
+#wbal-sec > *{order:10}
+#wbal-sec > .eko-trak{order:1}
+#wbal-sec > .pov-trak{order:2}
+#wbal-sec > .net-trak{order:3}
+
+/* ---------- cene: tanek trak ---------- */
+.eko-trak{display:flex;justify-content:space-between;gap:4px;overflow-x:auto;scrollbar-width:none;margin:0 -20px 0;padding:10px 20px;
+  border-bottom:1px solid #1c1836;background:#09081280}
+.eko-trak::-webkit-scrollbar{display:none}
+.eko-card > *{flex:none;margin:0;width:auto;min-width:0}
+.eko-card{flex:0 0 auto;width:auto;display:flex;align-items:center;gap:5px;border:0;border-radius:10px;padding:4px 4px;background:transparent;min-width:0}
+.eko-card:hover{background:#14112a}
+.eko-hdr{margin:0;gap:5px}
+.eko-ikona{width:18px;height:18px;flex:0 0 18px}
+.eko-ime{display:none}
+.eko-sym{font-size:12px}
+.eko-cena{font-size:12px;font-weight:500;letter-spacing:0;color:#e6e3f5;font-variant-numeric:tabular-nums}
+.eko-spr{margin:0;font-size:11.5px}
+.eko-spr.gor{color:#34d399}.eko-spr.dol{color:#f87171}
+/* povezava na trg pokrije celo kartico — klik kjerkoli na ceno odpre trg */
+.eko-card{position:relative;cursor:pointer}
+.eko-card > .eko-lnk{position:absolute;inset:0;width:auto;font-size:0;letter-spacing:0;border-radius:10px}
+
+/* ---------- povzetek: TOTAL kot naslovni del + tri kartice ---------- */
+.pov-trak{position:relative;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin:0 0 18px;padding-top:6px}
+.pov-trak::before{content:"";position:absolute;right:-20px;top:-10px;width:62%;height:300px;
+  background:url(slike/veriga-hero.jpg) right top/cover no-repeat;opacity:.34;pointer-events:none;
+  -webkit-mask-image:linear-gradient(90deg,transparent,#000 45%),linear-gradient(0deg,transparent,#000 40%);
+  -webkit-mask-composite:source-in;mask-image:linear-gradient(90deg,transparent,#000 45%);}
+.pov-trak > *{position:relative}
+.pov-card{background:var(--gp-card);border:1px solid var(--gp-bd);border-radius:20px;padding:22px 24px;overflow:hidden}
+.pov-card:not(.pov-skupaj)::before{content:"";position:absolute;left:0;right:0;top:0;height:3px;background:var(--gp-grad)}
+.pov-lbl{font-family:var(--wb-sans);font-size:11.5px;font-weight:700;letter-spacing:2.6px;color:var(--gp-dim)}
+.pov-val{font-size:42px;letter-spacing:-1px;margin-top:8px}
+.pov-sub{font-size:13px;color:var(--gp-dim)}
+.pov-brk{border-top-color:#241e44}
+.pov-row{font-family:var(--wb-sans);font-size:14px;padding:5px 0}
+.pov-amt,.pov-usd{font-variant-numeric:tabular-nums}
+.pov-usd{font-weight:700;color:#fff}
+
+.pov-skupaj{order:-1;grid-column:1/-1;background:transparent;border:0;padding:30px 0 14px}
+.pov-skupaj .pov-lbl{color:var(--gp-dim);letter-spacing:3px}
+.pov-skupaj .pov-val{font-size:96px;letter-spacing:-3px;line-height:1.02;margin:10px 0 8px;display:inline-block;
+  background:var(--gp-grad);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;color:#d946ef}
+.pov-skupaj .pov-sub{font-size:16px;color:#cfcbe6}
+.pov-skupaj .pov-dru{font-size:12.5px;color:var(--gp-dim2)}
+.pov-skupaj.prazna{opacity:1}.pov-skupaj.prazna .pov-val{opacity:.5}
+.pov-vir{order:20;font-family:var(--wb-sans);color:var(--gp-dim2)}
+
+/* ---------- stanje verige: manjse kartice ---------- */
+.net-trak{gap:18px}
+.net-card{background:#0d0b1b;border:1px solid #221c42;border-radius:16px;padding:16px 20px}
+.net-lbl{font-family:var(--wb-sans);font-size:11px;letter-spacing:2.4px;color:var(--gp-dim)}
+.net-val{font-family:var(--wb-sans)}
+
+/* ---------- WALLETS Analyzer ---------- */
+.wbal-hdr{margin-top:34px}
+.wbal-title{font-size:36px;letter-spacing:-.5px;text-transform:none;
+  background:var(--gp-grad);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.wbal-title2{font-family:var(--wb-sans);font-size:36px;font-weight:800;color:var(--gp-txt);letter-spacing:-.5px}
+.wbal-btn{font-family:var(--wb-sans);font-weight:700;border-radius:11px}
+.wbal-input{border-radius:12px}
+.wbal-wallet{background:var(--gp-card);border:1px solid var(--gp-bd);border-radius:16px}
+.wbal-wallet-hdr{font-family:var(--wb-sans)}
+.wbal-sum{font-family:var(--wb-sans);font-weight:800;font-size:19px}
+.wbal-total{font-family:var(--wb-sans);font-weight:800}
+
+/* ---------- noga (22. 11. 2026: na sredini, v slogu mojdelez.si) ---------- */
+.gp-noga{margin-top:40px;font-family:var(--wb-sans);color:var(--gp-dim2);font-size:14px;text-align:center}
+.gp-noga-in{max-width:900px;margin:0 auto;padding:10px 20px 44px;display:block}
+.gp-noga p{margin:0 0 12px;line-height:1.6}
+.gp-noga a{color:#3fe0f5;text-decoration:none;font-weight:500}
+.gp-noga a:hover{color:#fff}
+.gp-noga-crta{display:flex;align-items:center;gap:22px;margin:0 auto 26px;max-width:820px}
+.gp-noga-crta span{flex:1;height:1px;background:linear-gradient(90deg,transparent,#5b2bd6 30%,#5b2bd6 70%,transparent)}
+.gp-noga-crta img{display:block;opacity:.95}
+.gp-noga-pov{font-size:15px}
+.gp-noga-mal{font-size:12px;color:#7d7a96}
+.gp-noga-copy{color:#e6e6f0;margin-top:18px!important}
+.gp-noga-copy b{color:#e6e6f0;font-weight:600}
+.gp-noga-copy a{white-space:nowrap}
+.gp-noga-lic{font-size:12px;color:#9a97b5}
+
+/* ---------- telefon ---------- */
+@media (max-width:900px){
+  .pov-trak{grid-template-columns:1fr}
+  .pov-skupaj .pov-val{font-size:58px;letter-spacing:-1.5px}
+  .pov-trak::before{width:100%;opacity:.22}
+  .net-trak{grid-template-columns:1fr}
+  .wbal-title,.wbal-title2{font-size:28px}
+  .gp-wm{font-size:24px}
+  .gp-nav a{font-size:12px;padding:6px 10px}
+  .gp-hdr-in{padding:10px 16px}
+}
+
+/* ---------- tekoci trak cen (gp-trak.js) ---------- */
+.eko-trak.gp-tece{display:block;overflow:hidden;
+  -webkit-mask-image:linear-gradient(90deg,transparent,#000 4%,#000 96%,transparent);
+          mask-image:linear-gradient(90deg,transparent,#000 4%,#000 96%,transparent)}
+.gp-tir{display:flex;width:max-content;animation:gp-tek 50s linear infinite}
+.gp-tir > .eko-card{margin-right:30px}
+/* Ustavi samo pod miško. Na telefonu dotik pusti :hover "prilepljen" (in fokus na
+   povezavi), zato je pavza omejena na naprave, ki zares imajo miško. */
+@media (hover:hover) and (pointer:fine){.eko-trak.gp-tece:hover .gp-tir{animation-play-state:paused}}
+@keyframes gp-tek{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+@media (prefers-reduced-motion:reduce){
+  .gp-tir{animation:none}
+  .eko-trak.gp-tece{overflow-x:auto}
+  .gp-tir > .gp-kopija{display:none}
+}
+
+/* ---------- HEX Stake Analyzer v slogu mojdelež.si (samo videz, app.js nespremenjen) ---------- */
+#app{--bg:#06050a;--s1:#110e22;--s2:#0d0b1b;--s3:#14112a;--bd:#2a2350;--tx:#f2f0fa;--mu:#9a94b8;--di:#3a3360}
+/* pisava: Raleway povsod, stevilke poravnane */
+#app *:not(canvas){font-family:var(--wb-sans)!important}
+#app{font-variant-numeric:tabular-nums}
+
+/* naslov: HEX Stake Analyzer (pripis izvora ostane) */
+#app .topbar{margin-top:34px}
+#app .logo{align-items:baseline;gap:10px}
+#app .l-hex{font-weight:800;font-size:36px;letter-spacing:-.5px;
+  background:var(--gp-grad);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+#app .l-sub{font-weight:800;font-size:36px;letter-spacing:-.5px;color:var(--gp-txt)}
+#app .hsa-version{font-weight:700;font-size:11px;border-radius:8px;border-color:var(--gp-bd);color:var(--gp-dim)}
+#app .subt{color:var(--gp-dim);font-size:13.5px}
+#app .donate-topbtn,#app .about-btn{border-radius:11px;font-weight:700}
+
+/* cene pHEX/eHEX in primerjava */
+#app .ticker{border-radius:20px;border:1px solid var(--gp-bd);background:var(--gp-card);overflow:hidden}
+#app .t-price-new{font-weight:800;letter-spacing:-1px}
+#app .t-chain-tag{border-radius:12px;font-weight:800;letter-spacing:1px}
+#app .t-chg{border-radius:8px;font-weight:700}
+#app .cmp-strip{border-radius:20px;border:1px solid var(--gp-bd);background:var(--gp-card);overflow:hidden;margin-top:18px}
+#app .cmp-strip-title .cp,#app .cmp-strip-title .ce{font-weight:800}
+#app .cmp-item{background:transparent}
+#app .cmp-item-lbl,#app .clbl,#app .cblbl,#app .sp-title,#app .ptitle,#app .plbl,#app .day-cd-lbl{
+  font-weight:700!important;letter-spacing:2.4px;color:var(--gp-dim)!important;text-transform:uppercase;font-size:11px}
+#app .cmp-side-val,#app .cmp-item-val,#app .dex-total-val{font-weight:800}
+
+/* dan in iskanje */
+#app .daybar{border:0;background:transparent;padding-top:26px}
+#app .day-num{font-weight:800;letter-spacing:-.5px;background:var(--gp-grad);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+#app .day-date{color:var(--gp-dim)}
+#app .day-cd-num{font-weight:800}
+#app #addr{border-radius:12px;border:1px solid var(--gp-bd);background:#0b0918}
+#app #addr:focus{border-color:#4f86ff}
+#app .addbtn{border-radius:11px;font-weight:700;border-color:#6d28d9;color:#e9d5ff;background:transparent}
+#app .abtn{border-radius:11px;font-weight:800;color:#fff;border:0;
+  background:linear-gradient(90deg,#4f86ff,#8b3cf6 55%,#d946ef)}
+#app .abtn:hover{filter:brightness(1.12)}
+
+/* kontrole */
+#app .ctrl-bar{border-radius:16px;border:1px solid var(--gp-bd);background:#0d0b1b}
+#app .chain-toggle{border-radius:12px;border-color:var(--gp-bd)}
+#app .chain-tog-btn{border-radius:9px;font-weight:700}
+#app .chain-tog-btn.active{background:#1d1840;border-color:#6d28d9}
+#app .moon-btn{border-radius:11px;font-weight:700;border-color:#6d28d9;color:#e9d5ff;background:transparent;box-shadow:none}
+
+/* kartice povzetka */
+#app .cards-frame{border:0;background:transparent}
+#app .cards{gap:18px;background:transparent;border:0}
+#app .card{position:relative;background:var(--gp-card)!important;border:1px solid var(--gp-bd)!important;border-radius:20px!important;
+  padding:22px 24px;overflow:hidden;box-shadow:none}
+#app .card::before{content:"";position:absolute;left:0;right:0;top:0;height:3px;background:var(--gp-grad)}
+#app .card::after{display:none}
+#app .cval{font-weight:800;letter-spacing:-1px}
+#app .pval,#app .cval2,#app .card-2nd-v{font-weight:800}
+#app .cdiv{border-color:#241e44}
+
+/* grafi in skatle */
+#app .charts{gap:18px}
+#app .cbox,#app .sp-box{background:var(--gp-card);border:1px solid var(--gp-bd);border-radius:20px;box-shadow:none}
+#app .pie-pct-val{font-weight:800}
+#app .sp-bar-track{border-radius:6px}
+#app .chart-chain-pill{border-radius:8px}
+
+/* cakajoci staki, zavihki, tabele */
+#app .pend-sec{background:#0d0b1b;border:1px solid var(--gp-bd);border-radius:20px}
+#app .stake-tabs{border-radius:16px;border:1px solid var(--gp-bd);background:#0d0b1b;overflow:hidden}
+#app .stake-tab{font-weight:800;letter-spacing:1.5px}
+#app .stake-tab.selected{background:#16123000;box-shadow:inset 0 -3px 0 #8b3cf6}
+#app .stake-tab-active.selected{background:linear-gradient(180deg,#1a1538,#110e22);color:#cfe9ff}
+#app .tab-count{border-radius:8px;font-weight:800}
+#app .stbl-wrap{border-radius:20px;border:1px solid var(--gp-bd);background:var(--gp-card);overflow:auto}
+#app .stbl th{font-weight:700!important;letter-spacing:1.6px;color:var(--gp-dim)!important;font-size:11px}
+#app .stbl td{font-size:13.5px;border-color:#1f1a3d}
+#app .stbl tbody tr:hover td{background:#14112a}
+#app .stbl tfoot td,#app .stbl .tf-lbl{font-weight:800}
+#app .r-badge{border-radius:7px;font-weight:700}
+#app .note{color:var(--gp-dim2);font-style:normal}
+#app .copyright{color:var(--gp-dim2)}
+#app .copyright a{color:#cfe9ff}
+
+/* okna (About, Thanks, Moon Math) */
+.about-modal,.moon-modal,.creature-modal{background:var(--gp-card)!important;border:1px solid var(--gp-bd)!important;border-radius:20px!important}
+.about-modal *,.moon-modal *,.creature-modal *{font-family:var(--wb-sans)!important}
+.moon-apply{background:linear-gradient(90deg,#4f86ff,#8b3cf6 55%,#d946ef)!important;color:#fff!important;border:0!important;border-radius:11px!important}
+@media (max-width:900px){
+  #app .l-hex,#app .l-sub{font-size:26px}
+  #app .logo{flex-wrap:nowrap;white-space:nowrap}
+  #app .cmp-item-lbl{letter-spacing:1px;font-size:10px}
+  #app .cmp-side-val{font-size:14px}
+  #app .cards{gap:12px}
+  /* izvorna napaka: inline min-width:280px zadnje kartice razbije mrezo na telefonu */
+  #app .cmp-items .cmp-item{min-width:0!important}
+  #app .cmp-items .cmp-item:last-child{grid-column:1/-1}
+}
+/* oranzno in rumeno -> belo kot eHEX (31. 10. 2026) */
+#app .t-price-new.pls{background:linear-gradient(90deg,#e8ecf5,#a8b3cc);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+#app .dex-total-val{color:#e8ecf5}
+#app .donate-topbtn{color:#e8ecf5;border-color:#2d3a55}
+#app .donate-topbtn:hover{color:#fff;border-color:#4f86ff;background:transparent}
+
+/* logo cisto levo, glava cez vso sirino kot vsebina (1. 11. 2026) */
+.gp-hdr-in{max-width:none}
+
+/* meni za telefon: logo levo, gumb desno, povezave pod glavo (1. 11. 2026, brez JS) */
+.gp-meni-stikalo{position:absolute;opacity:0;width:1px;height:1px;pointer-events:none}
+.gp-meni-gumb{display:none}
+@media (max-width:900px){
+  .gp-hdr-in{flex-wrap:wrap;gap:10px}
+  .gp-meni-gumb{display:flex;flex-direction:column;justify-content:center;gap:5px;margin-left:auto;width:52px;height:42px;padding:0 13px;border:1px solid rgba(63,224,245,.35);border-radius:10px;background:linear-gradient(180deg,#15151F,#0A0A12);cursor:pointer;flex:0 0 auto}
+  .gp-meni-gumb span{display:block;height:2px;border-radius:2px;background:#C9CFDB;transition:transform .2s,opacity .2s}
+  .gp-meni-stikalo:focus-visible + .gp-meni-gumb{outline:2px solid #3FE0F5;outline-offset:2px}
+  .gp-meni-stikalo:checked + .gp-meni-gumb span:nth-child(1){transform:translateY(7px) rotate(45deg)}
+  .gp-meni-stikalo:checked + .gp-meni-gumb span:nth-child(2){opacity:0}
+  .gp-meni-stikalo:checked + .gp-meni-gumb span:nth-child(3){transform:translateY(-7px) rotate(-45deg)}
+  .gp-nav{display:none;width:100%;flex-direction:column;gap:6px;padding-bottom:4px}
+  .gp-meni-stikalo:checked ~ .gp-nav{display:flex}
+  .gp-nav a{display:block;text-align:center;padding:12px 10px !important;font-size:.9rem !important;border-radius:12px}
+}
+
+/* ---------- locila med odseki (22. 11. 2026: enaka crta z ikono kot v nogi) ----------
+ * Samo CSS: psevdo-elementa #wbal-sec sta flex elementa, zato ju 'order' postavi
+ * med povzetek (1-3) in Wallets (10) ter na konec odseka (pred HEX Stake Screener).
+ * denarnica.js in app.js ostaneta nespremenjena. */
+#wbal-sec{border-bottom:none!important}
+#wbal-sec::before,#wbal-sec::after{content:"";display:block;align-self:center;width:100%;max-width:820px;height:22px;
+  background:url(./favicon.svg) center/22px 22px no-repeat,
+    linear-gradient(90deg,transparent,#5b2bd6 30%,#5b2bd6 70%,transparent) left center/calc(50% - 33px) 1px no-repeat,
+    linear-gradient(90deg,transparent,#5b2bd6 30%,#5b2bd6 70%,transparent) right center/calc(50% - 33px) 1px no-repeat}
+#wbal-sec::before{order:5;margin:26px auto 22px}
+#wbal-sec::after{order:99;margin:30px auto 4px}
+
+/* ---------- enkratno okno "Support the project" (gp-podpora.js, 22. 11. 2026) ---------- */
+.gp-podpora{position:fixed;right:20px;bottom:20px;z-index:9000;width:340px;max-width:calc(100vw - 24px);box-sizing:border-box;
+  background:#0f0d1c;border:1px solid #2a2350;border-radius:14px;padding:18px 18px 16px;box-shadow:0 12px 40px rgba(0,0,0,.55);
+  font-family:var(--wb-sans);color:#e6e6f0;opacity:0;transform:translateY(14px);transition:opacity .3s,transform .3s}
+.gp-podpora.on{opacity:1;transform:none}
+.gp-podpora::before{content:"";position:absolute;left:14px;right:14px;top:-1px;height:2px;border-radius:2px;
+  background:linear-gradient(90deg,#3fe0f5,#5b2bd6,#e0368a)}
+.gp-podpora-h{font-weight:700;font-size:16px;margin:0 22px 8px 0}
+.gp-podpora-p{margin:0 0 14px;font-size:13.5px;line-height:1.55;color:#b9b6d3}
+.gp-podpora-gumbi{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.gp-podpora-da{background:#5b2bd6;color:#fff;text-decoration:none;font-weight:600;font-size:13.5px;padding:8px 14px;border-radius:999px}
+.gp-podpora-da:hover{background:#6d3ff0}
+.gp-podpora-ne{background:none;border:1px solid #2a2350;color:#b9b6d3;font:inherit;font-size:13.5px;padding:7px 14px;border-radius:999px;cursor:pointer}
+.gp-podpora-ne:hover{color:#fff;border-color:#4a3d8a}
+.gp-podpora-x{position:absolute;top:8px;right:10px;background:none;border:0;color:#7d7a96;font-size:20px;line-height:1;cursor:pointer;padding:4px}
+.gp-podpora-x:hover{color:#fff}
+@media (max-width:600px){.gp-podpora{left:12px;right:12px;bottom:12px;width:auto;max-width:none}}
+@media (prefers-reduced-motion:reduce){.gp-podpora{transition:none}}
+
+/* ---------- VALIDATOR Screener (gp-validatorji.js, 22. 11. 2026) ---------- */
+.gp-loc{display:block;width:100%;max-width:820px;height:22px;margin:30px auto 4px;
+  background:url(./favicon.svg) center/22px 22px no-repeat,
+    linear-gradient(90deg,transparent,#5b2bd6 30%,#5b2bd6 70%,transparent) left center/calc(50% - 33px) 1px no-repeat,
+    linear-gradient(90deg,transparent,#5b2bd6 30%,#5b2bd6 70%,transparent) right center/calc(50% - 33px) 1px no-repeat}
+#gpv-sec{padding:0 20px 16px;margin:0 0 18px}
+#gpv-sec .gpv-hdr{margin-top:22px}
+.gpv-veriga{font-family:var(--wb-sans);font-size:11px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;
+  color:#c9b8ff;border:1px solid #3a2a78;border-radius:999px;padding:3px 9px}
+.gpv-add{display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 8px}
+.gpv-add .wbal-input{flex:1 1 360px;max-width:560px}
+.gpv-rocni{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:0 0 6px;font-family:var(--wb-sans);font-size:12px;color:#9a97b5}
+.gpv-chip{display:inline-flex;align-items:center;gap:4px;font-family:var(--wb-mono);font-size:12px;color:#e6e6f0;
+  background:rgba(148,0,255,.1);border:1px solid rgba(148,0,255,.25);border-radius:999px;padding:2px 4px 2px 9px}
+.gpv-chip-x{background:none;border:0;color:#9a97b5;cursor:pointer;font-size:15px;line-height:1;padding:0 4px}
+.gpv-chip-x:hover{color:#fff}
+.gpv-stanje{margin:4px 0 10px}
+.gpv-namig{font-family:var(--wb-sans);font-size:13px;color:#e6c96b;margin:0 0 10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.gpv-namig:empty{display:none}
+.gpv-pov{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin:0 0 14px}
+.gpv-pov:empty{display:none}
+.gpv-k{background:var(--gp-card);border:1px solid var(--gp-bd);border-radius:14px;padding:12px 14px}
+.gpv-k-lbl{font-family:var(--wb-mono);font-size:10.5px;font-weight:700;letter-spacing:1.04px;text-transform:uppercase;color:#9a97b5}
+.gpv-k-val{font-family:var(--wb-sans);font-size:20px;font-weight:800;color:#f2f0fa;margin-top:4px}
+.gpv-k-sub{font-family:var(--wb-sans);font-size:12px;color:#9a97b5;margin-top:2px}
+.gpv-tab{background:var(--gp-card);border:1px solid var(--gp-bd);border-radius:16px;padding:6px 10px;margin:0 0 10px}
+.gpv-tab:empty{display:none}
+.gpv-mini{font-family:var(--wb-sans);font-size:10px;color:#c9b8ff;margin-left:6px}
+.gpv-st{font-family:var(--wb-sans);font-size:11.5px;font-weight:700;padding:2px 8px;border-radius:999px;white-space:nowrap}
+.gpv-st-akt{color:#3ef0a0;background:rgba(62,240,160,.1)}
+.gpv-st-cak{color:#3fe0f5;background:rgba(63,224,245,.1)}
+.gpv-st-izh{color:#f5c542;background:rgba(245,197,66,.1)}
+.gpv-st-kaz{color:#ff5c7a;background:rgba(255,92,122,.12)}
+.gpv-st-izs{color:#9a97b5;background:rgba(154,151,181,.1)}
+.gpv-kam{font-family:var(--wb-sans)!important;white-space:nowrap}
+@media (max-width:600px){
+  #gpv-sec{padding:0 12px 12px}
+  .gpv-pov{grid-template-columns:1fr 1fr;gap:8px}
+  .gpv-k-val{font-size:17px}
+}
+.gpv-ref{font-family:var(--wb-sans);font-size:12px;color:#9a97b5;margin:0 0 8px}
+.gpv-ref:empty{display:none}
+.gpv-ref a{color:#3fe0f5;text-decoration:none;font-weight:600}
+.gpv-ref a:hover{color:#fff}
+.gpv-ref-oz{font-size:11px;color:#7d7a96}
+.gpv-ref-vel{font-size:14px;color:#cfcbe6;background:var(--gp-card);border:1px solid var(--gp-bd);border-radius:14px;padding:14px 16px;margin:4px 0 12px;line-height:1.6}
+.gpv-ref-vel b{color:#f2f0fa}
+.gpv-ref-vr+.gpv-ref-vr{margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.06)}
+.gpv-vouch:empty{display:none}
+.gpv-vouch{background:var(--gp-card);border:1px solid var(--gp-bd);border-radius:16px;padding:10px 12px 4px;margin:0 0 10px}
+.gpv-vouch-h{font-family:var(--wb-sans);font-size:14px;font-weight:700;color:#f2f0fa;margin:2px 0 6px 4px}
+.gpv-vouch .wbal-note{margin:6px 4px 8px}
+.gpv-sk td{font-weight:700;color:#f2f0fa}
+.gpv-vouch .wbal-scroll .wbal-tbl{min-width:0!important}
+@media (max-width:600px){.gpv-vouch .wbal-tbl td,.gpv-vouch .wbal-tbl th{padding:6px 4px}}
+
+/* ---------- TOTAL brez denarnic: poziv "Add a wallet" (22. 11. 2026) ---------- */
+.pov-zacni{margin:14px 0 6px}
+.pov-zacni-h{font-family:var(--wb-sans);font-size:34px;font-weight:800;letter-spacing:-.5px;color:#f2f0fa;line-height:1.15}
+.pov-zacni-p{font-family:var(--wb-sans);font-size:16px;color:#cfcbe6;margin:8px 0 16px}
+.pov-zacni-btn{font-family:var(--wb-sans);font-size:15px;font-weight:700;color:#fff;background:#5b2bd6;border:0;border-radius:999px;padding:11px 22px;cursor:pointer}
+.pov-zacni-btn:hover{background:#6d3ff0}
+@media (max-width:600px){.pov-zacni-h{font-size:26px}.pov-zacni-p{font-size:14px}}
+
+/* ---------- veriga cez celo sirino (22. 11. 2026, owner) ---------- */
+.pov-trak::before{left:-20px;right:-20px;width:auto;top:-10px;height:430px;
+  background:url(slike/veriga-hero.jpg) center top/100% auto no-repeat;opacity:.30;
+  -webkit-mask-image:linear-gradient(0deg,transparent 0,#000 40%);-webkit-mask-composite:source-over;
+  mask-image:linear-gradient(0deg,transparent 0,#000 40%)}
+@media (max-width:600px){.pov-trak::before{height:260px;background-size:auto 100%;background-position:left top}}
+/* 22. 11. 2026: visina sledi sirini (razmerje slike 2400x900), da je veriga cela tudi na sirokih zaslonih */
+@media (min-width:601px){.pov-trak::before{height:calc((100vw + 20px) * .375);max-height:820px;
+  -webkit-mask-image:linear-gradient(0deg,transparent 0,#000 35%);mask-image:linear-gradient(0deg,transparent 0,#000 35%)}}
+
+/* ---------- COMMUNIS Screener (gp-communis.js, 22. 11. 2026) ---------- */
+#gpc-sec{padding:0 20px 16px;margin:0 0 18px}
+.gpc-opoz:empty,.gpc-den:empty{display:none}
+.gpc-opoz{display:flex;flex-direction:column;gap:8px;margin:0 0 12px}
+.gpc-o{font-family:var(--wb-sans);font-size:13.5px;line-height:1.5;color:#cfcbe6;background:var(--gp-card);border:1px solid var(--gp-bd);border-left:3px solid #3fe0f5;border-radius:12px;padding:10px 14px}
+.gpc-o b{color:#f2f0fa}
+.gpc-o-r{border-left-color:#3ef0a0;background:rgba(62,240,160,.06)}
+.gpc-den{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin:0 0 12px}
+.gpc-k{background:var(--gp-card);border:1px solid var(--gp-bd);border-radius:14px;padding:12px 14px}
+.gpc-k-h{font-family:var(--wb-mono);font-size:11px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;color:#9a97b5;margin:0 0 8px}
+.gpc-vr{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px;font-family:var(--wb-sans);font-size:13px;color:#9a97b5;padding:4px 0;border-top:1px solid rgba(255,255,255,.05)}
+.gpc-vr:first-of-type{border-top:0}
+.gpc-vr b{color:#f2f0fa;font-weight:700;margin-left:auto}
+.gpc-vr em{flex-basis:100%;text-align:right;font-style:normal;font-size:11.5px;color:#7d7a96}
+.gpc-dobro b,.gpc-dobro em{color:#3ef0a0}
+.gpc-slabo b,.gpc-slabo em{color:#ff5c7a}
+@media (max-width:600px){#gpc-sec{padding:0 12px 12px}.gpc-den{grid-template-columns:1fr}}
+.gpc-pov{font-family:var(--wb-sans);font-size:13px;color:#9a97b5;padding:6px 4px 8px;line-height:1.6}
+.gpc-pov b{color:#f2f0fa}
+.gpc-vec summary{cursor:pointer;font-family:var(--wb-sans);font-size:13px;color:#3fe0f5;padding:8px 4px}
+.gpc-den{grid-template-columns:repeat(auto-fill,minmax(300px,480px))}
+@media (max-width:600px){.gpc-den{grid-template-columns:1fr}}
+
+/* ---------- HEDRON Screener (gp-hedron.js, 22. 11. 2026) ---------- */
+#gph-sec{padding:0 20px 16px;margin:0 0 18px}
+@media (max-width:600px){#gph-sec{padding:0 12px 12px}}
+
+/* ---------- ICOSA Screener (gp-icosa.js, 22. 11. 2026) ---------- */
+#gpi-sec{padding:0 20px 16px;margin:0 0 18px}
+.gpi-pod{font-family:var(--wb-sans);font-size:12px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:#c9b8ff;margin:10px 0 2px;padding-top:8px;border-top:1px solid rgba(255,255,255,.08)}
+.gpc-opoz-vr b,.gpc-opoz-vr em{color:#f5c542}
+@media (max-width:600px){#gpi-sec{padding:0 12px 12px}}

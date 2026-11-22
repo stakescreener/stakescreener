@@ -1,0 +1,37 @@
+/* gp-info.css — stran Disclaimer / Privacy / Support (StakeScreener, 22. 11. 2026) */
+:root{--bg:#06050a;--card:#0d0b16;--line:#1c1836;--txt:#e6e6f0;--dim:#a3a3b8;--acc:#d946ef;--acc2:#3fe0f5}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--txt);font:16px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.ii{max-width:820px;margin:0 auto;padding:28px 16px 60px}
+.ii-back{color:var(--dim);text-decoration:none;font-size:14px}
+.ii-back:hover{color:#fff}
+.ii-nav{display:flex;gap:10px;flex-wrap:wrap;margin:18px 0 8px}
+.ii-nav a{border:1px solid var(--line);border-radius:999px;padding:6px 14px;color:var(--txt);text-decoration:none;font-size:14px;font-weight:600}
+.ii-nav a:hover{border-color:var(--acc)}
+.ii-card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:22px 22px 18px;margin:18px 0;scroll-margin-top:16px}
+.ii-card h1{font-size:24px;margin:0 0 12px}
+.ii-card h2{font-size:15px;margin:18px 0 4px;color:var(--acc2);letter-spacing:.3px}
+.ii-card p,.ii-card li{color:#d4d4e2;font-size:15px}
+.ii-card ul{padding-left:20px;margin:0}
+.ii-card li{margin:6px 0}
+.ii-card a{color:var(--acc2)}
+.ii-addr{display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;background:#08070e;border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin:16px 0 6px}
+.ii-addr-lbl{width:100%;font-size:12px;letter-spacing:1px;text-transform:uppercase;color:var(--dim)}
+.ii-addr-lbl span{color:var(--acc);font-weight:700;margin-left:6px}
+.ii-addr code{flex:1 1 300px;font:14px/1.4 ui-monospace,Menlo,monospace;word-break:break-all;color:#fff}
+.ii-addr button{background:transparent;color:#fff;border:1px solid #3a3456;border-radius:999px;padding:6px 16px;font-weight:600;cursor:pointer}
+.ii-addr button:hover{border-color:var(--acc)}
+.ii-small{font-size:13px!important;color:var(--dim)!important}
+.ii-foot{text-align:center;color:var(--dim);font-size:13px;margin-top:28px}
+.ii-foot a{color:var(--dim)}
+.ii-ver{display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin:14px 0 10px}
+.ii-ver button{background:linear-gradient(90deg,#3f6bff,#a100ff);color:#fff;border:0;border-radius:999px;padding:10px 22px;font-weight:700;font-size:15px;cursor:pointer}
+.ii-ver button:disabled{opacity:.6;cursor:wait}
+.ii-ver a{color:var(--acc2);font-weight:600}
+.ii-izid{font-size:14px;margin:4px 0 8px}
+.ii-izid:empty{display:none}
+.ii-izid-h{font-weight:700;font-size:16px;margin:0 0 6px}
+.ii-izid-p{color:#b9b6d3;margin:4px 0}
+.ii-izid .dobro{color:#3ef0a0}.ii-izid .slabo{color:#ff5c7a}.ii-izid .delno{color:#f5c542}
+.ii-card code{font:13px ui-monospace,Menlo,monospace;color:#e6e6f0}

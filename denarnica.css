@@ -1,0 +1,267 @@
+/* denarnica.css — read-only wallet balance overview (addition for StakeScreener)
+ *
+ * Typography deliberately mirrors the analyzer's own scale, measured from the
+ * running page rather than guessed:
+ *   section label   Space Mono 13/700, letter-spacing 1.04px, uppercase   (.hist-lbl)
+ *   card label      Inter 14/700, letter-spacing 1.26px, uppercase        (.cblbl)
+ *   figures         Space Mono                                            (.day-num)
+ *   body text       Inter                                                 (.wlist)
+ * NOTE: <body> sets no font-family, so every rule below states one explicitly —
+ * otherwise the browser default serif leaks in.
+ */
+
+:root{
+  --wb-mono:"Space Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --wb-sans:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif;
+}
+
+#wbal-sec{display:none;padding:0 20px 10px;margin:6px 0 4px;font-family:var(--wb-sans);color:#eef0f8}
+#wbal-sec.on{display:block}
+
+.wbal-hdr{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin:0 0 8px}
+/* Naslov v barvah strani: pHEX #FF00CC -> eHEX #00CFFF (odcitano z zive strani,
+   razreda .pls-tag in .eth-tag). Prehod je narejen z izrezom besedila, zato
+   nadomestna barva ostane za brskalnike brez podpore. */
+.wbal-title{font-family:var(--wb-sans);font-size:22px;font-weight:800;letter-spacing:1.6px;
+  text-transform:uppercase;color:#ff00cc;
+  background:linear-gradient(90deg,#ff00cc 0%,#c04ae6 55%,#00cfff 100%);
+  -webkit-background-clip:text;background-clip:text;
+  -webkit-text-fill-color:transparent;line-height:1.15}
+.wbal-total{margin-left:auto;font-family:var(--wb-mono);font-size:22px;font-weight:700;color:#eef0f8}
+.wbal-note{font-family:var(--wb-sans);font-size:11.5px;line-height:1.6;color:rgba(238,240,248,.5);
+  margin:0 0 12px;max-width:900px}
+
+.wbal-wallet{border:1px solid rgba(148,0,255,.16);border-radius:14px;padding:14px 16px;margin:0 0 12px;
+  background:linear-gradient(180deg,rgba(148,0,255,.05),rgba(255,255,255,.014))}
+.wbal-wallet-hdr{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin:0 0 10px}
+.wbal-addr{font-family:var(--wb-mono);font-size:13px;font-weight:700;letter-spacing:.6px;
+  color:rgba(255,255,255,.72)}
+.wbal-sum{margin-left:auto;font-family:var(--wb-mono);font-size:16px;font-weight:700;color:#eef0f8}
+
+.wbal-tbl{width:100%;border-collapse:collapse}
+.wbal-tbl th{font-family:var(--wb-mono);font-size:10.5px;font-weight:700;letter-spacing:1.04px;
+  text-transform:uppercase;color:rgba(255,255,255,.42);text-align:right;padding:5px 10px;
+  border-bottom:1px solid rgba(255,255,255,.09)}
+.wbal-tbl th:first-child,.wbal-tbl td:first-child{text-align:left}
+.wbal-tbl td{font-family:var(--wb-mono);font-size:13px;text-align:right;padding:7px 10px;
+  border-bottom:1px solid rgba(255,255,255,.05);color:#eef0f8;white-space:nowrap}
+.wbal-tbl tbody tr:last-child td{border-bottom:none}
+.wbal-tbl tbody tr:hover td{background:rgba(148,0,255,.05)}
+
+.wbal-sym{font-family:var(--wb-sans);font-size:13px;font-weight:700;letter-spacing:.2px}
+.wbal-name{font-family:var(--wb-sans);font-size:11.5px;font-weight:400;color:rgba(238,240,248,.42);
+  margin-left:7px}
+.wbal-chip{display:inline-block;font-family:var(--wb-sans);font-size:9px;font-weight:700;
+  letter-spacing:.8px;padding:1.5px 6px;border-radius:5px;margin-left:8px;vertical-align:1.5px}
+.wbal-chip.pls{background:rgba(148,0,255,.18);border:1px solid rgba(148,0,255,.42);color:#d7a8ff}
+.wbal-chip.eth{background:rgba(60,130,255,.15);border:1px solid rgba(60,130,255,.42);color:#a8c8ff}
+
+/* price standing on a shallow pool — shown, not hidden */
+.wbal-thin{color:#ffb266}
+
+.wbal-more{margin:10px 0 0}
+.wbal-more summary{font-family:var(--wb-mono);font-size:10.5px;font-weight:700;letter-spacing:1.04px;
+  text-transform:uppercase;color:rgba(255,255,255,.38);cursor:pointer;padding:6px 0;list-style:none}
+.wbal-more summary::-webkit-details-marker{display:none}
+.wbal-more summary::before{content:"\25B8 ";display:inline-block;transition:transform .15s}
+.wbal-more[open] summary::before{transform:rotate(90deg)}
+.wbal-more summary:hover{color:rgba(255,255,255,.62)}
+
+.wbal-err{font-family:var(--wb-sans);font-size:12px;color:#ff9a9a;margin:8px 0 0}
+.wbal-empty{font-family:var(--wb-sans);font-size:12.5px;color:rgba(238,240,248,.5);padding:8px 0}
+
+@media (max-width:700px){
+  #wbal-sec{padding:0 12px 10px}
+  .wbal-total{font-size:18px}
+  .wbal-tbl td{font-size:11.5px;padding:6px 5px}
+  .wbal-tbl th{font-size:9px;padding:4px 5px;letter-spacing:.6px}
+  .wbal-name{display:none}
+  .wbal-sym{font-size:12px}
+}
+
+.wbal-code{margin:0 0 10px}
+.wbal-code-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.wbal-code-lbl{font-family:var(--wb-mono);font-size:10.5px;font-weight:700;letter-spacing:1.04px;
+  text-transform:uppercase;color:rgba(255,255,255,.42)}
+.wbal-code-val{font-family:var(--wb-mono);font-size:18px;font-weight:700;letter-spacing:2px;
+  color:#eef0f8;background:rgba(148,0,255,.12);border:1px solid rgba(148,0,255,.34);
+  border-radius:8px;padding:4px 12px;user-select:all}
+.wbal-code-note{font-family:var(--wb-sans);font-size:11px;line-height:1.55;
+  color:rgba(238,240,248,.45);margin:6px 0 0;max-width:800px}
+
+.wbal-label{font-family:var(--wb-sans);font-size:14px;font-weight:700;letter-spacing:.2px;color:#eef0f8}
+.wbal-addr{cursor:pointer}
+.wbal-addr:hover{color:#d7a8ff}
+
+.wbal-rename{display:inline-flex;align-items:center;gap:8px;margin-left:12px}
+.wbal-input{font-family:var(--wb-mono);font-size:13px;color:#eef0f8;background:rgba(255,255,255,.05);
+  border:1px solid rgba(148,0,255,.4);border-radius:8px;padding:5px 10px;min-width:220px;outline:none}
+.wbal-input:focus{border-color:rgba(148,0,255,.75);background:rgba(255,255,255,.08)}
+.wbal-input::placeholder{color:rgba(238,240,248,.35)}
+
+/* Bilo izgubljeno ob prepisu sloga 16.8.2026 — gumbi so zato izgledali kot
+   sistemski in niso bili videti kot del strani. */
+.wbal-btn{font-family:var(--wb-sans);font-size:11.5px;font-weight:600;letter-spacing:.3px;
+  color:#eef0f8;background:rgba(148,0,255,.14);border:1px solid rgba(148,0,255,.38);
+  border-radius:8px;padding:5px 12px;cursor:pointer;line-height:1.2}
+.wbal-btn:hover{background:rgba(148,0,255,.26);border-color:rgba(148,0,255,.6)}
+.wbal-btn:disabled{opacity:.4;cursor:default}
+.wbal-btn.wbal-mini{font-size:10.5px;padding:3px 9px;margin-left:10px}
+
+.wbal-ver{font-family:var(--wb-mono);font-size:9.5px;letter-spacing:.5px;color:rgba(238,240,248,.3);
+  align-self:center}
+
+.wbal-toggle{font-family:var(--wb-mono);font-size:13px;line-height:1;color:rgba(238,240,248,.55);
+  background:none;border:none;cursor:pointer;padding:2px 6px 2px 0;margin-right:2px}
+.wbal-toggle:hover{color:#d7a8ff}
+.wbal-wallet.wbal-shut{padding-bottom:12px}
+.wbal-wallet.wbal-shut .wbal-wallet-hdr{margin-bottom:0}
+
+/* Ker razdelek zdaj stoji na vrhu strani, potrebuje malo zraka nad seboj. */
+#wbal-sec{margin-top:14px;margin-bottom:18px;padding-bottom:16px;
+  border-bottom:1px solid rgba(255,255,255,.07)}
+.wbal-hdr{gap:12px}
+
+.wbal-add{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 14px}
+.wbal-input-wide{min-width:min(560px,100%);flex:0 1 560px}
+.wbal-count{font-family:var(--wb-mono);font-size:10.5px;letter-spacing:.8px;
+  color:rgba(238,240,248,.35)}
+.wbal-addmsg{font-family:var(--wb-sans);font-size:11.5px;color:#ffb266}
+.wbal-x{font-family:var(--wb-sans);font-size:15px;line-height:1;color:rgba(238,240,248,.3);
+  background:none;border:none;cursor:pointer;padding:2px 4px;margin-left:12px}
+.wbal-x:hover{color:#ff8a8a}
+
+.wbal-title2{font-family:var(--wb-sans);font-size:16px;font-weight:400;
+  color:rgba(255,255,255,.6);align-self:center;margin-left:-4px}
+
+/* ── Ekosistemski trak (po vzoru hexologist.com) ───────────────────────────── */
+.eko-trak{display:grid;grid-template-columns:repeat(8,1fr);gap:10px;margin:0 0 18px}
+.eko-card{border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:14px 16px;
+  background:linear-gradient(180deg,rgba(255,255,255,.03),rgba(255,255,255,.012))}
+.eko-card:hover{border-color:rgba(148,0,255,.32)}
+.eko-hdr{display:flex;align-items:center;gap:10px;margin:0 0 12px}
+.eko-ikona{width:34px;height:34px;border-radius:50%;flex:0 0 34px;display:block;
+  background:rgba(255,255,255,.05)}
+.eko-txt{display:flex;flex-direction:column;gap:1px;min-width:0}
+.eko-sym{font-family:var(--wb-sans);font-size:14px;font-weight:800;letter-spacing:.2px;color:#eef0f8}
+.eko-ime{font-family:var(--wb-sans);font-size:10.5px;color:rgba(238,240,248,.4);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.eko-cena{font-family:var(--wb-sans);font-size:19px;font-weight:700;color:#eef0f8;letter-spacing:-.4px}
+.eko-spr{font-family:var(--wb-sans);font-size:12px;font-weight:600;margin-top:3px;color:rgba(238,240,248,.45)}
+.eko-lnk{display:block;margin-top:12px;font-family:var(--wb-sans);font-size:9.5px;font-weight:700;
+  letter-spacing:.8px;color:rgba(238,240,248,.32);text-decoration:none}
+.eko-lnk:hover{color:#d7a8ff}
+.eko-spr.gor{color:#00ff66}
+.eko-spr.dol{color:#ff5c5c}
+.eko-nalagam{font-family:var(--wb-sans);font-size:11.5px;color:rgba(238,240,248,.4);
+  grid-column:1/-1;padding:14px 0}
+
+/* ── Stanje podatkov ──────────────────────────────────────────────────────── */
+.wbal-stanje{display:flex;align-items:center;gap:8px;font-family:var(--wb-sans);font-size:11px;
+  color:rgba(238,240,248,.42);margin:0 0 12px}
+.st-pika{font-size:9px;line-height:1}
+.st-pika.dobro{color:#00ff66}
+.st-pika.slabo{color:#ffb266}
+
+.wbal-select{font-family:var(--wb-sans);font-size:12px;color:#eef0f8;
+  background:rgba(255,255,255,.05);border:1px solid rgba(148,0,255,.4);
+  border-radius:8px;padding:5px 8px;outline:none;cursor:pointer}
+
+@media (max-width:1600px){ .eko-trak{grid-template-columns:repeat(4,1fr)} }
+@media (max-width:1100px){ .eko-trak{grid-template-columns:repeat(3,1fr)} }
+@media (max-width:620px){ .eko-trak{grid-template-columns:repeat(2,1fr)} }
+
+
+
+/* ── Telefon: vodoravno drsenje namesto razbijanja vrstic ──────────────────
+   owner (22.8.2026): "vodoravno drsenje bi bilo ok". Tabela ostane tabela,
+   samo drsi. Prvi stolpec je LEPLJIV, da se ob drsenju vedno vidi, za kateri
+   žeton gre — brez tega so številke brez imena. */
+.wbal-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+@media (max-width: 700px) {
+  .wbal-scroll { margin: 0 -16px; padding: 0 16px; }
+  .wbal-scroll .wbal-tbl { min-width: 560px; }
+  .wbal-tbl td:first-child,
+  .wbal-tbl th:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 2;
+    background: #14101d;
+    padding-right: 14px;
+  }
+  .wbal-tbl tbody tr:hover td:first-child { background: #191325; }
+  .wbal-scroll::-webkit-scrollbar { height: 6px; }
+  .wbal-scroll::-webkit-scrollbar-thumb {
+    background: rgba(148,0,255,.35); border-radius: 3px;
+  }
+}
+
+/* ── Povzetek: kartici prezrcaljeni iz analizatorja ────────────────────────── */
+.pov-trak{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:0 0 18px;
+  position:relative}
+.pov-card{border:1px solid rgba(255,255,255,.09);border-radius:14px;padding:16px 18px;
+  background:linear-gradient(180deg,rgba(148,0,255,.06),rgba(255,255,255,.014))}
+.pov-card.prazna{opacity:.5}
+.pov-lbl{font-family:var(--wb-mono);font-size:10.5px;font-weight:700;letter-spacing:1.04px;
+  text-transform:uppercase;color:rgba(255,255,255,.45);margin:0 0 8px}
+.pov-val{font-family:var(--wb-sans);font-size:30px;font-weight:800;letter-spacing:-.6px;color:#eef0f8;
+  line-height:1.05}
+.pov-sub{font-family:var(--wb-sans);font-size:11.5px;color:rgba(238,240,248,.45);margin-top:6px}
+.pov-dru{font-family:var(--wb-mono);font-size:12px;color:rgba(238,240,248,.7);margin-top:10px;
+  padding-top:10px;border-top:1px solid rgba(255,255,255,.07)}
+.pov-vir{grid-column:1/-1;font-family:var(--wb-sans);font-size:10px;
+  color:rgba(238,240,248,.28);text-align:right;margin-top:-6px}
+/* Skupaj je vsota drugih dveh — naj bo vidno, da je izpeljana, ne nova meritev */
+.pov-skupaj{border-color:rgba(148,0,255,.34);
+  background:linear-gradient(180deg,rgba(148,0,255,.12),rgba(255,255,255,.02))}
+.pov-skupaj .pov-lbl{color:#d7a8ff}
+.pov-skupaj .pov-dru{font-family:var(--wb-sans);font-size:10.5px;color:rgba(238,240,248,.4)}
+@media (max-width:1000px){ .pov-trak{grid-template-columns:repeat(2,minmax(0,1fr))} }
+@media (max-width:620px){ .pov-trak{grid-template-columns:1fr} .pov-val{font-size:26px} }
+
+.pov-input{width:70px;padding:4px 8px;font-size:13px;min-width:0;text-align:right}
+.pov-card .pov-dru{display:flex;align-items:center;gap:8px}
+/* Razdelitev po verigah (pHEX / eHEX) v povzetnih karticah.
+   pov-dru ima display:flex, zato imajo vrstice SVOJ razred — sicer bi se
+   vse tri postavile v eno vrstico. */
+.pov-brk{margin-top:10px;padding-top:9px;border-top:1px solid rgba(255,255,255,.08)}
+.pov-row{display:flex;align-items:baseline;gap:8px;padding:2px 0;
+  font-family:var(--wb-mono);font-size:11.5px;line-height:1.5}
+.pov-tag{flex:0 0 auto;font-weight:700;letter-spacing:.3px;white-space:nowrap}
+.pov-amt{flex:1 1 auto;min-width:0;text-align:right;white-space:nowrap;
+  color:rgba(238,240,248,.78);font-variant-numeric:tabular-nums}
+.pov-usd{flex:0 0 auto;min-width:64px;text-align:right;white-space:nowrap;
+  color:#eef0f8;font-weight:700;font-variant-numeric:tabular-nums}
+.pov-chip{margin-left:5px;padding:1px 4px;border-radius:4px;font-size:8.5px;
+  font-weight:700;letter-spacing:.5px;vertical-align:middle;
+  color:rgba(238,240,248,.62);background:rgba(255,255,255,.09)}
+@media (max-width:620px){ .pov-row{font-size:11px} .pov-usd{min-width:56px} }
+
+/* Stanje omrezja — trije podatki o VERIGI (promet, gas, blok).
+   Nizji in mirnejsi od kartic z vrednostmi: to je kontekst, ne stanje. */
+.net-trak{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:0 0 18px}
+.net-card{border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:13px 16px;
+  background:linear-gradient(180deg,rgba(255,255,255,.03),rgba(255,255,255,.012))}
+.net-card.prazna{opacity:.5}
+.net-lbl{font-family:var(--wb-mono);font-size:9.5px;font-weight:700;letter-spacing:1.1px;
+  color:rgba(238,240,248,.42);margin:0 0 6px}
+.net-val{font-family:var(--wb-sans);font-size:22px;font-weight:800;letter-spacing:-.5px;
+  color:#eef0f8;font-variant-numeric:tabular-nums;white-space:nowrap}
+.net-spr{font-family:var(--wb-sans);font-size:11.5px;font-weight:600;margin-top:3px;
+  color:rgba(238,240,248,.5)}
+.net-spr.gor{color:#00ff66}
+.net-spr.dol{color:#ff5c5c}
+.net-spr2{color:rgba(238,240,248,.34)}
+.net-vir{font-family:var(--wb-sans);font-size:9.5px;color:rgba(238,240,248,.3);margin-top:8px}
+/* Zastarelo = zadnja znana vrednost, ki je nismo mogli potrditi. Namenoma
+   NI "—": razlika med "veriga javlja 0" in "nisem je uspel vprasati" je
+   pomembna, prazna kartica pa bi ju zlila v isto. */
+.net-card.zastarelo .net-val{color:rgba(238,240,248,.45)}
+.net-card.zastarelo{border-color:rgba(255,180,60,.28)}
+/* Vrednost ob spremembi na kratko posvetli — sicer se ne loci "osvezuje se"
+   od "obticalo je". Kratko in brez premikanja: trak je kontekst, ne predstava. */
+@keyframes netUtrip{0%{color:#d7a8ff}100%{color:#eef0f8}}
+.net-val.utrip{animation:netUtrip .7s ease-out}
+@media (prefers-reduced-motion:reduce){ .net-val.utrip{animation:none} }
+@media (max-width:700px){ .net-trak{grid-template-columns:1fr} .net-val{font-size:20px} }
