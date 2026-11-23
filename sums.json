@@ -2,9 +2,6 @@
  "site": "https://stakescreener.com",
  "generated": "2026-11-23 06:49 UTC",
  "files": {
-  "._gp-communis.js": "7805c0c3b68367d631cbbe81ef04a979af12b6e2d1c27d9404e0dc548a6772c9",
-  "._gp-hedron.js": "7805c0c3b68367d631cbbe81ef04a979af12b6e2d1c27d9404e0dc548a6772c9",
-  "._index.html": "7805c0c3b68367d631cbbe81ef04a979af12b6e2d1c27d9404e0dc548a6772c9",
   ".htaccess": "1eb4cbb2ddc9a8b008352b85dd46ee2f6ba0dce977b53466f05335795aad3352",
   ".htaccess.example": "49e478cd27e8fc36eff83237c32874f7982315ecd3db73abf846a0cff89008e6",
   "CSP-ENDPOINTS.txt": "dce138ba84538e0d40b08b1bb741a7bb08b64922d8bd3d375d3d76719804a8ae",
@@ -71,9 +68,6 @@
   "wallets.js": "72ad8da7241f13c39593c7f8e53e2216e14bb6da8f0927faed12586b758b02d8"
  },
  "served": [
-  "._gp-communis.js",
-  "._gp-hedron.js",
-  "._index.html",
   "CSP-ENDPOINTS.txt",
   "LICENSE",
   "MODIFICATIONS.txt",
