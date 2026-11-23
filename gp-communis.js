@@ -4,7 +4,7 @@
  * Samo branje. Communis (COM) 0x5A9780Bfe63f3ec57f01b087cD65BD656C9034A8 \u2014 ista pogodba na PulseChainu
  * in Ethereumu. Izracuni maxPayout in Start bonusa so natanko po pogodbi (preverjeno 16/16 proti
  * getPayout in getStartBonusPayout na resnicnih stakih). Stake-i pridejo iz HEX Stake Screenerja
- * (ovijem renderAll, kot gp-skupaj.js); app.js in denarnica.js ostaneta nespremenjena.
+ * (ovijem renderAll, kot gp-total.js); app.js in wallets.js ostaneta nespremenjena.
  * Pravila (pogodba): Start >=180 dni, End >=365 dni in v 37 dneh po izteku, dokler je stake se
  * aktiven v HEX; 50 % End bonusa postane End Bonus Debt; stake bonus = staked COM / 80 na 91 dni,
  * ce staked COM pokriva debt.

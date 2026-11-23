@@ -8,7 +8,7 @@
  *    nic se ne zgodi) \u2014 natanko to, kar bi pogodba izplacala, vkljucno s kaznijo pred iztekom.
  *  - WAATSA NFT stake: ICSA = tocke x (nftPoolPayout[danes] - nftPoolPayout[zacetek]) / 1e18
  *    (formula iz nftStakeEnd, preverjena proti simulaciji). Kazni ni.
- * Denarnice iz Wallets Screenerja (gopulse_wallets). app.js in denarnica.js nespremenjena.
+ * Denarnice iz Wallets Screenerja (gopulse_wallets). app.js in wallets.js nespremenjena.
  */
 (function () {
   'use strict';

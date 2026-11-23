@@ -1,12 +1,12 @@
-/* gp-vir.js — StakeScreener (5. 11. 2026)
+/* gp-source.js — StakeScreener (5. 11. 2026)
  * Glavni raziskovalec za PulseChain: FusionScan (scan.pulsefusion.io).
  * Rezerva: uradni api.scan.pulsechain.com.
- * Nalozi se PRED app.js in ovije window.fetch; app.js in denarnica.js ostaneta
+ * Nalozi se PRED app.js in ovije window.fetch; app.js in wallets.js ostaneta
  * nespremenjena. Vsak klic na api.scan.pulsechain.com gre najprej na FusionScan
  * (isto pot in poizvedbo); ce ta ne odgovori v 7 s, vrne HTTP napako ali
  * napako v JSON (npr. "Query Timeout"), se isti klic ponovi na uradnem.
  * Po 2 zaporednih napakah FusionScana gre do konca obiska vse naravnost na uradnega.
- * Vrnitev: odstrani <script src="./gp-vir.js"> iz index.html.
+ * Vrnitev: odstrani <script src="./gp-source.js"> iz index.html.
  */
 (function () {
   'use strict';

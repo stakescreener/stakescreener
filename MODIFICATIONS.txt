@@ -18,29 +18,29 @@ How the original is used
 
 Files added by StakeScreener
 ----------------------------
-denarnica.js / denarnica.css   Wallets Screener: balances, token values, summary
+wallets.js / wallets.css       Wallets Screener: balances, token values, summary
                                cards (Total, Stake Value, Wallet Balance,
                                Validators), network status, shareable codes
-koda.php                       stores a saved wallet set under a random code
+code.php                       stores a saved wallet set under a random code
                                (outside the web root, deleted after 180 days)
-gp-validatorji.js              Validator Screener (PulseChain validators, Vouch vPLS)
+gp-validators.js               Validator Screener (PulseChain validators, Vouch vPLS)
 gp-communis.js                 Communis Screener (COM bonuses per HEX stake)
 gp-hedron.js                   Hedron Screener (mintable HDRN per HEX stake / HSI)
 gp-icosa.js                    Icosa Screener (HDRN and ICSA stakes, WAATSA NFTs)
-gp-skupaj.js / gp-skupaj.css   Total HEX card and Total HEX column
-gp-trak.js                     scrolling price ticker
-gp-vir.js                      FusionScan as primary PulseChain explorer, official
+gp-total.js / gp-total.css     Total HEX card and Total HEX column
+gp-chain.js                    scrolling price ticker
+gp-source.js                   FusionScan as primary PulseChain explorer, official
                                explorer as fallback
-gp-prenos.js                   one-time import of settings from the previous domain
-gp-podpora.js                  one-time "Support the project" note
-gp-preobleka.css               StakeScreener look (layout, fonts, colours)
+gp-transfer.js                 one-time import of settings from the previous domain
+gp-support.js                  one-time "Support the project" note
+gp-theme.css                   StakeScreener look (layout, fonts, colours)
 info.html / gp-info.*          Disclaimer, Privacy, Support, Verify this site
-fonts/, slike/, og.png, icons  local fonts, images and icons (no CDN)
+fonts/, img/, og.png, icons     local fonts, images and icons (no CDN)
 robots.txt, sitemap.xml, site.webmanifest
 
 Changes to the original export
 ------------------------------
-2026-08-16  Split the single-file application into index.html, slog.css and
+2026-08-16  Split the single-file application into index.html, style.css and
             app.js without changing calculations or data-source logic.
             Local Chart.js 4.4.1 instead of the CDN; local Inter and Space Mono
             fonts instead of Google Fonts; relative asset paths; version check
@@ -59,7 +59,7 @@ Change log of the additions
             into a hidden container; DexScreener response cap of 30 pairs (moved
             to the chain-scoped /tokens/v1 endpoint); the two explorers use
             different field names for the token address.
-2026-08-16  Shareable wallet-set codes (koda.php), wallet names, collapsible
+2026-08-16  Shareable wallet-set codes (code.php), wallet names, collapsible
             wallet cards, Refresh button, build number, own list of up to 30
             wallets (the first 10 are mirrored into the analyzer).
 2026-08-22  Ecosystem price ticker; "Add token by contract"; data status line;
@@ -82,14 +82,14 @@ Change log of the additions
             the active fallback is labelled.
 2026-09-09  Faster loading (slow external sources no longer block the page);
             Tenderly added for Ethereum history (CSP only, code untouched).
-2026-10-31  StakeScreener look (gp-preobleka.css), Raleway font (SIL OFL 1.1),
+2026-10-31  StakeScreener look (gp-theme.css), Raleway font (SIL OFL 1.1),
             hero image, running price ticker (stops on hover, respects reduced
             motion), new logo and icons.
-2026-10-31  Total HEX card and Total HEX column (gp-skupaj.*): principal, accrued
+2026-10-31  Total HEX card and Total HEX column (gp-total.*): principal, accrued
             yield and wallet HEX per chain.
 2026-11-01  Logo at the far left; mobile menu (HTML + CSS only).
 2026-11-05  FusionScan (scan.pulsefusion.io) as primary PulseChain explorer, the
-            official explorer as automatic fallback (gp-vir.js); the footer shows
+            official explorer as automatic fallback (gp-source.js); the footer shows
             which source is in use.
 2026-11-10  Installable as an app (site.webmanifest, icons); no service worker.
 2026-11-10  A holding worth more than its whole trading pool is shown as
@@ -98,7 +98,7 @@ Change log of the additions
 2026-11-19  RPC changes after g4mm4.io shut down (PulseChain RPC and PublicNode).
 2026-11-21  rpc.libertyswap.finance added as a further PulseChain fallback.
 2026-11-22  Moved to stakescreener.com; one-time settings import from the
-            previous domain (gp-prenos.js); saved data and codes keep working.
+            previous domain (gp-transfer.js); saved data and codes keep working.
 2026-11-22  info.html: Disclaimer, Privacy, Support (voluntary contributions),
             referral-link disclosure (Allnodes; Vouch — fee paid by the user),
             Verify this site.
@@ -124,5 +124,9 @@ Change log of the additions
 2026-11-22  robots.txt, sitemap.xml, canonical link; Open Graph image updated.
 2026-11-22  Public repository with SHA-256 fingerprints and the "Verify this site"
             check; backup files are never served.
+2026-11-23  File names in English: wallets.js/.css, gp-theme.css, style.css,
+            gp-total.*, gp-chain.js, gp-source.js, gp-transfer.js, gp-support.js,
+            gp-validators.js, code.php, img/ (tokens, chain-hero.jpg). No change
+            in behaviour; saved codes and local settings keep working.
 
 Contact: info@stakescreener.com

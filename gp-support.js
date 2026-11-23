@@ -1,8 +1,8 @@
 /*
- * gp-podpora.js — StakeScreener (22. 11. 2026)
+ * gp-support.js — StakeScreener (22. 11. 2026)
  * Enkratno, nevsiljivo okno "Support the project": pokaze se, ko je prva denarnica
  * dodana in so njeni rezultati nalozeni (+ nekaj sekund). Samo enkrat na brskalnik
- * (localStorage gopulse_podpora). Ne zakrije strani. app.js in denarnica.js nespremenjena.
+ * (localStorage gopulse_podpora). Ne zakrije strani. app.js in wallets.js nespremenjena.
  */
 (function () {
   'use strict';

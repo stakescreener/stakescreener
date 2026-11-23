@@ -1,11 +1,11 @@
-/* gp-skupaj.js — kartica "Total HEX" nad karticami povzetka (StakeScreener, 31. 10. 2026)
+/* gp-total.js — kartica "Total HEX" nad karticami povzetka (StakeScreener, 31. 10. 2026)
  *
  * app.js (izvorni HEX Stake Analyzer, GPL-3.0) ostane nespremenjen. Ta skripta ovije
  * globalno funkcijo renderAll(stakes, liquidByChain): po vsakem izrisu iz istih podatkov
  * sesteje glavnico, nabrani donos (z Big Pay Day, kot stolpec Yield) in HEX v denarnici,
  * LOCENO po verigah (pHEX in eHEX sta razlicni sredstvi). Upostevata se izbran pogled
  * (denarnica, veriga) in Moon Math, ker so to ze argumenti renderAll oz. priceFor().
- * Vrnitev: odstrani <script src="./gp-skupaj.js"> iz index.html.
+ * Vrnitev: odstrani <script src="./gp-total.js"> iz index.html.
  */
 (function () {
   if (typeof renderAll !== 'function') return;

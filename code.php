@@ -1,5 +1,5 @@
 <?php
-/* koda.php — short shareable codes for a set of wallet addresses.
+/* code.php — short shareable codes for a set of wallet addresses.
  *
  * A seven-character code cannot contain the data: one address is 20 bytes,
  * so five addresses are 100 bytes. The code can only ever be a KEY, and the
@@ -21,7 +21,7 @@ declare(strict_types=1);
 
 const STORE       = __DIR__ . '/../gopulse-kode';
 const EXPIRY_DAYS = 180;
-const MAX_ADDRS   = 30;   // matches MAX_WALLETS in denarnica.js
+const MAX_ADDRS   = 30;   // matches MAX_WALLETS in wallets.js
 const MAX_NAME    = 40;
 const CODE_LEN    = 10;                            // 32^10 ≈ 1.1e15 combinations
 const ALPHABET    = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';  // no I, O, 0, 1

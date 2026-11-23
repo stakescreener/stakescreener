@@ -5,7 +5,7 @@
  * na PulseChainu in Ethereumu. HDRN na voljo za stake = shari x (odsluzeni dnevi - ze prevzeti dnevi),
  * + launch bonus (shranjen pri staku) + dnevni bonus (dailyDataList). Formula je natanko tista iz
  * mintNative/mintInstanced in je bila preverjena 6/6 proti simulaciji (eth_call) pogodbe.
- * Staki pridejo iz HEX Stake Screenerja (ovijem renderAll); app.js in denarnica.js nespremenjena.
+ * Staki pridejo iz HEX Stake Screenerja (ovijem renderAll); app.js in wallets.js nespremenjena.
  */
 (function () {
   'use strict';

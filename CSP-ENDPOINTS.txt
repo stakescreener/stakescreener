@@ -56,4 +56,4 @@ Pojasnila
   WebSocketov, servisnih delavcev ali zunanjih pisav/CDN knjižnic.
 - CSP ne nadomesti dovoljenja CORS na posameznem RPC/API strežniku.
 
-https://scan.pulsefusion.io  — glavni raziskovalec PulseChain (gp-vir.js, 5.11.2026)
+https://scan.pulsefusion.io  — glavni raziskovalec PulseChain (gp-source.js, 5.11.2026)

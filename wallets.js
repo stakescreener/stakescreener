@@ -1,4 +1,4 @@
-/* denarnica.js — read-only wallet balance overview.
+/* wallets.js — read-only wallet balance overview.
  *
  * Addition to HEX Stake Analyzer for StakeScreener, written as a separate
  * file so that app.js stays byte-identical to the upstream export and can be
@@ -794,7 +794,7 @@
         var hdr = el('div', 'eko-hdr');
         var ik = document.createElement('img');
         ik.className = 'eko-ikona';
-        ik.src = './slike/zetoni/' + t.ikona + '.' + (t.pripona || 'png');
+        ik.src = './img/tokens/' + t.ikona + '.' + (t.pripona || 'png');
         ik.alt = '';
         ik.width = 34; ik.height = 34; ik.loading = 'lazy';
         hdr.appendChild(ik);
@@ -900,7 +900,7 @@
   var WBAL_VER = (function () {
     try {
       var me = document.currentScript || [].slice.call(document.scripts)
-        .filter(function (x) { return (x.src || '').indexOf('denarnica.js') > -1; })[0];
+        .filter(function (x) { return (x.src || '').indexOf('wallets.js') > -1; })[0];
       var m = /[?&]v=([0-9]+)/.exec((me && me.src) || '');
       return m ? m[1] : 'unknown';
     } catch (e) { return 'unknown'; }
@@ -1762,7 +1762,7 @@
 
   /* ---------- shareable code ---------- */
   // A short code cannot hold the addresses (20 bytes each), so it is only a key
-  // and the list lives in koda.php on this server, outside public_html.
+  // and the list lives in code.php on this server, outside public_html.
   // The link form below carries the addresses in the URL fragment, which the
   // browser never sends to any server — no storage involved at all.
 
@@ -1795,7 +1795,7 @@
     var slot = document.getElementById('wbal-code');
     if (!list.length) { if (slot) slot.textContent = 'Add at least one address first.'; return; }
     if (slot) slot.textContent = 'saving\u2026';
-    fetch('./koda.php', {
+    fetch('./code.php', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ addrs: list, val: validatorjev(), names: (function () {
@@ -1823,7 +1823,7 @@
   function fetchCode(code, andAnalyze) {
     var slot = document.getElementById('wbal-code');
     if (slot) slot.textContent = 'loading\u2026';
-    return fetch('./koda.php?c=' + encodeURIComponent(code))
+    return fetch('./code.php?c=' + encodeURIComponent(code))
       .then(function (r) { return r.json(); })
       .then(function (j) {
         if (j && Array.isArray(j.addrs) && j.addrs.length) {

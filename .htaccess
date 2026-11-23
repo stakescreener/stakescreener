@@ -23,7 +23,7 @@ Options -Indexes
 
 
 # Cache: index.html mora biti vedno svez, ker nosi stevilko razlicice datotek
-# (denarnica.js?v=…). Ce se predpomni on, brskalnik nikoli ne izve za nov modul
+# (wallets.js?v=…). Ce se predpomni on, brskalnik nikoli ne izve za nov modul
 # in popravek izgleda, kot da ne deluje — 16.8.2026 se je to zgodilo dvakrat.
 <IfModule mod_headers.c>
   <FilesMatch "\.(html|php)$">

@@ -1,5 +1,5 @@
 /*
- * gp-validatorji.js \u2014 StakeScreener: odsek "VALIDATOR Screener" (PulseChain), 22. 11. 2026
+ * gp-validators.js \u2014 StakeScreener: odsek "VALIDATOR Screener" (PulseChain), 22. 11. 2026
  *
  * Samo branje. Viri:
  *  - FusionScan  /api/v2/addresses/{naslov}/withdrawals  -> katere validatorje izplacuje naslov
@@ -10,7 +10,7 @@
  * uporabnik vpise rocno (stevilka ali javni kljuc, gopulse_val_ids).
  * Kartica "Validators" zgoraj se nastavi samodejno, razen ce je uporabnik stevilo vpisal sam
  * (gopulse_val_auto hrani zadnjo samodejno vrednost).
- * app.js in denarnica.js ostaneta nespremenjena.
+ * app.js in wallets.js ostaneta nespremenjena.
  */
 (function () {
   'use strict';

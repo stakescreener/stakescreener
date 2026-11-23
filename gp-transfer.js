@@ -1,9 +1,9 @@
-/* gp-prenos.js — StakeScreener (22. 11. 2026)
+/* gp-transfer.js — StakeScreener (22. 11. 2026)
  * Uvoz shranjenih nastavitev s prejsnjega naslova strani. Brskalnik hrani localStorage
  * LOCENO za vsak naslov, zato stara stran ob obisku zapakira svoje kljuce v
  * #gp-prenos=… (del za # se NE poslje na streznik) in preusmeri sem.
  * Uvozimo samo znane kljuce in samo, ce tu se ne obstajajo (novejsih ne povozimo).
- * Nalozi se PRED app.js in denarnica.js, da ti ze vidijo uvozene podatke.
+ * Nalozi se PRED app.js in wallets.js, da ti ze vidijo uvozene podatke.
  */
 (function () {
   var DOVOLJENI = ['gopulse_wallets', 'gopulse_labels', 'gopulse_custom_tokens',

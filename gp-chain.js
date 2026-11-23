@@ -1,6 +1,6 @@
-/* gp-trak.js — tekoci trak cen (StakeScreener) (31. 10. 2026)
+/* gp-chain.js — tekoci trak cen (StakeScreener) (31. 10. 2026)
  *
- * SAMO videz. denarnica.js izrise kartice cen v .eko-trak (ob vsakem izrisu
+ * SAMO videz. wallets.js izrise kartice cen v .eko-trak (ob vsakem izrisu
  * vsebino pocisti in narise znova). Ta skripta kartice zavije v .gp-tir in jih
  * enkrat podvoji, da trak tece brez preskoka (animacija do -50 %). Kopije so
  * aria-hidden in izven zaporedja tipke Tab. Ob novem izrisu se postopek ponovi.
