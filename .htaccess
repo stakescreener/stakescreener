@@ -1,4 +1,4 @@
-# 22. 11. 2026: en sam naslov — https://stakescreener.com (www in http → 301). .well-known izvzet (AutoSSL).
+# 22 Nov 2026: single address — https://stakescreener.com (www and http → 301). .well-known excluded (AutoSSL).
 RewriteEngine on
 RewriteCond %{HTTP_HOST} !^stakescreener\.com$ [NC,OR]
 RewriteCond %{HTTPS} off
@@ -22,9 +22,9 @@ Options -Indexes
 </IfModule>
 
 
-# Cache: index.html mora biti vedno svez, ker nosi stevilko razlicice datotek
-# (wallets.js?v=…). Ce se predpomni on, brskalnik nikoli ne izve za nov modul
-# in popravek izgleda, kot da ne deluje — 16.8.2026 se je to zgodilo dvakrat.
+# Cache: index.html must always be fresh, because it carries the file version numbers
+# (wallets.js?v=…). If it gets cached, the browser never learns about a new module
+# and a fix looks as if it does not work — this happened twice on 16 Aug 2026.
 <IfModule mod_headers.c>
   <FilesMatch "\.(html|php)$">
     Header always set Cache-Control "no-cache, must-revalidate, max-age=0"
@@ -34,11 +34,11 @@ Options -Indexes
   </FilesMatch>
 </IfModule>
 
-# 22. 11. 2026: varnostne kopije (*.pred-*, *.bak, *.v1) se ne strezejo, tudi ce kdaj pristanejo tu
+# 22 Nov 2026: backup copies (*.pred-*, *.bak, *.v1) are never served, even if they ever end up here
 <FilesMatch "\.(pred-[A-Za-z0-9-]+|bak|v1|orig)$">
   Require all denied
 </FilesMatch>
 
-# 22. 11. 2026: besedilne datoteke kot UTF-8 (MODIFICATIONS.txt, LICENSE, ...)
+# 22 Nov 2026: text files as UTF-8 (MODIFICATIONS.txt, LICENSE, ...)
 AddDefaultCharset UTF-8
 AddCharset UTF-8 .txt .md .js .css .svg .json .webmanifest

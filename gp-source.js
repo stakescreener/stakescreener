@@ -1,12 +1,12 @@
-/* gp-source.js — StakeScreener (5. 11. 2026)
- * Glavni raziskovalec za PulseChain: FusionScan (scan.pulsefusion.io).
- * Rezerva: uradni api.scan.pulsechain.com.
- * Nalozi se PRED app.js in ovije window.fetch; app.js in wallets.js ostaneta
- * nespremenjena. Vsak klic na api.scan.pulsechain.com gre najprej na FusionScan
- * (isto pot in poizvedbo); ce ta ne odgovori v 7 s, vrne HTTP napako ali
- * napako v JSON (npr. "Query Timeout"), se isti klic ponovi na uradnem.
- * Po 2 zaporednih napakah FusionScana gre do konca obiska vse naravnost na uradnega.
- * Vrnitev: odstrani <script src="./gp-source.js"> iz index.html.
+/* gp-source.js — StakeScreener (5 Nov 2026)
+ * Primary PulseChain explorer: FusionScan (scan.pulsefusion.io).
+ * Fallback: the official api.scan.pulsechain.com.
+ * Loads BEFORE app.js and wraps window.fetch; app.js and wallets.js stay
+ * unchanged. Every call to api.scan.pulsechain.com goes to FusionScan first
+ * (same path and query); if it does not answer within 7 s, returns an HTTP error or
+ * an error in the JSON (e.g. "Query Timeout"), the same call is repeated on the official one.
+ * After 2 FusionScan errors in a row, everything goes straight to the official one for the rest of the visit.
+ * Rollback: remove <script src="./gp-source.js"> from index.html.
  */
 (function () {
   'use strict';
@@ -57,20 +57,20 @@
       napake++;
       rezervaUporabljena = true;
       oznaci();
-      console.warn('[gp-vir] FusionScan: ' + razlog + ' — uporabljam api.scan.pulsechain.com');
+      console.warn('[gp-source] FusionScan: ' + razlog + ' — using api.scan.pulsechain.com');
       return izvirni(vhod, opcije);
     }
 
     return izvirni(nov, o).then(function (r) {
       if (!r.ok) return rezerva('HTTP ' + r.status);
       return r.clone().json().then(function (j) {
-        if (slabJson(j)) return rezerva(j.message || j.result || 'napaka');
+        if (slabJson(j)) return rezerva(j.message || j.result || 'error');
         clearTimeout(t);
         napake = 0;
         return r;
-      }, function () { return rezerva('ni JSON'); });
+      }, function () { return rezerva('not JSON'); });
     }, function (e) {
-      return rezerva(e && e.name === 'AbortError' ? 'ni odgovora v 7 s' : (e && e.message) || 'omrezje');
+      return rezerva(e && e.name === 'AbortError' ? 'no answer within 7 s' : (e && e.message) || 'network');
     });
   };
 

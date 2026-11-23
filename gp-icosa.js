@@ -1,14 +1,14 @@
 /*
- * gp-icosa.js \u2014 StakeScreener: odsek "ICOSA Screener" (22. 11. 2026)
+ * gp-icosa.js - StakeScreener: "ICOSA Screener" section (22 Nov 2026)
  *
- * Samo branje. Icosa (ICSA) 0xfc4913214444aF5c715cc9F7b52655e788A569ed (9 decimalk), WAATSA (We Are All
- * the SA) 0x2520e62474ba3085693f856b3e93fa6c92a4ef48 \u2014 isti naslovi na PulseChainu in Ethereumu.
- *  - HDRN stake (en na naslov): prinasa ICSA.  ICSA stake (en na naslov): prinasa ICSA + HDRN.
- *    Zneski "ce koncas zdaj" so SIMULACIJA hdrnStakeEnd/icsaStakeEnd (eth_call z naslova lastnika,
- *    nic se ne zgodi) \u2014 natanko to, kar bi pogodba izplacala, vkljucno s kaznijo pred iztekom.
- *  - WAATSA NFT stake: ICSA = tocke x (nftPoolPayout[danes] - nftPoolPayout[zacetek]) / 1e18
- *    (formula iz nftStakeEnd, preverjena proti simulaciji). Kazni ni.
- * Denarnice iz Wallets Screenerja (gopulse_wallets). app.js in wallets.js nespremenjena.
+ * Read-only. Icosa (ICSA) 0xfc4913214444aF5c715cc9F7b52655e788A569ed (9 decimals), WAATSA (We Are All
+ * the SA) 0x2520e62474ba3085693f856b3e93fa6c92a4ef48 - the same addresses on PulseChain and Ethereum.
+ *  - HDRN stake (one per address): earns ICSA.  ICSA stake (one per address): earns ICSA + HDRN.
+ *    The "if you end now" amounts are a SIMULATION of hdrnStakeEnd/icsaStakeEnd (eth_call from the owner's address,
+ *    nothing happens) - exactly what the contract would pay out, including the early-end penalty.
+ *  - WAATSA NFT stake: ICSA = points x (nftPoolPayout[today] - nftPoolPayout[start]) / 1e18
+ *    (formula from nftStakeEnd, verified against a simulation). No penalty.
+ * Wallets from the Wallets Screener (gopulse_wallets). app.js and wallets.js unchanged.
  */
 (function () {
   'use strict';
@@ -20,7 +20,7 @@
     eth: ['https://ethereum-rpc.publicnode.com', 'https://eth.drpc.org']
   };
   var IME = { pls: 'PulseChain', eth: 'Ethereum' };
-  var LAUNCH = 1645833600;   // Hedron/Icosa dan 0 (UTC)
+  var LAUNCH = 1645833600;   // Hedron/Icosa day 0 (UTC)
   var MAX_NFT = 150;
   var SEL = {
     dan: '0x5c9302c9', bal: '0x70a08231', hS: '0x489a347f', iS: '0x86a99e4a',
@@ -95,7 +95,7 @@
     return Promise.all([ena(ICSA), ena(HDRN)]).then(function (r) { return { icsa: r[0], hdrn: r[1] }; });
   }
 
-  /* ---------- branje ---------- */
+  /* ---------- reading ---------- */
   function stake(r) { return { start: b(r, 0), cap: b(r, 1), pts: b(r, 2), akt: b(r, 3) !== 0n, amt: b(r, 6), min: b(r, 7) }; }
   function veriga(ch, wal) {
     var k = [klic(0, ICSA, SEL.dan)], id = 1;
@@ -111,7 +111,7 @@
         out.push({ chain: ch, a: a, dan: dan, bal: b(r[j], 0), hS: stake(r[j + 1]), iS: stake(r[j + 2]), nN: Number(b(r[j + 3], 0)), nfts: [] });
         j += 4;
       });
-      // 2) simulacije koncev in seznam NFT
+      // 2) end simulations and NFT list
       var k2 = [], id2 = 0, ref = [];
       out.forEach(function (w) {
         if (w.hS.akt) { ref.push([w, 'hSim']); k2.push(klic(id2++, ICSA, SEL.hEnd, w.a)); }
@@ -125,7 +125,7 @@
           if (kaj === 'nftId') { if (x) w.nfts.push({ id: b(x, 0) }); }
           else w[kaj] = x;
         });
-        // 3) NFT stake-i in tocke izplacila
+        // 3) NFT stakes and payout points
         var vsiNft = [];
         out.forEach(function (w) { w.nfts.forEach(function (n) { vsiNft.push(n); }); });
         if (!vsiNft.length) return out;
@@ -145,7 +145,7 @@
     });
   }
 
-  /* ---------- prikaz ---------- */
+  /* ---------- display ---------- */
   var sec, statEl, vsebEl, zadnji = null, tece = false;
   function zgradi() {
     sec = el('div', null); sec.id = 'gpi-sec';
@@ -262,7 +262,7 @@
     var n = 0;
     (function cakaj() {
       if (vstavi(n)) {
-        setTimeout(nalozi, 6000);   // po Wallets/Validator/Communis/Hedron, da RPC ni preobremenjen
+        setTimeout(nalozi, 6000);   // after Wallets/Validator/Communis/Hedron, so the RPC is not overloaded
         setInterval(function () { if (!tece && localStorage.getItem(K_WAL) !== zadnji) nalozi(); }, 5000);
         return;
       }

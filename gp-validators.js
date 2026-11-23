@@ -1,16 +1,16 @@
 /*
- * gp-validators.js \u2014 StakeScreener: odsek "VALIDATOR Screener" (PulseChain), 22. 11. 2026
+ * gp-validators.js - StakeScreener: "VALIDATOR Screener" section (PulseChain), 22 Nov 2026
  *
- * Samo branje. Viri:
- *  - FusionScan  /api/v2/addresses/{naslov}/withdrawals  -> katere validatorje izplacuje naslov
- *                                                           (stevilka validatorja, znesek, cas)
- *  - PublicNode beacon API /eth/v1/beacon/states/head/validators?id=...  -> status, stanje
- *  - DexScreener (WPLS) -> cena PLS v $
- * Validatorji se najdejo iz denarnic v Wallets Screenerju (gopulse_wallets); dodatno jih lahko
- * uporabnik vpise rocno (stevilka ali javni kljuc, gopulse_val_ids).
- * Kartica "Validators" zgoraj se nastavi samodejno, razen ce je uporabnik stevilo vpisal sam
- * (gopulse_val_auto hrani zadnjo samodejno vrednost).
- * app.js in wallets.js ostaneta nespremenjena.
+ * Read-only. Sources:
+ *  - FusionScan  /api/v2/addresses/{address}/withdrawals  -> which validators pay out to the address
+ *                                                           (validator index, amount, time)
+ *  - PublicNode beacon API /eth/v1/beacon/states/head/validators?id=...  -> status, balance
+ *  - DexScreener (WPLS) -> PLS price in $
+ * Validators are found from the wallets in the Wallets Screener (gopulse_wallets); the user can
+ * also enter them by hand (index or public key, gopulse_val_ids).
+ * The "Validators" card at the top is set automatically, unless the user entered the count
+ * by hand (gopulse_val_auto keeps the last automatic value).
+ * app.js and wallets.js stay unchanged.
  */
 (function () {
   'use strict';
@@ -21,19 +21,19 @@
   var WPLS = '0xa1077a294dde1b09bb078844df40758a5d0f9a27';
   var K_WAL = 'gopulse_wallets', K_LAB = 'gopulse_labels', K_IDS = 'gopulse_val_ids';
   var K_VAL = 'gopulse_validators', K_AUTO = 'gopulse_val_auto';
-  var MAX_VAL = 100;        // najvec prikazanih validatorjev
-  var MAX_STRANI = 12;      // najvec strani izplacil (po 50) na naslov
+  var MAX_VAL = 100;        // at most this many validators shown
+  var MAX_STRANI = 12;      // at most this many withdrawal pages (50 each) per address
   var MAX_ROCNO = 50;
   var DAN = 86400000;
   var ALLNODES = 'https://www.allnodes.com/invite/4skdii';   // povezava s priporocilom (referral)
-  // Vouch referral ID 20 (izplacilo na Stakescreener 07). Pristojbino placa uporabnik ob pologu;
-  // ce se nastavitev kode spremeni na app.vouch.run/referral, popravi VOUCH_PRISTOJBINA in info.html.
+  // Vouch referral ID 20 (paid to Stakescreener 07). The fee is paid by the user on deposit;
+  // if the code settings change on app.vouch.run/referral, update VOUCH_PRISTOJBINA and info.html.
   var VOUCH = 'https://refwidget.vouch.run/?ref=20';
   var VPLS = '0x79bb3a0ee435f957ce4f54ee8c3cfadc7278da0c';   // Vouch Staked PLS (LsdToken)
   var RPC = ['https://pulsechain-rpc.publicnode.com', 'https://rpc.pulsechain.com'];
   var VOUCH_PRISTOJBINA = '0.3% fee, max 5,000 PLS per deposit, paid to StakeScreener';
 
-  /* ---------- pomozno ---------- */
+  /* ---------- helpers ---------- */
   function el(tag, cls, txt) {
     var e = document.createElement(tag);
     if (cls) e.className = cls;
@@ -69,7 +69,7 @@
     }, function (e) { if (t) clearTimeout(t); throw e; });
   }
 
-  // zneski: izplacila v wei (1e18), beacon v gwei (1e9) -> PLS
+  // amounts: withdrawals in wei (1e18), beacon in gwei (1e9) -> PLS
   function izWei(s) { try { var b = BigInt(s); return Number(b / 1000000000n) / 1e9; } catch (e) { return 0; } }
   function izGwei(s) { return Number(s || 0) / 1e9; }
 
@@ -97,7 +97,7 @@
   };
   function steje(st) { return /^(active_|pending_)/.test(st || ''); }
 
-  /* ---------- podatki ---------- */
+  /* ---------- data ---------- */
   function cenaPls() {
     return pridobi(DEX).then(function (j) {
       var naj = null;
@@ -110,7 +110,7 @@
     }).catch(function () { return null; });
   }
 
-  // Izplacila na naslov (najnovejsa najprej), dokler ne pokrijemo 30 dni ali MAX_STRANI.
+  // Withdrawals per address (newest first), until 30 days or MAX_STRANI are covered.
   function izplacila(naslov) {
     var meja = Date.now() - 30 * DAN;
     var vse = [], strani = 0;
@@ -150,10 +150,10 @@
     return /^0x0[12]/.test(cred || '') ? '0x' + cred.slice(-40).toLowerCase() : null;
   }
 
-  /* ---------- prikaz ---------- */
+  /* ---------- display ---------- */
   var sec, statEl, povEl, tabEl, rocEl, namigEl, vnos, refEl, vouchEl;
   var tece = false, zadnjiWal = null, zadnjiIds = null;
-  var slabiVnos = '';   // zadnji neveljavni rocni vnos (sporocilo ostane po nalaganju)
+  var slabiVnos = '';   // last invalid manual entry (the message stays after loading)
 
   function zgradi() {
     sec = el('div', null); sec.id = 'gpv-sec';
@@ -207,7 +207,7 @@
     risiRocne();
   }
 
-  // Allnodes: vidnejse, ko validatorjev ni; sicer drobna vrstica. Vedno oznaceno kot referral.
+  // Allnodes: more visible when there are no validators; otherwise a small line. Always marked as referral.
   function povezava(txt, url) {
     var a = el('a', null, txt);
     a.href = url; a.target = '_blank'; a.rel = 'sponsored noopener';
@@ -265,8 +265,8 @@
   }
 
   /* ---------- Liquid staking: Vouch (vPLS) ---------- */
-  // Samo pregled: vPLS je ze vstet v vsoto denarnic (Wallets Screener ga vrednoti po istem
-  // tecaju pogodbe), zato se tu NE pristeje nikamor.
+  // Overview only: vPLS is already counted in the wallet total (the Wallets Screener values it at the same
+  // contract rate), so here it is NOT added to anything.
   function rpcKlici(klici) {
     var i = 0;
     function poskus() {
@@ -333,17 +333,17 @@
         '1 vPLS = ' + tecaj.toLocaleString('en-US', { maximumFractionDigits: 4 }) +
         ' PLS (Vouch contract rate). Already included in the wallet totals above \u2014 shown here for overview, not added again. ' +
         'Redeeming through Vouch may take time; on a DEX vPLS can trade below this rate.'));
-    }).catch(function () { /* brez prikaza, ce RPC ne odgovori */ });
+    }).catch(function () { /* nothing shown if the RPC does not answer */ });
   }
 
-  /* ---------- kartica Validators zgoraj ---------- */
+  /* ---------- Validators card at the top ---------- */
   function kartica(n) {
     var cur = parseInt(localStorage.getItem(K_VAL) || '0', 10) || 0;
     var auto = parseInt(localStorage.getItem(K_AUTO) || '-1', 10);
     namigEl.textContent = '';
     if (n === cur) { try { localStorage.setItem(K_AUTO, String(n)); } catch (e) {} return; }
     if (cur === 0 || cur === auto) { nastaviKartico(n); return; }
-    // uporabnik je stevilo vpisal sam: ne prepisem, ponudim
+    // the user entered the count by hand: do not overwrite it, offer instead
     namigEl.appendChild(el('span', null, 'The Validators card shows ' + cur + ' (entered by you); ' + n + ' found here. '));
     var b = el('button', 'wbal-btn', 'Use ' + n); b.type = 'button';
     b.addEventListener('click', function () { nastaviKartico(n); namigEl.textContent = ''; });
@@ -361,7 +361,7 @@
     try { localStorage.setItem(K_VAL, String(n)); } catch (e) {}
   }
 
-  /* ---------- glavno ---------- */
+  /* ---------- main ---------- */
   function nalozi() {
     if (tece) return;
     var wal = denarnice(), roc = rocni();
@@ -378,13 +378,13 @@
     var napake = [], podatki = {}, pokritost = {}, cena = null;
     statEl.textContent = 'Looking for validators\u2026';
 
-    var pVal = {};       // idx -> zapis
+    var pVal = {};       // idx -> record
     function zapis(idx) {
       return pVal[idx] || (pVal[idx] = { idx: idx, w1: 0, w7: 0, w30: 0, zadnje: 0, vir: null, rocno: false });
     }
 
     cenaPls().then(function (c) { cena = c; })
-      // 1) rocno vpisani: najprej beacon, da izvemo naslov za izplacila
+      // 1) entered by hand: beacon first, to learn the withdrawal address
       .then(function () { return roc.length ? beacon(roc) : []; })
       .then(function (vr) {
         var rocniNaslovi = {};
@@ -393,7 +393,7 @@
           var a = naslovIz(v.validator.withdrawal_credentials);
           if (a && wal.indexOf(a) < 0) (rocniNaslovi[a] = rocniNaslovi[a] || []).push(String(v.index));
         });
-        // 2) izplacila: denarnice (vsi validatorji) + naslovi rocnih (samo ti validatorji)
+        // 2) withdrawals: wallets (all validators) + addresses of manual ones (only those validators)
         var naslovi = wal.map(function (a) { return { a: a, samo: null }; })
           .concat(Object.keys(rocniNaslovi).map(function (a) { return { a: a, samo: rocniNaslovi[a] }; }));
         var i = 0;
@@ -419,7 +419,7 @@
           });
         }, Promise.resolve());
       })
-      // 3) beacon za vse najdene, ki jih se nimamo
+      // 3) beacon for all found ones we do not have yet
       .then(function () {
         var manjka = Object.keys(pVal).filter(function (k) { return !pVal[k].b; });
         statEl.textContent = 'Reading validator status\u2026';
@@ -443,7 +443,7 @@
     var vec = prikaz.length > MAX_VAL ? prikaz.length - MAX_VAL : 0;
     prikaz = prikaz.slice(0, MAX_VAL);
 
-    // pokritost oken: ce za kak naslov nismo prebrali dovolj dalec nazaj, je vsota spodnja meja
+    // window coverage: if we did not read far enough back for some address, the sum is a lower bound
     function polno(okno) {
       return Object.keys(pokritost).every(function (a) { return pokritost[a] >= okno; });
     }
@@ -472,7 +472,7 @@
     priporocilo(!prikaz.length);
     if (!vsi.length) { if (!napake.length) kartica(0); return; }
 
-    // povzetek
+    // summary
     function polje(lbl, val, sub) {
       var d = el('div', 'gpv-k');
       d.appendChild(el('div', 'gpv-k-lbl', lbl));
@@ -491,7 +491,7 @@
       polje('APR (7 days)', apr.toLocaleString('en-US', { maximumFractionDigits: 2 }) + '%', 'estimate from payouts');
     }
 
-    // tabela
+    // table
     var ovoj = el('div', 'wbal-scroll gpv-scroll');
     var t = el('table', 'wbal-tbl gpv-tbl');
     var th = el('thead'), tr = el('tr');
@@ -524,13 +524,13 @@
     if (!napake.length) kartica(akt + cak);
   }
 
-  /* ---------- zagon ---------- */
+  /* ---------- start ---------- */
   function zacni() {
     zgradi();
     var poskusi = 0;
     (function cakaj() {
       if (vstavi()) {
-        // malo pocakam, da Wallets Screener najprej prebere svoje (ista FusionScan)
+        // wait a little so the Wallets Screener reads its data first (same FusionScan)
         setTimeout(nalozi, 3500);
         setInterval(function () {
           var w = localStorage.getItem(K_WAL), ids = localStorage.getItem(K_IDS);
@@ -538,7 +538,7 @@
         }, 4000);
         return;
       }
-      if (++poskusi < 480) setTimeout(cakaj, 250);   // do 2 min (pocasno nalaganje)
+      if (++poskusi < 480) setTimeout(cakaj, 250);   // up to 2 min (slow loading)
     })();
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', zacni);

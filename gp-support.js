@@ -1,8 +1,8 @@
 /*
- * gp-support.js — StakeScreener (22. 11. 2026)
- * Enkratno, nevsiljivo okno "Support the project": pokaze se, ko je prva denarnica
- * dodana in so njeni rezultati nalozeni (+ nekaj sekund). Samo enkrat na brskalnik
- * (localStorage gopulse_podpora). Ne zakrije strani. app.js in wallets.js nespremenjena.
+ * gp-support.js — StakeScreener (22 Nov 2026)
+ * One-time, unobtrusive "Support the project" note: shown when the first wallet
+ * has been added and its results have loaded (+ a few seconds). Only once per browser
+ * (localStorage gopulse_podpora). Does not cover the page. app.js and wallets.js unchanged.
  */
 (function () {
   'use strict';

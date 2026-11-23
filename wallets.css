@@ -19,9 +19,9 @@
 #wbal-sec.on{display:block}
 
 .wbal-hdr{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin:0 0 8px}
-/* Naslov v barvah strani: pHEX #FF00CC -> eHEX #00CFFF (odcitano z zive strani,
-   razreda .pls-tag in .eth-tag). Prehod je narejen z izrezom besedila, zato
-   nadomestna barva ostane za brskalnike brez podpore. */
+/* Title in the site colours: pHEX #FF00CC -> eHEX #00CFFF (read from the live page,
+   classes .pls-tag and .eth-tag). The gradient is made by clipping the text, so
+   the fallback colour remains for browsers without support. */
 .wbal-title{font-family:var(--wb-sans);font-size:22px;font-weight:800;letter-spacing:1.6px;
   text-transform:uppercase;color:#ff00cc;
   background:linear-gradient(90deg,#ff00cc 0%,#c04ae6 55%,#00cfff 100%);
@@ -99,8 +99,8 @@
 .wbal-input:focus{border-color:rgba(148,0,255,.75);background:rgba(255,255,255,.08)}
 .wbal-input::placeholder{color:rgba(238,240,248,.35)}
 
-/* Bilo izgubljeno ob prepisu sloga 16.8.2026 — gumbi so zato izgledali kot
-   sistemski in niso bili videti kot del strani. */
+/* Lost when the styles were rewritten on 16 Aug 2026 — so the buttons looked like
+   system buttons and did not look like part of the page. */
 .wbal-btn{font-family:var(--wb-sans);font-size:11.5px;font-weight:600;letter-spacing:.3px;
   color:#eef0f8;background:rgba(148,0,255,.14);border:1px solid rgba(148,0,255,.38);
   border-radius:8px;padding:5px 12px;cursor:pointer;line-height:1.2}
@@ -117,7 +117,7 @@
 .wbal-wallet.wbal-shut{padding-bottom:12px}
 .wbal-wallet.wbal-shut .wbal-wallet-hdr{margin-bottom:0}
 
-/* Ker razdelek zdaj stoji na vrhu strani, potrebuje malo zraka nad seboj. */
+/* The section now sits at the top of the page, so it needs a little air above it. */
 #wbal-sec{margin-top:14px;margin-bottom:18px;padding-bottom:16px;
   border-bottom:1px solid rgba(255,255,255,.07)}
 .wbal-hdr{gap:12px}
@@ -134,7 +134,7 @@
 .wbal-title2{font-family:var(--wb-sans);font-size:16px;font-weight:400;
   color:rgba(255,255,255,.6);align-self:center;margin-left:-4px}
 
-/* ── Ekosistemski trak (po vzoru hexologist.com) ───────────────────────────── */
+/* ── Ecosystem strip (modelled on hexologist.com) ──────────────────────────── */
 .eko-trak{display:grid;grid-template-columns:repeat(8,1fr);gap:10px;margin:0 0 18px}
 .eko-card{border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:14px 16px;
   background:linear-gradient(180deg,rgba(255,255,255,.03),rgba(255,255,255,.012))}
@@ -156,7 +156,7 @@
 .eko-nalagam{font-family:var(--wb-sans);font-size:11.5px;color:rgba(238,240,248,.4);
   grid-column:1/-1;padding:14px 0}
 
-/* ── Stanje podatkov ──────────────────────────────────────────────────────── */
+/* ── Data status ─────────────────────────────────────────────────────────── */
 .wbal-stanje{display:flex;align-items:center;gap:8px;font-family:var(--wb-sans);font-size:11px;
   color:rgba(238,240,248,.42);margin:0 0 12px}
 .st-pika{font-size:9px;line-height:1}
@@ -173,10 +173,10 @@
 
 
 
-/* ── Telefon: vodoravno drsenje namesto razbijanja vrstic ──────────────────
-   owner (22.8.2026): "vodoravno drsenje bi bilo ok". Tabela ostane tabela,
-   samo drsi. Prvi stolpec je LEPLJIV, da se ob drsenju vedno vidi, za kateri
-   žeton gre — brez tega so številke brez imena. */
+/* ── Phone: horizontal scrolling instead of breaking rows ──────────────────
+   owner (22 Aug 2026): "horizontal scrolling would be ok". The table stays a table,
+   it only scrolls. The first column is STICKY, so while scrolling you always see which
+   token it is — without that the numbers have no name. */
 .wbal-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 
 @media (max-width: 700px) {
@@ -197,7 +197,7 @@
   }
 }
 
-/* ── Povzetek: kartici prezrcaljeni iz analizatorja ────────────────────────── */
+/* ── Summary: cards mirrored from the analyzer ───────────────────────────── */
 .pov-trak{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:0 0 18px;
   position:relative}
 .pov-card{border:1px solid rgba(255,255,255,.09);border-radius:14px;padding:16px 18px;
@@ -212,7 +212,7 @@
   padding-top:10px;border-top:1px solid rgba(255,255,255,.07)}
 .pov-vir{grid-column:1/-1;font-family:var(--wb-sans);font-size:10px;
   color:rgba(238,240,248,.28);text-align:right;margin-top:-6px}
-/* Skupaj je vsota drugih dveh — naj bo vidno, da je izpeljana, ne nova meritev */
+/* Total is the sum of the other two — make it visible that it is derived, not a new measurement */
 .pov-skupaj{border-color:rgba(148,0,255,.34);
   background:linear-gradient(180deg,rgba(148,0,255,.12),rgba(255,255,255,.02))}
 .pov-skupaj .pov-lbl{color:#d7a8ff}
@@ -222,9 +222,9 @@
 
 .pov-input{width:70px;padding:4px 8px;font-size:13px;min-width:0;text-align:right}
 .pov-card .pov-dru{display:flex;align-items:center;gap:8px}
-/* Razdelitev po verigah (pHEX / eHEX) v povzetnih karticah.
-   pov-dru ima display:flex, zato imajo vrstice SVOJ razred — sicer bi se
-   vse tri postavile v eno vrstico. */
+/* Split by chain (pHEX / eHEX) in the summary cards.
+   pov-dru has display:flex, so the rows have THEIR OWN class — otherwise
+   all three would end up in one row. */
 .pov-brk{margin-top:10px;padding-top:9px;border-top:1px solid rgba(255,255,255,.08)}
 .pov-row{display:flex;align-items:baseline;gap:8px;padding:2px 0;
   font-family:var(--wb-mono);font-size:11.5px;line-height:1.5}
@@ -238,8 +238,8 @@
   color:rgba(238,240,248,.62);background:rgba(255,255,255,.09)}
 @media (max-width:620px){ .pov-row{font-size:11px} .pov-usd{min-width:56px} }
 
-/* Stanje omrezja — trije podatki o VERIGI (promet, gas, blok).
-   Nizji in mirnejsi od kartic z vrednostmi: to je kontekst, ne stanje. */
+/* Network status — three facts about the CHAIN (traffic, gas, block).
+   Lower and calmer than the value cards: this is context, not a balance. */
 .net-trak{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:0 0 18px}
 .net-card{border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:13px 16px;
   background:linear-gradient(180deg,rgba(255,255,255,.03),rgba(255,255,255,.012))}
@@ -254,13 +254,13 @@
 .net-spr.dol{color:#ff5c5c}
 .net-spr2{color:rgba(238,240,248,.34)}
 .net-vir{font-family:var(--wb-sans);font-size:9.5px;color:rgba(238,240,248,.3);margin-top:8px}
-/* Zastarelo = zadnja znana vrednost, ki je nismo mogli potrditi. Namenoma
-   NI "—": razlika med "veriga javlja 0" in "nisem je uspel vprasati" je
-   pomembna, prazna kartica pa bi ju zlila v isto. */
+/* Stale = the last known value that we could not confirm. Deliberately
+   NOT "—": the difference between "the chain reports 0" and "I could not ask it"
+   matters, and an empty card would merge the two. */
 .net-card.zastarelo .net-val{color:rgba(238,240,248,.45)}
 .net-card.zastarelo{border-color:rgba(255,180,60,.28)}
-/* Vrednost ob spremembi na kratko posvetli — sicer se ne loci "osvezuje se"
-   od "obticalo je". Kratko in brez premikanja: trak je kontekst, ne predstava. */
+/* Briefly highlight a value when it changes — otherwise "refreshing"
+   cannot be told from "stuck". Short and without movement: the strip is context, not a show. */
 @keyframes netUtrip{0%{color:#d7a8ff}100%{color:#eef0f8}}
 .net-val.utrip{animation:netUtrip .7s ease-out}
 @media (prefers-reduced-motion:reduce){ .net-val.utrip{animation:none} }

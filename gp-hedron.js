@@ -1,11 +1,11 @@
 /*
- * gp-hedron.js \u2014 StakeScreener: odsek "HEDRON Screener" (22. 11. 2026)
+ * gp-hedron.js - StakeScreener: "HEDRON Screener" section (22 Nov 2026)
  *
- * Samo branje. Hedron (HDRN) 0x3819f64f282bf135d62168C1e513280dAF905e06, 9 decimalk, ista pogodba
- * na PulseChainu in Ethereumu. HDRN na voljo za stake = shari x (odsluzeni dnevi - ze prevzeti dnevi),
- * + launch bonus (shranjen pri staku) + dnevni bonus (dailyDataList). Formula je natanko tista iz
- * mintNative/mintInstanced in je bila preverjena 6/6 proti simulaciji (eth_call) pogodbe.
- * Staki pridejo iz HEX Stake Screenerja (ovijem renderAll); app.js in wallets.js nespremenjena.
+ * Read-only. Hedron (HDRN) 0x3819f64f282bf135d62168C1e513280dAF905e06, 9 decimals, the same contract
+ * on PulseChain and Ethereum. HDRN available for a stake = shares x (served days - days already minted),
+ * + launch bonus (stored with the stake) + daily bonus (dailyDataList). The formula is exactly the one from
+ * mintNative/mintInstanced and was verified against a simulation (eth_call) of the contract (6/6 native, 12/12 HSI).
+ * Stakes come from the HEX Stake Screener (renderAll is wrapped); app.js and wallets.js unchanged.
  */
 (function () {
   'use strict';
@@ -92,7 +92,7 @@
     }).catch(function () { return { pls: null, eth: null }; });
   }
 
-  /* ---------- branje + izracun po pogodbi ---------- */
+  /* ---------- reading + calculation as in the contract ---------- */
   function preberi(stakes) {
     var poVerigi = { pls: [], eth: [] };
     stakes.forEach(function (s) { poVerigi[s.chain === 'eth' ? 'eth' : 'pls'].push(s); });
@@ -104,7 +104,7 @@
           if (!ss.length) return;
           var lastniki = [];
           ss.forEach(function (s) { if (lastniki.indexOf(s.owner) < 0) lastniki.push(s.owner); });
-          // 1) dnevi in dnevni bonus
+          // 1) days and daily bonus
           return rpc(ch, [klic(0, HEX, SEL.dan), klic(1, HDRN, SEL.dan), klic(2, HDRN, SEL.loaned), klic(3, HDRN, SEL.supply)])
             .then(function (r0) {
               var hexDan = beseda(r0[0], 0), hDan = beseda(r0[1], 0), loaned = beseda(r0[2], 0), supply = beseda(r0[3], 0);
@@ -112,7 +112,7 @@
               lastniki.forEach(function (a) { k.push(klic(id++, HDRN, SEL.bal + pa(a))); });
               ss.forEach(function (s) { k.push(klic(id++, HDRN, SEL.share + p64(s.stakeId))); });
               return rpcVKosih(ch, k).then(function (r) {
-                // dnevni bonus: shranjen za danes, sicer kot _dailyDataLoad (izposojeno > 50 % -> (x-50)*2)
+                // daily bonus: stored for today, otherwise as in _dailyDataLoad (loaned > 50 % -> (x-50)*2)
                 var dm = beseda(r[0], 4);
                 if (beseda(r[0], 3) === 0n && loaned > 0n && supply > 0n) {
                   var x = (loaned * 100n) / supply;
@@ -152,7 +152,7 @@
     }).then(function () { return rez; });
   }
 
-  /* ---------- prikaz ---------- */
+  /* ---------- display ---------- */
   var sec, statEl, denEl, tabEl;
   function zgradi() {
     sec = el('div', null); sec.id = 'gph-sec';
@@ -174,7 +174,7 @@
     statEl.textContent = 'Hedron amounts appear after the HEX stakes below are loaded.';
   }
   function vstavi(n) {
-    // za COMMUNIS Screener; ce ga po ~10 s ni, za Validator / Wallets
+    // after the COMMUNIS Screener; if it is not there after ~10 s, after Validator / Wallets
     var pred = document.getElementById('gpc-sec') || (n > 40 ? (document.getElementById('gpv-sec') || document.getElementById('wbal-sec')) : null);
     if (!pred || !pred.parentNode) return false;
     pred.parentNode.insertBefore(sec, pred.nextSibling);
@@ -246,7 +246,7 @@
     if (vec) statEl.textContent += ' \u00b7 showing ' + MAX_PRIKAZ + ', ' + vec + ' more not shown';
   }
 
-  /* ---------- povezava z HEX Stake Screenerjem ---------- */
+  /* ---------- link with the HEX Stake Screener ---------- */
   var zadnjiKljuc = null, tece = false, cakajoci = null;
   function obdelaj(stakes) {
     var akt = (stakes || []).filter(function (s) {
@@ -266,7 +266,7 @@
   var izvirnik = renderAll;
   renderAll = function (stakes, liq) {
     var r = izvirnik.apply(this, arguments);
-    try { if (sec) obdelaj(stakes); } catch (e) { /* prikaz HEX ostane kot v izvirniku */ }
+    try { if (sec) obdelaj(stakes); } catch (e) { /* the HEX display stays as in the original */ }
     return r;
   };
   function zacni() {
@@ -277,7 +277,7 @@
         try { if (typeof lastStakes !== 'undefined' && lastStakes && lastStakes.length) obdelaj(lastStakes); } catch (e) {}
         return;
       }
-      if (++n < 480) setTimeout(cakaj, 250);   // do 2 min (pocasno nalaganje)
+      if (++n < 480) setTimeout(cakaj, 250);   // up to 2 min (slow loading)
     })();
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', zacni);

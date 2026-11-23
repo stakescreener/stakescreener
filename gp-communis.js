@@ -1,13 +1,13 @@
 /*
- * gp-communis.js \u2014 StakeScreener: odsek "COMMUNIS Screener" (22. 11. 2026)
+ * gp-communis.js - StakeScreener: "COMMUNIS Screener" section (22 Nov 2026)
  *
- * Samo branje. Communis (COM) 0x5A9780Bfe63f3ec57f01b087cD65BD656C9034A8 \u2014 ista pogodba na PulseChainu
- * in Ethereumu. Izracuni maxPayout in Start bonusa so natanko po pogodbi (preverjeno 16/16 proti
- * getPayout in getStartBonusPayout na resnicnih stakih). Stake-i pridejo iz HEX Stake Screenerja
- * (ovijem renderAll, kot gp-total.js); app.js in wallets.js ostaneta nespremenjena.
- * Pravila (pogodba): Start >=180 dni, End >=365 dni in v 37 dneh po izteku, dokler je stake se
- * aktiven v HEX; 50 % End bonusa postane End Bonus Debt; stake bonus = staked COM / 80 na 91 dni,
- * ce staked COM pokriva debt.
+ * Read-only. Communis (COM) 0x5A9780Bfe63f3ec57f01b087cD65BD656C9034A8 - the same contract on PulseChain
+ * and Ethereum. maxPayout and Start bonus are calculated exactly as in the contract (verified 16/16 against
+ * getPayout and getStartBonusPayout on real stakes). Stakes come from the HEX Stake Screener
+ * (renderAll is wrapped, like in gp-total.js); app.js and wallets.js stay unchanged.
+ * Rules (contract): Start >=180 days, End >=365 days and within 37 days after the due day, while the stake is still
+ * active in HEX; 50 % of the End bonus becomes End Bonus Debt; stake bonus = staked COM / 80 per 91 days,
+ * if staked COM covers the debt.
  */
 (function () {
   'use strict';
@@ -22,7 +22,7 @@
   var DEX = 'https://api.dexscreener.com/latest/dex/tokens/' + COM;
   var IME_VERIGE = { pls: 'PulseChain', eth: 'Ethereum' };
   var MAX_STAKOV = 300, MAX_PRIKAZ = 100, ROK = 37;
-  var ZAGON = Date.UTC(2019, 11, 3);   // HEX dan 0
+  var ZAGON = Date.UTC(2019, 11, 3);   // HEX day 0
   var SEL = {
     dan: '0x5c9302c9', globals: '0xc3124525',
     staked: '0x7b4296db', debt: '0x3b665f9c', restake: '0x60bc0be8', bal: '0x70a08231',
@@ -30,7 +30,7 @@
   };
   var K_LAB = 'gopulse_labels';
 
-  /* ---------- izracuni po pogodbi ---------- */
+  /* ---------- calculations as in the contract ---------- */
   function E(n) { return 10n ** BigInt(n); }
   function bonusHearts(h, d, cap) {
     var cd = 0n;
@@ -54,7 +54,7 @@
     return p;
   }
 
-  /* ---------- pomozno ---------- */
+  /* ---------- helpers ---------- */
   function el(tag, cls, txt) {
     var e = document.createElement(tag);
     if (cls) e.className = cls;
@@ -125,7 +125,7 @@
     }).catch(function () { return { pls: null, eth: null }; });
   }
 
-  /* ---------- branje ---------- */
+  /* ---------- reading ---------- */
   function preberi(stakes) {
     var poVerigi = { pls: [], eth: [] };
     stakes.forEach(function (s) { (poVerigi[s.chain === 'eth' ? 'eth' : 'pls']).push(s); });
@@ -184,7 +184,7 @@
       .then(function () { return rez; });
   }
 
-  /* ---------- prikaz ---------- */
+  /* ---------- display ---------- */
   var sec, statEl, opozEl, denEl, tabEl;
   function zgradi() {
     sec = el('div', null); sec.id = 'gpc-sec';
@@ -224,7 +224,7 @@
     if (rez.napake.length) st.push('could not read: ' + rez.napake.join('; '));
     statEl.textContent = st.join(' \u00b7 ');
 
-    // opozorila
+    // warnings
     var odprti = vsi.filter(function (z) { return z.endStanje === 'open'; })
       .sort(function (a, b) { return (a.due + ROK - a.dan) - (b.due + ROK - b.dan); });
     odprti.forEach(function (z) {
@@ -249,7 +249,7 @@
       opozEl.appendChild(o2);
     }
 
-    // denarnice
+    // wallets
     var zDen = rez.denarnice.filter(function (w) { return w.staked > 0n || w.debt > 0n || w.bal > 0n || w.redDan > 0n; });
     zDen.forEach(function (w) {
       var k = el('div', 'gpc-k');
@@ -287,7 +287,7 @@
       denEl.appendChild(k);
     });
 
-    // tabela stakov
+    // stake table
     var prikaz = vsi.slice().sort(function (a, b) {
       var pa1 = a.endStanje === 'open' ? 0 : 1, pb1 = b.endStanje === 'open' ? 0 : 1;
       return pa1 - pb1 || a.due - b.due;
@@ -295,7 +295,7 @@
     var vec = prikaz.length > MAX_PRIKAZ ? prikaz.length - MAX_PRIKAZ : 0;
     prikaz = prikaz.slice(0, MAX_PRIKAZ);
     if (!prikaz.length) { if (!zDen.length) statEl.textContent += ' \u00b7 no Communis activity found for these wallets.'; return; }
-    // kratek povzetek nad tabelo
+    // short summary above the table
     var odp = vsi.filter(function (z) { return z.endStanje === 'open'; }).length;
     var kmalu = vsi.filter(function (z) { return z.endStanje === 'soon' && z.due - z.dan <= 30; }).length;
     var ostEnd = { pls: 0n, eth: 0n };
@@ -357,7 +357,7 @@
     if (vec) statEl.textContent += ' \u00b7 showing ' + MAX_PRIKAZ + ', ' + vec + ' more not shown';
   }
 
-  /* ---------- povezava z HEX Stake Screenerjem ---------- */
+  /* ---------- link with the HEX Stake Screener ---------- */
   var zadnjiKljuc = null, tece = false, cakajoci = null;
   function obdelaj(stakes) {
     var nat = (stakes || []).filter(function (s) {
@@ -384,7 +384,7 @@
   var izvirnik = renderAll;
   renderAll = function (stakes, liq) {
     var r = izvirnik.apply(this, arguments);
-    try { if (sec) obdelaj(stakes); } catch (e) { /* prikaz HEX ostane kot v izvirniku */ }
+    try { if (sec) obdelaj(stakes); } catch (e) { /* the HEX display stays as in the original */ }
     return r;
   };
 
@@ -396,7 +396,7 @@
         try { if (typeof lastStakes !== 'undefined' && lastStakes && lastStakes.length) obdelaj(lastStakes); } catch (e) {}
         return;
       }
-      if (++n < 480) setTimeout(cakaj, 250);   // do 2 min (pocasno nalaganje)
+      if (++n < 480) setTimeout(cakaj, 250);   // up to 2 min (slow loading)
     })();
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', zacni);

@@ -1,11 +1,11 @@
-/* gp-total.js — kartica "Total HEX" nad karticami povzetka (StakeScreener, 31. 10. 2026)
+/* gp-total.js — "Total HEX" card above the summary cards (StakeScreener, 31 Oct 2026)
  *
- * app.js (izvorni HEX Stake Analyzer, GPL-3.0) ostane nespremenjen. Ta skripta ovije
- * globalno funkcijo renderAll(stakes, liquidByChain): po vsakem izrisu iz istih podatkov
- * sesteje glavnico, nabrani donos (z Big Pay Day, kot stolpec Yield) in HEX v denarnici,
- * LOCENO po verigah (pHEX in eHEX sta razlicni sredstvi). Upostevata se izbran pogled
- * (denarnica, veriga) in Moon Math, ker so to ze argumenti renderAll oz. priceFor().
- * Vrnitev: odstrani <script src="./gp-total.js"> iz index.html.
+ * app.js (the original HEX Stake Analyzer, GPL-3.0) stays unchanged. This script wraps
+ * the global function renderAll(stakes, liquidByChain): after every render it uses the same data
+ * to add up principal, accrued yield (with Big Pay Day, like the Yield column) and wallet HEX,
+ * SEPARATELY per chain (pHEX and eHEX are different assets). The selected view
+ * (wallet, chain) and Moon Math are respected, because they are already arguments of renderAll / priceFor().
+ * Rollback: remove <script src="./gp-total.js"> from index.html.
  */
 (function () {
   if (typeof renderAll !== 'function') return;
@@ -29,7 +29,7 @@
     liq = liq || {};
     v.pls.den = liq.pls || 0n;
     v.eth.den = liq.eth || 0n;
-    v.most = liq.bridgedEhex || 0n;   // eHEX, premosten na PulseChain
+    v.most = liq.bridgedEhex || 0n;   // eHEX bridged to PulseChain
     return v;
   }
 
@@ -68,7 +68,7 @@
       'Accrued yield is paid out when a stake ends; ending a stake early carries a penalty.</div>';
   }
 
-  /* --- stolpec Total HEX v tabelah stakov (glavnica + donos, enako kot osnova za Value) --- */
+  /* --- Total HEX column in the stake tables (principal + yield, same basis as Value) --- */
   function polno(h) { return (Number(h) / 1e8).toLocaleString('en-US', { maximumFractionDigits: 2 }); }
   if (typeof buildTableHeader === 'function') {
     var izvGlava = buildTableHeader;
@@ -105,7 +105,7 @@
 
   renderAll = function (stakes, liquidByChain) {
     var r = izvirnik.apply(this, arguments);
-    try { izrisi(stakes, liquidByChain); } catch (napaka) { /* prikaz ostane kot v izvirniku */ }
+    try { izrisi(stakes, liquidByChain); } catch (napaka) { /* display stays as in the original */ }
     return r;
   };
 })();

@@ -15,33 +15,33 @@
 (function () {
   'use strict';
 
-  /* ---------- Ethereum RPC: Tenderly pred publicnode ----------
-   * publicnode je 9.9.2026 nehal brezplacno streci ARHIVSKE poizvedbe:
-   *     eth_getLogs cez stare bloke -> 403
+  /* ---------- Ethereum RPC: Tenderly before publicnode ----------
+   * On 9 Sep 2026 publicnode stopped serving ARCHIVE queries for free:
+   *     eth_getLogs over old blocks -> 403
    *     {"error":{"message":"Archive requests require a personal token"}}
-   * app.js tega ne opazi, ker njegov checkEthRpcHealth() preveri
-   * eth_blockNumber (ta se vedno vrne 200) in zato rezervnih naslovov
-   * sploh ne poisce — pregled Ethereum zgodovine obstane pri ~20 %,
-   * vsak kos petkrat zaporedoma, minute cakanja brez pojasnila.
+   * app.js does not notice, because its checkEthRpcHealth() checks
+   * eth_blockNumber (which still returns 200) and therefore never even
+   * looks for the fallback addresses - the Ethereum history scan stalls at ~20 %,
+   * every chunk five times in a row, minutes of waiting without explanation.
    *
-   * ETH_RPCS je const POLJE, vsebina pa je spremenljiva, zato app.js
-   * ostane bajt za bajt enak izvirniku (isto pravilo kot pri go()).
-   * Tenderly gre na prvo mesto, publicnode ostane za njim kot rezerva —
-   * ce Tenderly kdaj odpove, smo tam, kjer smo bili prej, ne slabse.
-   * Izmerjeno 9.9.2026 iz brskalnika: Tenderly 200, 12.155 logov, 0,6 s.
+   * ETH_RPCS is a const ARRAY, but its contents are mutable, so app.js
+   * stays byte-for-byte identical to the original (same rule as for go()).
+   * Tenderly goes first, publicnode stays behind it as a fallback -
+   * if Tenderly ever fails, we are where we were before, not worse.
+   * Measured on 9 Sep 2026 from a browser: Tenderly 200, 12,155 logs, 0.6 s.
    */
   (function tenderlyPredPublicnode() {
     var NOV = 'https://gateway.tenderly.co/public/mainnet';
     try {
       if (typeof ETH_RPCS === 'undefined' || !Array.isArray(ETH_RPCS)) {
-        console.warn('[denarnica] ETH_RPCS ni dosegljiv — Ethereum zgodovina bo '
-          + 'sla naprej na publicnode in bo najverjetneje padla s 403.');
+        console.warn('[wallets] ETH_RPCS is not reachable — Ethereum history will '
+          + 'go on to publicnode and will most likely fail with 403.');
         return;
       }
       if (ETH_RPCS.indexOf(NOV) === -1) ETH_RPCS.unshift(NOV);
-      console.log('[denarnica] Ethereum RPC vrstni red:', ETH_RPCS.join(', '));
+      console.log('[wallets] Ethereum RPC order:', ETH_RPCS.join(', '));
     } catch (e) {
-      console.warn('[denarnica] ETH_RPCS ni bilo mogoce prestaviti:', e && e.message);
+      console.warn('[wallets] could not reorder ETH_RPCS:', e && e.message);
     }
   })();
 
@@ -69,15 +69,15 @@
   var MAX_TOKENS_PRICED = 250;   // 25 per request, so this is 10 requests per chain
 
   var busy = false;
-  var vsotaDenarnic = null;   // zadnja izracunana vsota denarnic (USD)
-  var denarniceNepopolne = 0; // koliko denarnic je vrnilo nepopoln seznam zetonov
-                              // (vsota je tedaj SPODNJA meja, ne koncna stevilka)
-  var cenaPls = null;         // cena PLS iz ekosistemskega traku
+  var vsotaDenarnic = null;   // last calculated wallet total (USD)
+  var denarniceNepopolne = 0; // how many wallets returned an incomplete token list
+                              // (the total is then a LOWER bound, not the final number)
+  var cenaPls = null;         // PLS price from the ecosystem strip
 
-  // Validatorji: stevilo vpise uporabnik, 32 M PLS na validator je stalnica
-  // PulseChaina. Z verige tega ni mogoce prebrati — validatorji tecejo pri
-  // ponudniku in niso vezani na naslov denarnice. Enako resuje watchdog
-  // (VALIDATOR_COUNT v .env), zato sta obe strani dosledni.
+  // Validators: the count is entered by the user; 32 M PLS per validator is a constant
+  // of PulseChain. This cannot be read from the chain - validators run at a
+  // provider and are not tied to a wallet address. The watchdog does the same
+  // (VALIDATOR_COUNT in .env), so both sides are consistent.
   var VAL_KEY = 'gopulse_validators';
   var PLS_NA_VALIDATOR = 32000000;
   function validatorjev() {
@@ -88,23 +88,23 @@
     try { localStorage.setItem(VAL_KEY, String(Math.max(0, n | 0))); } catch (e) {}
   }
 
-  /* ---------- kartici iz analizatorja ---------- */
-  // Stake Value in Wallet Balance NAMENOMA nista izracunana tukaj, ampak
-  // prezrcaljena iz analizatorjevih kartic. Cene jemljem iz drugega vira kot
-  // on, zato bi lasten izracun dal drugo stevilko za isto stvar na istem
-  // zaslonu — in nihce ne bi vedel, katera je prava.
-  // Ce analiza se ni tekla, kartici posteno pisheta "—", ne 0.
-  // Analizator ima v nekaterih karticah ze pripravljeno razdelitev po verigah
-  // (.wb-breakdown). Kjer obstaja, jo PREZRCALIM — ne izracunam znova, ker bi
-  // se drugace na istem zaslonu pojavili dve stevilki za isto stvar.
+  /* ---------- cards mirrored from the analyzer ---------- */
+  // Stake Value and Wallet Balance are DELIBERATELY not calculated here but
+  // mirrored from the analyzer's cards. I take prices from a different source than
+  // it does, so my own calculation would give a different number for the same thing on the same
+  // screen - and nobody would know which one is right.
+  // If the analysis has not run yet, the cards honestly show "-", not 0.
+  // In some cards the analyzer already has a split by chain
+  // (.wb-breakdown). Where it exists, I MIRROR it - I do not recalculate it, because
+  // otherwise two numbers for the same thing would appear on the same screen.
   function bes(n) { return n && n.textContent ? n.textContent.trim() : ''; }
   function vrsticeIz(kartica) {
     return [].slice.call(kartica.querySelectorAll('.wb-breakdown .wb-row'))
       .map(function (r) {
         var tag = r.querySelector('.wb-tag');
         var chip = tag ? tag.querySelector('.wb-chain-tag') : null;
-        // textContent zlepi znacko verige v ime ("\u25c7 eHEXPLS"), zato jo odstranim
-        // in izpisem posebej.
+        // textContent glues the chain badge onto the name ("\u25c7 eHEXPLS"), so I remove it
+        // and print it separately.
         var ime = bes(tag);
         if (chip) ime = ime.replace(bes(chip), '').trim();
         return {
@@ -133,12 +133,12 @@
     kartica.appendChild(b);
   }
 
-  // Stake Value razdelitve analizator NE izrisuje. Izracunam jo z NJEGOVIMI
-  // funkcijami in NJEGOVIMI cenami (lastStakes, sst, yhDisplay, priceFor),
-  // ne s svojim virom cen — isti izraz kot aNow v app.js:
+  // The analyzer does NOT draw the Stake Value split. I calculate it with ITS
+  // functions and ITS prices (lastStakes, sst, yhDisplay, priceFor),
+  // not with my own price source - the same expression as aNow in app.js:
   //     \u03a3 (stakedHearts + yhDisplay(s)) / 1e8 * priceFor(chain)
-  // Ce se vsota mojih dveh stevil ne ujema z njegovo skupno, razdelitve NE
-  // pokazem. Raje nic kot dve stevili, ki se ne sesteje v tretjo.
+  // If the sum of my two numbers does not match its total, the split is NOT
+  // shown. Better nothing than two numbers that do not add up to the third.
   function stakeiPoVerigi(skupajUsd) {
     try {
       if (typeof lastStakes === 'undefined' || !lastStakes || !lastStakes.length) return null;
@@ -157,11 +157,11 @@
       }
       var vsota = vs.pls.usd + vs.eth.usd;
       if (!(vsota > 0)) return null;
-      // kontrola proti prikazani skupni vrednosti (ta je zaokrozena, zato 1 %)
+      // check against the displayed total (that one is rounded, hence 1 %)
       if (skupajUsd != null && Math.abs(vsota - skupajUsd) / skupajUsd > 0.01) return null;
-      // Brez pripone " HEX": kartice so ozke in "466.51K HEX" se je lomil v dve
-      // vrstici. Enota je ze v vrstici nad razdelitvijo ("874.28K HEX · total
-      // staked"), Wallet Balance pa je prav tako ne izpisuje.
+      // No " HEX" suffix: the cards are narrow and "466.51K HEX" wrapped onto two
+      // lines. The unit is already in the line above the split ("874.28K HEX · total
+      // staked"), and Wallet Balance does not print it either.
       var hex = function (h) {
         return typeof fh === 'function' ? fh(h)
           : (Number(h) / 1e8).toLocaleString('en-US', { maximumFractionDigits: 2 });
@@ -181,16 +181,16 @@
       var l = kart[i].querySelector('.clbl');
       if (!l || l.textContent.trim().toLowerCase() !== naslov.toLowerCase()) continue;
       var v = kart[i].querySelector('.cval');
-      // Wallet Balance nima .csub ampak .ts-sub (tam je vrednost v $).
-      // Brez te rezerve je kartica mesece kazala HEX brez dolarjev.
+      // Wallet Balance has no .csub but .ts-sub (that is where the $ value is).
+      // Without this fallback the card showed HEX without dollars for months.
       var sub = kart[i].querySelector('.csub') || kart[i].querySelector('.ts-sub');
       var dru = kart[i].querySelector('.card-2nd');
       return {
         val: v ? v.textContent.trim() : null,
         sub: sub ? sub.textContent.trim() : '',
         vrstice: vrsticeIz(kart[i]),
-        // textContent zlepi otroke brez presledka ("0 HEXtotal staked"),
-        // zato jih zberemo posamicno in locimo s piko.
+        // textContent glues the children together without a space ("0 HEXtotal staked"),
+        // so we collect them one by one and separate them with a dot.
         dru: dru ? [].slice.call(dru.children)
               .map(function (x) { return x.textContent.trim(); })
               .filter(Boolean).join(' · ') || dru.textContent.trim() : ''
@@ -200,7 +200,7 @@
   }
 
   // "$10.30K" -> 10300 · "$1.2M" -> 1200000 · "$760.67" -> 760.67
-  // Analizator vrednost skrajsa, zato je za sestevek treba nazaj v stevilo.
+  // The analyzer shortens the value, so for the sum it has to go back to a number.
   function razberi(t) {
     if (!t) return null;
     var m = /\$?\s*([\d.,]+)\s*([KMB])?/i.exec(t.replace(/\s/g, ''));
@@ -213,8 +213,8 @@
 
   function renderPovzetek(box) {
     box.textContent = '';
-    // 22. 11. 2026 (owner): brez dodane denarnice obiskovalec ne ve, kaj naj stori —
-    // "available after you run Analyze" ga ni nikamor usmerilo.
+    // 22 Nov 2026 (owner): with no wallet added, a visitor does not know what to do -
+    // "available after you run Analyze" did not point them anywhere.
     var brezDenarnic = !myList().length;
     [['Stake Value', 'staked value'], ['Wallet Balance', 'liquid balance']].forEach(function (par) {
       var d = zrcaliKartico(par[0]);
@@ -224,14 +224,14 @@
       c.appendChild(el('div', 'pov-sub', d ? (d.sub || par[1]) :
         (brezDenarnic ? 'add a wallet below' : 'available after you run Analyze')));
       if (d && d.dru) c.appendChild(el('div', 'pov-dru', d.dru));
-      // pHEX / eHEX razdelitev: pri Wallet Balance prezrcaljena, pri Stake
-      // Value izracunana z analizatorjevimi funkcijami (glej stakeiPoVerigi).
+      // pHEX / eHEX split: mirrored for Wallet Balance, for Stake
+      // Value calculated with the analyzer's functions (see stakeiPoVerigi).
       if (d) dodajVrstice(c, par[0] === 'Stake Value'
         ? stakeiPoVerigi(razberi(d.val))
         : d.vrstice);
       box.appendChild(c);
     });
-    // Validatorji — locena kartica, ker gre za ZAKLENJEN kapital
+    // Validators - a separate card, because this is LOCKED capital
     var vN = validatorjev();
     var vPls = vN * PLS_NA_VALIDATOR;
     var vUsd = (vN && cenaPls) ? vPls * cenaPls : null;
@@ -259,10 +259,10 @@
     vc.appendChild(vrow);
     box.appendChild(vc);
 
-    // Skupaj = denarnice + stakei. Postavki sta LOCENI (v denarnici proti
-    // zaklenjeno v stakeih), zato se sestevek ne podvaja. Vira cen pa sta
-    // razlicna — moj DexScreener, njegov lasten — zato je to priblizek in
-    // tako tudi pise.
+    // Total = wallets + stakes. The two items are SEPARATE (in the wallet vs.
+    // locked in stakes), so the sum does not double count. But the price sources are
+    // different - mine is DexScreener, the analyzer has its own - so this is an approximation and
+    // says so.
     var st = razberi((zrcaliKartico('Stake Value') || {}).val);
     var celo = (st != null && vsotaDenarnic != null);
     var vsota = celo ? st + vsotaDenarnic + (vUsd || 0) : null;
@@ -287,8 +287,8 @@
       box.appendChild(el('div', 'pov-vir', 'mirrored from HEX Stake Analyzer below'));
       return;
     }
-    // Ce je katera denarnica vrnila nepopoln seznam zetonov, je to SPODNJA meja.
-    // Brez znaka bi bila prenizka vsota videti kot koncna.
+    // If any wallet returned an incomplete token list, this is a LOWER bound.
+    // Without a sign, a total that is too low would look final.
     skupaj.appendChild(el('div', 'pov-val',
       celo ? (denarniceNepopolne ? '\u2265' : '') + usd(vsota) : '—'));
     skupaj.appendChild(el('div', 'pov-sub', celo
@@ -304,40 +304,40 @@
     box.appendChild(el('div', 'pov-vir', 'mirrored from HEX Stake Analyzer below'));
   }
 
-  /* ---------- stanje omrezja (promet / gas / blok) ---------- */
-  // Trije podatki o VERIGI, ne o denarnici — zato svoj trak nad WALLETS.
+  /* ---------- network status (volume / gas / block) ---------- */
+  // Three facts about the CHAIN, not about a wallet - hence its own strip above WALLETS.
   //
-  // 3. STALNO PRAVILO (PULSECHAIN-NATIVE.md): kar se da prebrati z verige, se
-  // bere z verige. Gas in blok sta nativna (eth_gasPrice, eth_blockNumber).
-  // 24-urni promet cele verige na verigi NE obstaja — dobiti bi ga bilo mogoce
-  // le s presteva njem vseh Swap dogodkov na vseh DEX-ih, kar v brskalniku ni
-  // izvedljivo. Zato je edini del, ki pride od posrednika, in kartica to
-  // POVE — vir je izpisan na njej, ne skrit.
+  // STANDING RULE 3 (PULSECHAIN-NATIVE.md): whatever can be read from the chain is
+  // read from the chain. Gas and block are native (eth_gasPrice, eth_blockNumber).
+  // The 24-hour volume of the whole chain does NOT exist on chain - it could only be
+  // obtained by counting all Swap events on all DEXes, which is not feasible in a
+  // browser. So it is the only part that comes from an intermediary, and the card
+  // SAYS so - the source is printed on it, not hidden.
   var GAS_RPC = ['https://rpc.pulsechain.com', 'https://pulsechain-rpc.publicnode.com', 'https://rpc.libertyswap.finance'];  // g4mm4 ugasnil 21. 11. 2026
-  /* ---- 24-urni promet cele verige: dva vira, vsak za svoj del ------------
-     Cilj (owner, 23.8.2026): "priblizno tocen kot DexScreenerjev in se
-     spreminja tako kot pri DexScreenerju; ni treba da je do $ natancen".
+  /* ---- 24-hour volume of the whole chain: two sources, each for its own part ------------
+     Goal (owner, 23 Aug 2026): "roughly as accurate as DexScreener's and changing
+     the same way as on DexScreener; it does not need to be accurate to the $".
 
-     PulseX je priblizno 80 % prometa in ima LASTNE indekserje brez omejitev —
-     od tam vzamemo popoln, drsec 24-urni podatek. Za ostale DEX-e teh
-     indekserjev ni, zato zanje uporabimo DexScreener.
+     PulseX is roughly 80 % of volume and has its OWN indexers without limits -
+     from there we take a complete, rolling 24-hour figure. The other DEXes have no
+     such indexers, so DexScreener is used for them.
 
-       del A   PulseX v1 + v2 + StableSwap   graph.pulsechain.com  (popolno)
-       del B   VSI OSTALI DEX-i              DexScreener /token-pairs
+       part A   PulseX v1 + v2 + StableSwap   graph.pulsechain.com  (complete)
+       part B   ALL OTHER DEXes               DexScreener /token-pairs
 
-     ⚠️ DVOJNO STETJE JE PREPRECENO STRUKTURNO, ne s praznim upanjem: iz dela B
-     se izpustijo vsi pari z dexId === 'pulsex'. PulseX pride izkljucno iz
-     subgraphov, ostali izkljucno z DexScreenerja. Nobeden ne more priti dvakrat.
+     DOUBLE COUNTING IS PREVENTED STRUCTURALLY, not by hope: from part B
+     all pairs with dexId === 'pulsex' are left out. PulseX comes only from
+     the subgraphs, the others only from DexScreener. Nothing can be counted twice.
 
-     Izmerjeno 23.8.2026 ob 20:30 UTC:
-       PulseX (subgraph)    $4,47M
-       ostali (DexScreener) $1,00M   9mm 478K, switchx 247K, liberty 185K,
-                                     uniswap 74K, 9inch 13K, ostalo drobiz
-       skupaj               $5,47M   proti ~$5,7M na dexscreener.com  = ~96 %
+     Measured on 23 Aug 2026 at 20:30 UTC:
+       PulseX (subgraph)    $4.47M
+       others (DexScreener) $1.00M   9mm 478K, switchx 247K, liberty 185K,
+                                     uniswap 74K, 9inch 13K, the rest small change
+       total                $5.47M   vs ~$5.7M on dexscreener.com  = ~96 %
 
-     Del B je se vedno odrezan na 30 parov na zeton, a ti DEX-i so majhni in
-     njihovi pari visijo na WPLS in stabilnih kovancih, ki so na seznamu.
-     Zato je izguba tam veliko manjsa kot bi bila pri PulseX-u.                */
+     Part B is still capped at 30 pairs per token, but those DEXes are small and
+     their pairs hang on WPLS and stablecoins, which are in the list.
+     So the loss there is much smaller than it would be for PulseX.                */
   var PULSEX_SUBGRAPHS = [
     ['PulseX v1',  'https://graph.pulsechain.com/subgraphs/name/pulsechain/pulsex'],
     ['PulseX v2',  'https://graph.pulsechain.com/subgraphs/name/pulsechain/pulsexv2'],
@@ -346,7 +346,7 @@
   var STRANI = 2;
   var NA_STRAN = 1000;
   var DS_PAIRS = 'https://api.dexscreener.com/token-pairs/v1/pulsechain/';
-  // Skoznje visi vecina parov na manjsih DEX-ih.
+  // Most pairs on the smaller DEXes go through these.
   var PROMET_TOKENI = [
     '0xA1077a294dDE1B09bB078844df40758a5D0f9a27', // WPLS
     '0x2b591e99afe9f32eaa6214f7b7629768c40eeb39', // pHEX
@@ -362,8 +362,8 @@
 
   var GAS_SEND = 21000;
   var GAS_MENJAVA = 150000;
-  var UTRIP_MS = 10000;      // kako pogosto se osvezita gas in blok
-  var PROMET_VSAKIH = 30;    // promet le vsak 30. utrip (~5 min) — glej spodaj
+  var UTRIP_MS = 10000;      // how often gas and block are refreshed
+  var PROMET_VSAKIH = 30;    // volume only every 30th tick (~5 min) - see below
 
   function rpcKlic(url, metoda) {
     return timeoutFetch(url, {
@@ -371,13 +371,13 @@
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: metoda, params: [] })
     }, 8000)
       .then(function (r) { return r.ok ? r.json() : Promise.reject(); })
-      .then(function (j) { if (!j || !j.result) throw new Error('brez rezultata'); return BigInt(j.result); });
+      .then(function (j) { if (!j || !j.result) throw new Error('no result'); return BigInt(j.result); });
   }
 
-  // Isto pravilo kot v GAS-FEE.md in v oracle-commit.js: vprasaj DVA RPC in
-  // vzemi NIZJEGA. 9.8.2026 je en RPC javljal 117.549.435 Gwei, ko sta druga
-  // dva javljala 1 — in oracle mu je verjel ter placeval ~29.000 PLS na commit.
-  // Tu se ne placuje nic, a ista laz bi pomenila napacno stevilko na zaslonu.
+  // Same rule as in GAS-FEE.md and oracle-commit.js: ask TWO RPCs and
+  // take the LOWER. On 9 Aug 2026 one RPC reported 117,549,435 Gwei while the other
+  // two reported 1 - and the oracle believed it and paid ~29,000 PLS per commit.
+  // Nothing is paid here, but the same lie would mean a wrong number on screen.
   function gasInBlok() {
     var gasi = GAS_RPC.map(function (u) { return rpcKlic(u, 'eth_gasPrice').catch(function () { return null; }); });
     var blok = GAS_RPC.reduce(function (p, u) {
@@ -396,7 +396,7 @@
   function prometPodatki() {
     var od = Math.floor(Date.now() / 1000) - 86400;
 
-    // ── del A: PulseX z lastnih indekserjev ────────────────────────────────
+    // -- part A: PulseX from its own indexers ----------------------------------
     function stran(url, skip) {
       var q = '{pairHourDatas(first:' + NA_STRAN + ', skip:' + skip +
               ', orderBy:hourlyVolumeUSD, orderDirection:desc' +
@@ -407,12 +407,12 @@
       }, 20000)
         .then(function (r) { return r.ok ? r.json() : Promise.reject(); })
         .then(function (j) {
-          // GraphQL javi napako s HTTP 200 in {"errors":[…]} brez `data`.
-          // Ce bi to steli kot prazen rezultat, bi napaka izgledala kot
-          // "ta borza danes ni imela prometa" — 23.8.2026 se je tako tiho
-          // izgubil ves StableSwap ($326K) in opozorila ni bilo.
+          // GraphQL reports an error with HTTP 200 and {"errors":[...]} without `data`.
+          // If we counted that as an empty result, the error would look like
+          // "this exchange had no volume today" - on 23 Aug 2026 the whole StableSwap
+          // ($326K) silently disappeared this way and there was no warning.
           if (!j || j.errors || !j.data || !Array.isArray(j.data.pairHourDatas)) {
-            throw new Error('subgraph ni vrnil podatkov');
+            throw new Error('subgraph returned no data');
           }
           var a = j.data.pairHourDatas, s = 0;
           for (var i = 0; i < a.length; i++) s += Number(a[i].hourlyVolumeUSD) || 0;
@@ -430,18 +430,18 @@
       return { vol: v, ok: ok, vseh: r.length };
     });
 
-    // ── del B: vsi OSTALI DEX-i z DexScreenerja ────────────────────────────
+    // -- part B: all OTHER DEXes from DexScreener ------------------------------
     var pari = {};
     var okB = 0;
     var delB = Promise.all(PROMET_TOKENI.map(function (a) {
       return timeoutFetch(DS_PAIRS + a, null, 10000)
         .then(function (r) { return r.ok ? r.json() : Promise.reject(); })
         .then(function (arr) {
-          if (!Array.isArray(arr)) throw new Error('nepricakovana oblika');
+          if (!Array.isArray(arr)) throw new Error('unexpected format');
           okB++;
           arr.forEach(function (p) {
             if (!p || p.chainId !== 'pulsechain' || !p.pairAddress) return;
-            // PulseX pride iz subgraphov — tu ga IZPUSTIMO, sicer bi stel dvakrat.
+            // PulseX comes from the subgraphs - we SKIP it here, otherwise it would count twice.
             if (p.dexId === 'pulsex') return;
             if (pari[p.pairAddress]) return;
             pari[p.pairAddress] = Number((p.volume || {}).h24) || 0;
@@ -456,13 +456,13 @@
 
     return Promise.all([delA, delB]).then(function (r) {
       var a = r[0], b = r[1];
-      if (!a.ok && !b.ok) return null;             // popoln izpad, ne "promet je 0"
+      if (!a.ok && !b.ok) return null;             // complete outage, not "volume is 0"
       return {
         vol: a.vol + b.vol,
         pulsex: a.vol,
         ostali: b.vol,
         parovB: b.parov,
-        manjka: (a.vseh - a.ok) + (b.vseh - b.ok)  // koliko poizvedb ni uspelo
+        manjka: (a.vseh - a.ok) + (b.vseh - b.ok)  // how many queries failed
       };
     });
   }
@@ -485,28 +485,28 @@
     return s;
   }
 
-  /* ---- trak se zgradi ENKRAT, nato se le posodabljajo vrednosti ----------
-     Ponoven izris celega traku vsakih 10 s bi pomenil, da vsakih 10 s izgine
-     in se vrne — vsak utrip bi bil viden kot poskok. Zato so vozlisca
-     shranjena in se spreminja samo besedilo v njih.
+  /* ---- the strip is built ONCE, after that only the values are updated ----------
+     Redrawing the whole strip every 10 s would mean that every 10 s it disappears
+     and comes back - every tick would be visible as a jump. So the nodes are
+     kept and only the text inside them changes.
 
-     Ob neuspehu se stara vrednost OHRANI in kartica potemni, namesto da bi
-     pokazala "—". Pomembna je razlika med "veriga javlja 0" in "trenutno je
-     nisem uspel vprasati" — prva bi bila novica, druga ni.                */
-  var netUI = null;      // vsebina traku. NE mesaj z lokalnim `net` elementom
-                       // v header(): ono je skatla, to je tisto v njej.
-  var netTimer = null; // ura utripa
+     On failure the old value is KEPT and the card dims, instead of
+     showing "-". The difference between "the chain reports 0" and "I could not
+     ask it right now" matters - the first would be news, the second is not.                */
+  var netUI = null;      // strip contents. Do NOT confuse with the local `net` element
+                       // in header(): that one is the box, this is what is inside it.
+  var netTimer = null; // tick timer
   var netTick = 0;
-  var netZadnji = null; // cas zadnjega uspesnega branja
+  var netZadnji = null; // time of the last successful read
 
-  // Vrednost se sicer spremeni tiho in se ne loci "osvezuje se" od "obticalo
-  // je". Razred se doda le ob DEJANSKI spremembi — utrip vsakih 10 s pri isti
-  // stevilki bi bil lazna zivahnost.
+  // Otherwise the value changes silently and "refreshing" cannot be told from "stuck".
+  // The class is added only on an ACTUAL change - a tick every 10 s with the same
+  // number would be fake liveliness.
   function nastavi(node, txt) {
     if (node.textContent === txt) return;
     node.textContent = txt;
     node.classList.remove('utrip');
-    void node.offsetWidth;          // vsili ponoven zagon animacije
+    void node.offsetWidth;          // force the animation to restart
     node.classList.add('utrip');
   }
 
@@ -544,20 +544,20 @@
       if (d.gas) {
         var gwei = Number(d.gas) / 1e9;
         nastavi(g.v, Math.round(gwei).toLocaleString('en-US') + ' Gwei');
-        // Send je tisto, kar clovek dejansko naredi najveckrat, zato prvi.
+        // Send is what people actually do most often, so it goes first.
         g.s1.textContent = plsInUsd(gwei, GAS_SEND) + ' · send PLS';
         g.s2.textContent = plsInUsd(gwei, GAS_MENJAVA) + ' · swap';
-        // ⚠️ ZAKAJ JE TA STEVILKA NIZJA OD TISTE V DENARNICI — izmerjeno 24.8.2026:
-        //     baseFeePerGas   804.674 Gwei  (enak na obeh RPC = vrednost verige)
-        //     eth_gasPrice    805.159 / 835.478 Gwei  (base + priporoceni tip)
-        //     nasa stevilka   21.000 x 805.159 = 16,91 PLS
-        //     ZKX kaze        20,59 PLS  = base x ~1,22
-        //     OKX kaze        22,46 PLS  = base x ~1,33
-        // Denarnice ne kazejo stroska, ampak ZGORNJO MEJO (maxFeePerGas x limit),
-        // ker sme osnovna cena zrasti do 12,5 % na blok in mora tx vseeno iti
-        // skozi. Dejansko placas (base + tip) x porabljen gas — torej priblizno
-        // nasih 17 PLS. Nobena stevilka ni napacna; odgovarjata na drugo
-        // vprasanje. Vir to zdaj pove, da se cez pol leta ne raziskuje znova.
+        // WHY THIS NUMBER IS LOWER THAN THE ONE IN A WALLET - measured 24 Aug 2026:
+        //     baseFeePerGas   804.674 Gwei  (same on both RPCs = the chain's value)
+        //     eth_gasPrice    805.159 / 835.478 Gwei  (base + suggested tip)
+        //     our number      21,000 x 805.159 = 16.91 PLS
+        //     ZKX shows       20.59 PLS  = base x ~1.22
+        //     OKX shows       22.46 PLS  = base x ~1.33
+        // Wallets do not show the cost but an UPPER LIMIT (maxFeePerGas x limit),
+        // because the base fee may rise up to 12.5 % per block and the tx must still go
+        // through. What you actually pay is (base + tip) x gas used - so roughly
+        // our 17 PLS. Neither number is wrong; they answer a different
+        // question. The source now says so, so this is not researched again in half a year.
         g.vir.textContent = 'base fee + tip · what you pay, not the wallet ceiling';
         g.c.classList.remove('prazna', 'zastarelo');
         netZadnji = Date.now();
@@ -608,9 +608,9 @@
     if (netTimer) { clearInterval(netTimer); netTimer = null; }
   }
 
-  /* Utrip se USTAVI, ko zavihek ni viden. Brez tega bi odprt zavihek v ozadju
-     do konca dneva poslal ~26.000 zahtevkov na tuja RPC vozlisca — za podatek,
-     ki ga nihce ne gleda. Ob vrnitvi se osvezi takoj, da stevilka ni stara. */
+  /* The tick STOPS when the tab is not visible. Without that, an open background tab
+     would send ~26,000 requests to third-party RPC nodes by the end of the day - for data
+     nobody is looking at. On return it refreshes at once, so the number is not stale. */
   function zazeniOmrezje() {
     ustaviOmrezje();
     if (document.hidden) return;
@@ -636,10 +636,10 @@
     }
   }
 
-  /* ---------- ekosistemski trak ---------- */
-  // Naslovi preverjeni 22.8.2026 prek DexScreener /tokens/v1 — ne ugibani.
-  // Ikone so LOKALNE: CSP dovoli img-src 'self' data:, zunanje slike bi bile
-  // blokirane. Prenesene z DexScreenerja 22.8.2026 in pomanjšane na 96 px.
+  /* ---------- ecosystem strip ---------- */
+  // Addresses verified on 22 Aug 2026 via DexScreener /tokens/v1 - not guessed.
+  // The icons are LOCAL: the CSP allows img-src 'self' data:, external images would be
+  // blocked. Downloaded from DexScreener on 22 Aug 2026 and scaled down to 96 px.
   var EKO = [
     { sym: 'pHEX', ime: 'PulseChain HEX', chain: 'pls', ikona: 'phex', addr: '0x2b591e99afe9f32eaa6214f7b7629768c40eeb39' },
     { sym: 'eHEX', ime: 'Ethereum HEX',   chain: 'eth', ikona: 'ehex', cg: 'hex', addr: '0x2b591e99afe9f32eaa6214f7b7629768c40eeb39' },
@@ -647,46 +647,46 @@
     { sym: 'PLSX', ime: 'PulseX',         chain: 'pls', ikona: 'plsx', addr: '0x95B303987A60C71504D99Aa1b13B4DA07b0790ab' },
     { sym: 'INC',  ime: 'Incentive',      chain: 'pls', ikona: 'inc',  addr: '0x2fa878Ab3F87CC1C9737Fc071108F904c0B0C95d' },
     { sym: 'PRVX', ime: 'ProveX',         chain: 'pls', ikona: 'prvx', addr: '0xF6f8Db0aBa00007681F8fAF16A0FDa1c9B030b11' },
-    // BTC in ETH prek zavitih različic na Ethereumu — tako ostaneta oba
-    // podatka z verige in po istem pravilu (najgloblji bazen) kot vse ostalo.
-    // Imeni sta iskreni: to sta WBTC in WETH, ne kovanca sama.
+    // BTC and ETH via the wrapped versions on Ethereum - so both stay
+    // on-chain data and follow the same rule (deepest pool) as everything else.
+    // The names are honest: these are WBTC and WETH, not the coins themselves.
     { sym: 'BTC',  ime: 'Wrapped Bitcoin', chain: 'eth', ikona: 'btc',  pripona: 'svg', cg: 'bitcoin',
       addr: '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599' },
     { sym: 'ETH',  ime: 'Wrapped Ether',   chain: 'eth', ikona: 'eth', cg: 'ethereum',
       addr: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2' }
   ];
 
-  /* ---- REZERVA ZA ETHEREUMSKO STRAN: CoinGecko ---------------------------
-     ⚠️ 24.8.2026 popoldne se je slika obrnila: DexScreenerjeve poti za
-     `pulsechain` so si opomogle, poti za `ethereum` pa so odpovedale. eHEX,
-     BTC in ETH so pisali "no data", medtem ko je PulseChain stran delovala
-     prek PulseX subgrapha. Rezerva je obstajala samo za eno stran verige.
+  /* ---- FALLBACK FOR THE ETHEREUM SIDE: CoinGecko ---------------------------
+     On the afternoon of 24 Aug 2026 the picture reversed: DexScreener's routes for
+     `pulsechain` recovered and the routes for `ethereum` failed. eHEX,
+     BTC and ETH showed "no data", while the PulseChain side worked
+     via the PulseX subgraph. A fallback existed for only one side.
 
-     PulseX Ethereuma ne indeksira, zato tam potrebujemo drug vir.
+     PulseX does not index Ethereum, so another source is needed there.
 
-     ⚠️ ZAKAJ SAMO TU IN NE POVSOD: 17.8.2026 je CoinGecko cenil PLS **40 %
-     prenizko** in z obrnjenim predznakom dneva, ker je bral z borze z 2.713 $
-     dnevnega prometa (PULSECHAIN-NATIVE.md). Za PulseChain zetone je torej
-     neuporaben. Za HEX, BTC in ETH na Ethereumu pa gre za globoke, dobro
-     pokrite trge — preverjeno isti dan: CoinGecko $0,001538 proti
-     DexScreenerjevim $0,001532 za HEX, razlika 0,4 %.
-     Zato: CoinGecko SAMO za vnose z `cg` oznako, in te so samo ethereumski.
+     WHY ONLY HERE AND NOT EVERYWHERE: on 17 Aug 2026 CoinGecko priced PLS **40 %
+     too low** and with the day's sign reversed, because it read from an exchange with $2,713
+     of daily volume (PULSECHAIN-NATIVE.md). So it is useless for PulseChain
+     tokens. For HEX, BTC and ETH on Ethereum, however, these are deep, well
+     covered markets - checked the same day: CoinGecko $0.001538 vs
+     DexScreener's $0.001532 for HEX, a 0.4 % difference.
+     So: CoinGecko ONLY for entries with a `cg` tag, and those are Ethereum only.
 
-     PREIZKUSENO IN ZAVRNJENO: Blockscout vrne `exchange_rate` pri istem klicu,
-     ki ga ze delamo, torej zastonj. A za eHEX je javljal $0,0004338 namesto
-     $0,001538 — 3,5-krat premalo. Cena, ki je brezplacna in napacna, je slabsa
-     od nobene cene, ker se je ne da lociti od prave.
+     TRIED AND REJECTED: Blockscout returns `exchange_rate` in the same call
+     we already make, so for free. But for eHEX it reported $0.0004338 instead of
+     $0.001538 - 3.5 times too low. A price that is free and wrong is worse
+     than no price, because it cannot be told apart from the right one.
 
-     Ena sama poizvedba za vse manjkajoce naenkrat (ids=…).                   */
-  /* ⚠️ CoinGecko brezplacni nacrt zavrne ze SESTI hitri klic — izmerjeno
-     24.8.2026: 5x HTTP 200, nato 429, 429, 429. Ravno med izpadom DexScreenerja
-     se stran veckrat osvezi, torej rezerva odpove natanko takrat, ko jo rabis.
-     To je nesmiselno: rezervni vir, ki pade pod bremenom izpada, ni rezerva.
+     One single query for all missing ones at once (ids=...).                   */
+  /* CoinGecko's free plan rejects the SIXTH fast call already - measured
+     24 Aug 2026: 5x HTTP 200, then 429, 429, 429. Exactly during a DexScreener outage
+     the page gets refreshed several times, so the fallback fails exactly when you need it.
+     That makes no sense: a fallback source that falls over under the load of an outage is not a fallback.
 
-     Zato se odgovor SHRANI. Svez je 5 minut; ce CoinGecko zavrne, se uporabi
-     shranjeni, ne glede na starost. Cena BTC ali ETH izpred nekaj minut je
-     neprimerno bolje kot "no data" — pri teh dveh se v petih minutah ne zgodi
-     nic, kar bi spremenilo pomen stevilke.                                   */
+     So the answer is SAVED. It is fresh for 5 minutes; if CoinGecko refuses, the
+     saved one is used, regardless of age. A BTC or ETH price from a few minutes ago is
+     far better than "no data" - for these two nothing happens in five minutes
+     that would change the meaning of the number.                                   */
   var CG_KEY = 'gopulse_cg_cache';
   var CG_SVEZ_MS = 5 * 60 * 1000;
 
@@ -709,7 +709,7 @@
       idji.join(',') + '&vs_currencies=usd&include_24hr_change=true', null, 10000)
       .then(function (r) { return r.ok ? r.json() : Promise.reject(); })
       .then(function (j) {
-        if (!j || typeof j !== 'object' || j.status) throw new Error('brez podatkov');
+        if (!j || typeof j !== 'object' || j.status) throw new Error('no data');
         cgShrani(j);
         return j;
       })
@@ -721,10 +721,10 @@
       if (chain !== 'pls') return m;
       var manjka = addrs.filter(function (a) { return !m[a.toLowerCase()]; });
       if (!manjka.length) return m;
-      // 24.8.2026: brez tega je trak pisal "no data" pri pHEX, PLS, PLSX, INC
-      // in PRVX, medtem ko so BTC, ETH in eHEX (vsi z Ethereuma) delovali.
+      // 24 Aug 2026: without this the strip showed "no data" for pHEX, PLS, PLSX, INC
+      // and PRVX, while BTC, ETH and eHEX (all from Ethereum) worked.
       return subgraphCene(manjka).then(function (sg) {
-        // vir se prenese naprej, da kartica lahko pove, od kod je cena
+        // the source is passed on, so the card can say where the price comes from
         for (var k in sg) if (!m[k]) m[k] = { px: sg[k].px, liq: sg[k].liq, h24: NaN, vir: 'pulsex' };
         return m;
       });
@@ -742,7 +742,7 @@
           var liq = (p.liquidity || {}).usd || 0;
           var px = parseFloat(p.priceUsd);
           if (!a || !isFinite(px)) return;
-          // najgloblji bazen — plitev par ni cena, ampak naključje
+          // deepest pool - a shallow pair is not a price but a coincidence
           if (!out[a] || liq > out[a].liq)
             out[a] = { px: px, liq: liq, h24: parseFloat((p.priceChange || {}).h24) };
         });
@@ -751,12 +751,12 @@
       .catch(function () { return {}; });
   }
 
-  // Po vzoru HEXO: dovolj decimalk, da se drobne cene res vidijo.
+  // Like HEXO: enough decimals that tiny prices are really visible.
   function cena(n) {
     if (!isFinite(n)) return '—';
-    // en-US namenoma: drugod na kartici je pika DECIMALNO ločilo
-    // ($0.00396200), zato bi slovenska pika za tisočice ($77.163)
-    // pomenila nekaj drugega kot izgleda. Vejica je nedvoumna.
+    // en-US on purpose: elsewhere on the card the dot is the DECIMAL separator
+    // ($0.00396200), so a Slovenian thousands dot ($77.163)
+    // would mean something other than it looks like. A comma is unambiguous.
     if (n >= 1000) return '$' + Math.round(n).toLocaleString('en-US');
     if (n >= 1) return '$' + n.toFixed(4);
     if (n >= 0.01) return '$' + n.toFixed(6);
@@ -768,7 +768,7 @@
     var eth = EKO.filter(function (t) { return t.chain === 'eth'; }).map(function (t) { return t.addr; });
     return Promise.all([ekoFetch('pls', pls), ekoFetch('eth', eth)]).then(function (r) {
       var m = { pls: r[0], eth: r[1] };
-      // kar je ostalo brez cene IN ima CoinGecko oznako -> zadnja rezerva
+      // whatever is left without a price AND has a CoinGecko tag -> last fallback
       var manjka = EKO.filter(function (x) {
         return x.cg && !m[x.chain][x.addr.toLowerCase()];
       });
@@ -804,10 +804,10 @@
         hdr.appendChild(txt);
         c.appendChild(hdr);
         c.appendChild(el('div', 'eko-cena', d ? cena(d.px) : '—'));
-        // Pod DELUJOCO ceno je prej pisalo "no data", ker rezervni viri
-        // 24-urne spremembe nimajo. Zdaj se izpise VIR, kadar cena ne pride od
-        // glavnega vira — in vir je pomembnejsi od spremembe, ker je 17.8.2026
-        // ravno napacen vir dal 40 % napacno ceno, ne da bi to kdo opazil.
+        // Under a WORKING price it used to say "no data", because the fallback sources
+        // have no 24-hour change. Now the SOURCE is printed whenever the price does not come from
+        // the main source - and the source matters more than the change, because on 17 Aug 2026
+        // exactly a wrong source gave a 40 % wrong price without anyone noticing.
         var sp;
         if (d && d.vir) {
           sp = el('div', 'eko-spr', 'via ' + (d.vir === 'pulsex' ? 'PulseX' : 'CoinGecko'));
@@ -833,10 +833,10 @@
     }
   }
 
-  /* ---------- lastni žetoni (dodani po naslovu pogodbe) ---------- */
-  // Zakaj: samodejno odkrivanje prek Blockscouta ne vidi vsega — nov žeton,
-  // žeton brez indeksa, ali tak, ki ga raziskovalec izpusti. Ročni dodatek
-  // zapre to luknjo. Hrani se samo v tem brskalniku.
+  /* ---------- custom tokens (added by contract address) ---------- */
+  // Why: automatic discovery via Blockscout does not see everything - a new token,
+  // a token without an index, or one the explorer leaves out. Adding by hand
+  // closes that gap. Stored only in this browser.
   var TOK_KEY = 'gopulse_custom_tokens';
   function customTokens() {
     try { var a = JSON.parse(localStorage.getItem(TOK_KEY) || '[]'); return Array.isArray(a) ? a : []; }
@@ -1065,10 +1065,10 @@
 
   // Blockscout lists every token the address holds, with decimals and symbol.
   function tokenBalances(addr, chain) {
-    // 8 s, ne 25 s. Izmerjeno 8.9.2026: normalen odgovor je 0,3-2,3 s, obcasen
-    // zamudnik pa je visel 19,5 s. Cakati na 25 s pomeni cakati na izjemo.
-    // Ko rok potece, je ta veriga oznacena kot nepopolna (kartica to napise in
-    // vsota dobi znak >=), kar je bolje kot pol minute praznega zaslona.
+    // 15 s (8 s until 22 Nov 2026; raised for very large wallets), not 25 s. Measured 8 Sep 2026: a normal answer takes 0.3-2.3 s, an occasional
+    // straggler hung for 19.5 s. Waiting 25 s means waiting for the exception.
+    // When the time runs out, this chain is marked as incomplete (the card says so and
+    // the total gets a >= sign), which is better than half a minute of empty screen.
     return timeoutFetch(BS[chain] + '/addresses/' + addr + '/token-balances', null, 15000)
       .then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -1117,33 +1117,33 @@
   var CHUNK = 25;
   var RETRY_MS = 900;
 
-  /* ---- REZERVNI VIR CEN ZA PULSECHAIN: PulseX subgraph -------------------
-     ⚠️ ZAKAJ OBSTAJA — 24.8.2026 zjutraj. DexScreenerjeve poti za `pulsechain`
-     so nehale odgovarjati (HTTP 000, povezava se ni vzpostavila), medtem ko so
-     poti za `ethereum` delovale normalno. Posledica na strani: pHEX, PLS,
-     PLSX, INC in PRVX so pisali "no data", 38 zetonov je ostalo brez cene,
-     Stake Value je padel z $10,36K na $2,79K in skupaj z $13.105 na $3.184.
-     Stran je izgledala, kot da je uporabnik obubozal cez noc.
+  /* ---- FALLBACK PRICE SOURCE FOR PULSECHAIN: PulseX subgraph -------------------
+     WHY IT EXISTS - morning of 24 Aug 2026. DexScreener's routes for `pulsechain`
+     stopped answering (HTTP 000, no connection was made), while the
+     routes for `ethereum` worked normally. The effect on the page: pHEX, PLS,
+     PLSX, INC and PRVX showed "no data", 38 tokens were left without a price,
+     Stake Value dropped from $10.36K to $2.79K and the total from $13,105 to $3,184.
+     The page looked as if the user had become poor overnight.
 
-     Cene so bile edina stvar na strani z ENIM SAMIM virom. To je natanko tisto,
-     pred cimer svari 3. stalno pravilo (PULSECHAIN-NATIVE.md): posrednik nikoli
-     sam. In natanko tisto, pred cimer je nastala ta stran — da odvisnost od
-     tujega servisa nekega dne ugasne luc.
+     Prices were the only thing on the page with a SINGLE source. That is exactly what
+     standing rule 3 warns against (PULSECHAIN-NATIVE.md): an intermediary never
+     alone. And exactly what this page was created against - that a dependency on
+     a third-party service one day turns the lights off.
 
-     PulseX subgraph ima `derivedUSD` za vsak zeton, ki ima na PulseX bazen, in
-     je v istem trenutku deloval brez tezav. Izmerjeno takrat, ko DexScreener
-     ni odgovarjal:
-         HEX  $0,00408187      (DexScreener nazadnje $0,004201)
-         INC  $0,70773542      (nazadnje $0,7147)
-         PRVX $0,00008546      (nazadnje $0,00008399)
-     Razlike do ~2 %: PulseX je EN DEX, DexScreener pa vzame najgloblji bazen
-     kjerkoli. Za prikaz stanja je to povsem dovolj.
+     The PulseX subgraph has `derivedUSD` for every token that has a pool on PulseX, and
+     at that same moment it worked without problems. Measured while DexScreener
+     was not answering:
+         HEX  $0.00408187      (DexScreener last $0.004201)
+         INC  $0.70773542      (last $0.7147)
+         PRVX $0.00008546      (last $0.00008399)
+     Differences up to ~2 %: PulseX is ONE DEX, while DexScreener takes the deepest pool
+     anywhere. For showing balances this is entirely enough.
 
-     RABI SE SAMO ZA MANJKAJOCE. DexScreener ostane glavni, ker pokriva tudi
-     zetone, ki na PulseX-u nimajo bazena (9mm, Liberty …). Subgraph zapolni
-     luknje — in kadar DexScreener pade, so luknje pac vse.
+     USED ONLY FOR THE MISSING ONES. DexScreener stays the main source, because it also covers
+     tokens that have no pool on PulseX (9mm, Liberty ...). The subgraph fills the
+     gaps - and when DexScreener is down, the gaps are simply everything.
 
-     Ena poizvedba za VSE naslove hkrati (id_in), ne po kosih.                */
+     One query for ALL addresses at once (id_in), not in chunks.                */
   var PULSEX_CENE = 'https://graph.pulsechain.com/subgraphs/name/pulsechain/pulsexv2';
 
   function subgraphCene(addrs) {
@@ -1157,14 +1157,14 @@
       .then(function (r) { return r.ok ? r.json() : Promise.reject(); })
       .then(function (j) {
         if (!j || j.errors || !j.data || !Array.isArray(j.data.tokens)) {
-          throw new Error('subgraph ni vrnil cen');
+          throw new Error('subgraph returned no prices');
         }
         var out = {};
         j.data.tokens.forEach(function (x) {
           var px = parseFloat(x.derivedUSD);
           if (!isFinite(px) || px <= 0) return;
-          // totalLiquidity je v ENOTAH ZETONA, ne v dolarjih — za stolpec Pool
-          // ga je treba pomnoziti s ceno, sicer bi PLSX kazal 126 milijard.
+          // totalLiquidity is in TOKEN UNITS, not dollars - for the Pool column
+          // it has to be multiplied by the price, otherwise PLSX would show 126 billion.
           var liq = parseFloat(x.totalLiquidity);
           out[x.id.toLowerCase()] = {
             px: px,
@@ -1230,15 +1230,15 @@
   function priceOne(addr, chain) {
     return priceChunk([addr], chain).then(function (m) {
       if (m[addr] || chain !== 'pls') return m[addr] || null;
-      // Brez tega bi ob izpadu DexScreenerja ostal brez cene tudi NATIVNI PLS,
-      // torej najpomembnejsa stevilka na strani.
+      // Without this, during a DexScreener outage even the NATIVE PLS would be left without a price,
+      // i.e. the most important number on the page.
       return subgraphCene([addr]).then(function (sg) { return sg[addr] || null; });
     });
   }
 
-  // 22. 11. 2026 (owner): vPLS (Vouch liquid staking) se ne vrednoti po plitvem DEX bazenu,
-  // ampak po tecaju pogodbe getRate() x cena PLS - vPLS se pri Vouchu zamenja nazaj v PLS.
-  // Brez tega je bilo vecje imetje oznaceno "not counted" (vredno vec kot bazen).
+  // 22 Nov 2026 (owner): vPLS (Vouch liquid staking) is not valued by the shallow DEX pool,
+  // but by the contract rate getRate() x PLS price - at Vouch, vPLS is exchanged back into PLS.
+  // Without this, a larger holding was marked "not counted" (worth more than the pool).
   var VPLS = '0x79bb3a0ee435f957ce4f54ee8c3cfadc7278da0c';
   var vplsObljuba = null;
   function vplsTecaj() {
@@ -1255,7 +1255,7 @@
         .then(function (r) { return r.ok ? r.json() : Promise.reject(); })
         .then(function (j) {
           var v = j && j.result ? Number(BigInt(j.result)) / 1e18 : 0;
-          if (!(v > 0.5 && v < 100)) return Promise.reject();   // nesmiseln odgovor
+          if (!(v > 0.5 && v < 100)) return Promise.reject();   // nonsensical answer
           return v;
         })
         .catch(poskus);
@@ -1277,7 +1277,7 @@
         // Cap the priced set so a wallet dusted with 800 spam tokens
         // does not turn into 30 DexScreener requests.
         var byValueGuess = toks.slice(0, MAX_TOKENS_PRICED);
-        // ročno dodani žetoni za to verigo — preberemo jih neposredno s pogodbe
+        // tokens added by hand for this chain - read directly from the contract
         var rocni = customTokens().filter(function (x) { return x.chain === ch; });
         return Promise.all(rocni.map(function (t) { return beriCustom(addr, t); }))
           .then(function (dodatki) {
@@ -1321,11 +1321,11 @@
             var p = pm[t.addr];
             var q = num(t.raw, t.dec);
             var ok = p && p.liq >= MIN_LIQ_USD;
-            // 10. 11. 2026 (owner): imetje, vredno VEC kot cel bazen, se ne steje v vsoto.
-            // Lazni (spam) zetoni imajo izmisljeno ceno v bazenu za nekaj centov — ePEPE:
-            // 20 kosov × 481 mio $ ob bazenu 0,04 $ je dalo 9,6 milijarde $ na denarnici.
-            // Tega ni mogoce unovciti, zato vrednost »—«. Velja samo za cene z DexScreenerja
-            // (CoinGecko nima podatka o bazenu, liq = 0) in samo, ce je bazen znan (> 0).
+            // 10 Nov 2026 (owner): a holding worth MORE than the whole pool is not counted in the total.
+            // Fake (spam) tokens have an invented price in a pool worth a few cents - ePEPE:
+            // 20 units x $481 million with a $0.04 pool gave $9.6 billion on the wallet.
+            // That cannot be cashed out, so the value is "-". Applies only to DexScreener prices
+            // (CoinGecko has no pool data, liq = 0) and only if the pool is known (> 0).
             if (ch === 'pls' && t.addr === VPLS && pm.__vtecaj && wp) {
               rows.push({
                 sym: t.sym, name: t.name + ' \u00b7 at Vouch rate', chain: ch, qty: q, native: false,
@@ -1376,8 +1376,8 @@
       if (r.name) td0.appendChild(el('span', 'wbal-name', r.name));
       td0.appendChild(el('span', 'wbal-chip ' + r.chain, r.chain === 'pls' ? 'PLS' : 'ETH'));
       tr.appendChild(td0);
-      // data-l nosi ime stolpca — na telefonu ga CSS izpiše pred vrednostjo,
-      // ker se tabela s petimi stolpci tam razbije v vrstice.
+      // data-l carries the column name - on a phone CSS prints it before the value,
+      // because the five-column table breaks into rows there.
       var tdQ = el('td', null, qty(r.qty)); tdQ.dataset.l = 'Amount'; tr.appendChild(tdQ);
       var tdP = el('td', null, r.px == null ? '—' : (r.px < 0.01 ? '$' + r.px.toPrecision(3) : usd(r.px)));
       tdP.dataset.l = 'Price'; tr.appendChild(tdP);
@@ -1531,21 +1531,21 @@
     s.className = 'on';
     s.textContent = '';
 
-    // ekosistemski trak — cene glavnih žetonov, ločeno od denarnic
+    // ecosystem strip - prices of the main tokens, separate from the wallets
     var eko = el('div', 'eko-trak');
     eko.appendChild(el('div', 'eko-nalagam', 'loading ecosystem prices…'));
     s.appendChild(eko);
     var ekoObljuba = renderEko(eko);
 
-    // stanje omrezja — med cenami (ekosistem) in vrednostmi (denarnice)
-    // Vozlisce gre v DOM takoj (zato je vrstni red stalen), vsebina pa sele,
-    // ko renderEko nastavi cenaPls — sicer bi kartica Gas vcasih pokazala
-    // ceno menjave v dolarjih in vcasih ne, odvisno od tega, kateri fetch je
-    // bil prvi. Ce cene ni, se izris vseeno zgodi, le brez dolarske vrstice.
+    // network status - between prices (ecosystem) and values (wallets)
+    // The node goes into the DOM at once (so the order is fixed), but the content only
+    // when renderEko has set cenaPls - otherwise the Gas card would sometimes show
+    // the swap cost in dollars and sometimes not, depending on which fetch
+    // came first. If there is no price, it still renders, just without the dollar line.
     var net = el('div', 'net-trak');
     net.appendChild(el('div', 'eko-nalagam', 'reading network status…'));
     s.appendChild(net);
-    // Samo EN izris — dvakratni klic bi pomenil dvojne zahtevke in viden poskok.
+    // Only ONE render - calling it twice would mean double requests and a visible jump.
     ekoObljuba.then(function () { renderOmrezje(net); },
                     function () { renderOmrezje(net); });
 
@@ -1612,7 +1612,7 @@
     addRow.appendChild(msg);
     s.appendChild(addRow);
 
-    // Dodaj žeton po naslovu pogodbe — zapre luknjo samodejnega odkrivanja.
+    // Add a token by contract address - closes the gap in automatic discovery.
     var tokRow = el('div', 'wbal-add');
     var tokInp = document.createElement('input');
     tokInp.type = 'text';
@@ -1678,8 +1678,8 @@
       'liquidity; a highlighted figure there means the price may not survive an actual sale. ' +
       'Nothing is stored and no wallet is connected. Informational only, not financial advice.'));
 
-    // Stanje podatkov — kateri vir, kdaj. Po vzoru hexologist.com: če je
-    // podatek delen ali nedosegljiv, naj to piše, ne da izgleda kot svež.
+    // Data status - which source, when. Like hexologist.com: if
+    // data is partial or unavailable, say so, instead of looking fresh.
     var stanje = el('div', 'wbal-stanje');
     stanje.id = 'wbal-stanje';
     s.appendChild(stanje);
@@ -1687,18 +1687,18 @@
     var body = el('div');
     s.appendChild(body);
 
-    // Vsaka denarnica se izrise TAKOJ, ko je gotova. Prej je bil tu en sam
-    // Promise.all in izris sele v .then: dokler je cakala ena, ni bilo videti
-    // nobene. Izmerjeno 8.9.2026: en zamudnik pri Blockscoutu (19,5 s) je drzal
-    // prazno vseh sedem denarnic, ceprav jih je sest odgovorilo pod dvema
-    // sekundama. Mesta so pripravljena vnaprej, zato vrstni red ostane vrstni
-    // red seznama in ne vrstni red odgovorov.
+    // Each wallet is drawn AS SOON AS it is ready. Before, there was a single
+    // Promise.all here and drawing only in .then: while one was waiting, none
+    // were visible. Measured 8 Sep 2026: one Blockscout straggler (19.5 s) kept
+    // all seven wallets empty, although six of them answered in under two
+    // seconds. The slots are prepared in advance, so the order stays the order
+    // of the list and not the order of the answers.
     var grand = 0, done = 0, nepopolnih = 0;
     var mesta = list.map(function () { var d = el('div'); body.appendChild(d); return d; });
 
-    // Delna vsota se pokaze, a NIKOLI kot koncna: predznak >= pove, da manjka
-    // se nekaj denarnic. Stevilka brez tega znaka bi bila napacna in bi
-    // izgledala pravilna.
+    // A partial total is shown, but NEVER as final: the >= sign says that some
+    // wallets are still missing. A number without that sign would be wrong and
+    // look right.
     function pisiVsoto(koncano) {
       if (!done) { totalEl.textContent = '—'; totalEl.title = ''; return; }
       totalEl.textContent = (!koncano || nepopolnih ? '\u2265' : '') + usd(grand);
@@ -1714,7 +1714,7 @@
       if (!stEl) return;
       stEl.textContent = '';
       if (!koncano) {
-        // Nevtralna pika: dokler tece, ne vemo, ali bo dobro ali slabo.
+        // Neutral dot: while it runs, we do not know whether it will be good or bad.
         stEl.appendChild(el('span', 'st-pika', '●'));
         stEl.appendChild(el('span', null,
           'Loading wallets — ' + done + ' of ' + list.length + ' done'));
@@ -1747,8 +1747,8 @@
       });
     })).then(function (all) {
       pisiVsoto(true);
-      // V povzetek gre vsota sele zdaj: delna vsota, pokazana kot koncna, je
-      // napacna stevilka, ki izgleda pravilno.
+      // The total goes into the summary only now: a partial total shown as final is
+      // a wrong number that looks right.
       vsotaDenarnic = done ? grand : null;
       denarniceNepopolne = nepopolnih;
       var pb = document.getElementById('wbal-povzetek');
@@ -1801,7 +1801,7 @@
       body: JSON.stringify({ addrs: list, val: validatorjev(), names: (function () {
         var m = {}; list.forEach(function (a) { var n = labelFor(a); if (n) m[a.toLowerCase()] = n; }); return m;
       })(), vids: (function () {
-        // 22. 11. 2026: rocno dodani validatorji (VALIDATOR Screener) potujejo s kodo
+        // 22 Nov 2026: validators added by hand (VALIDATOR Screener) travel with the code
         try { var v = JSON.parse(localStorage.getItem('gopulse_val_ids') || '[]'); return Array.isArray(v) ? v : []; }
         catch (e) { return []; }
       })() })
@@ -1830,7 +1830,7 @@
           mergeLabels(j.names);
           if (typeof j.val === 'number' && j.val > 0) setValidatorjev(j.val);
           if (Array.isArray(j.vids) && j.vids.length) {
-            // zdruzim z obstojecimi (nic ne izgubim), VALIDATOR Screener spremembo zazna sam
+            // merge with the existing ones (nothing is lost); the VALIDATOR Screener picks up the change itself
             try {
               var obst = JSON.parse(localStorage.getItem('gopulse_val_ids') || '[]');
               if (!Array.isArray(obst)) obst = [];
@@ -1905,7 +1905,7 @@
             }
           } catch (e) {}
           busy = false; run();
-          // kartici analizatorja obstajata sele po njegovem izrisu
+          // the analyzer's cards exist only after it has rendered
           setTimeout(function () {
             var b = document.getElementById('wbal-povzetek');
             if (b) renderPovzetek(b);
@@ -1927,61 +1927,61 @@
     }, 250);
   }
 
-  /* ---------- samodejna analiza ob nalaganju ----------
-     Zakaj obstaja: zgornje kartice NISO svoj vir — prezrcaljene so iz kartic
-     analizatorja (zrcaliKartico bere #dash .card), te pa nastanejo sele, ko
-     stece go(). Po osvezitvi je bil zato seznam denarnic poln, zgoraj pa je
-     pisalo "available after you run Analyze", dokler ni clovek kliknil Analyze.
+  /* ---------- automatic analysis on load ----------
+     Why it exists: the cards at the top are NOT their own source - they are mirrored from the
+     analyzer's cards (zrcaliKartico reads #dash .card), and those only appear once
+     go() runs. So after a reload the wallet list was full, but the top
+     said "available after you run Analyze" until someone clicked Analyze.
 
-     ⚠️ go() ni poceni (RPC + cenovni API-ji), zato se pozene SAMO takrat, ko
-        shranjeni naslovi ze obstajajo — nikoli na prazni strani.
-     ⚠️ Ob naslovu s #c= ali #w= tega NE delamo: tam analizo sprozi readHash()
-        prek applyAddrs(..., true). Dva zagona bi bila dvojno delo po istih
-        API-jih in dva izpisa cez isto kartico.
-     ⚠️ Cakamo na OVIT go() (__wbalWrapped), ne na surovega: prav ovoj je tisti,
-        ki po analizi osvezi zgornji povzetek. Klic surovega bi analizo pognal,
-        kartice zgoraj pa pustil prazne — torej natanko napako, ki jo odpravljamo.
-     ⚠️ Ce ovoj ne pride, tega NE zamolcimo: razlog gre v konzolo. Tiho nic je
-        videti enako kot "podatkov pac ni". */
+     go() is not cheap (RPC + price APIs), so it runs ONLY when
+        saved addresses already exist - never on an empty page.
+     With #c= or #w= in the address we do NOT do this: there readHash() starts the analysis
+        via applyAddrs(..., true). Two runs would be double work against the same
+        APIs and two renders over the same card.
+     We wait for the WRAPPED go() (__wbalWrapped), not the raw one: the wrapper is what
+        refreshes the summary at the top after the analysis. Calling the raw one would run the analysis
+        but leave the cards at the top empty - exactly the bug being fixed.
+     If the wrapper does not arrive, this is NOT kept quiet: the reason goes to the console. A silent nothing
+        looks the same as "there simply is no data". */
   function samodejnaAnaliza() {
     var poskusov = 0;
     (function cakaj() {
       if (typeof window.go === 'function' && window.go.__wbalWrapped) {
-        // ⚠️ go() je `async`. Izjema v njem NE pride do try/catch, ampak v
-        //    zavrnjeno obljubo — ovoj (`Promise.resolve(r).then(after, after)`)
-        //    jo poravna, zato bi neuspeh ostal popolnoma tih. Zato lovimo obe
-        //    poti in razlog izpisemo; tiho nic je videti enako kot "ni podatkov".
+        // go() is `async`. An exception inside it does NOT reach try/catch but
+        //    a rejected promise - the wrapper (`Promise.resolve(r).then(after, after)`)
+        //    settles it, so a failure would stay completely silent. So we catch both
+        //    paths and print the reason; a silent nothing looks the same as "no data".
         try {
           Promise.resolve(window.go()).catch(function (e) {
-            console.warn('gopulse: samodejna analiza je padla —', (e && e.message) || e);
+            console.warn('StakeScreener: automatic analysis failed —', (e && e.message) || e);
           });
         } catch (e) {
-          console.warn('gopulse: samodejne analize ni bilo mogoce pognati —', e && e.message);
+          console.warn('StakeScreener: automatic analysis could not be started —', e && e.message);
         }
-        // ⚠️ Osvezitve povzetka NE prepuscamo ovoju okoli go(). Izmerjeno
-        //    21. 9. 2026: po samodejnem zagonu je bilo kartic 8 s pravimi
-        //    vrednostmi, zgoraj pa je se vedno pisalo "available after you run
-        //    Analyze" — delo v ovoju (`after`) se ni izvedlo. Zato tu cakamo
-        //    sami, dokler vrednost ne pride, in takrat pozenemo run(), ki
-        //    povzetek dokazano napolni.
-        // ⚠️ Omejeno na 90 sekund: zanka brez konca bi tekla tudi takrat, ko
-        //    analiza pade, in bi vsako sekundo brez potrebe risala isto.
-        // ⚠️⚠️ NE ustavi se ob PRVI vrednosti. Izmerjeno 21. 9. 2026: analiza
-        //    najprej konca PulseChain, sele nato Ethereum (ta se lovi z
-        //    Explorerjem, videni HTTP 429). Prva razlicica je izrisala takoj ob
-        //    prvi vrednosti in pokazala **$7.632 namesto ~$10K** — samo pHEX,
-        //    brez eHEX, videti pa povsem cel. Nepopolna vsota, ki izgleda
-        //    popolna, je slabsa od praznega polja.
-        // ⚠️ Zato: risi ob vsaki SPREMEMBI vrednosti, dokler se ne umiri, in
-        //    nehaj po 90 s — zanka brez konca bi risala isto tudi ob padli analizi.
+        // Refreshing the summary is NOT left to the wrapper around go(). Measured
+        //    21 Sep 2026: after the automatic start there were 8 cards with real
+        //    values, but the top still said "available after you run
+        //    Analyze" - the work in the wrapper (`after`) did not run. So here we wait
+        //    ourselves until the value arrives, and then run run(), which
+        //    demonstrably fills the summary.
+        // Limited to 90 seconds: an endless loop would also run when
+        //    the analysis fails, and would redraw the same thing every second for nothing.
+        // Do NOT stop at the FIRST value. Measured 21 Sep 2026: the analysis
+        //    finishes PulseChain first and only then Ethereum (that one struggles with the
+        //    explorer, HTTP 429 seen). The first version rendered right at the
+        //    first value and showed **$7,632 instead of ~$10K** - only pHEX,
+        //    without eHEX, yet it looked complete. An incomplete total that looks
+        //    complete is worse than an empty field.
+        // So: redraw on every CHANGE of the value until it settles, and
+        //    stop after 90 s - an endless loop would redraw the same even when the analysis has failed.
         (function slediVrednosti() {
           var poskusov = 0, zadnja = null;
           (function tik() {
             var d = zrcaliKartico('Stake Value');
             var v = (d && d.val) || null;
             if (v && v !== zadnja) { zadnja = v; busy = false; run(); }
-            if (++poskusov > 30) {                 // 30 × 3 s = 90 s
-              if (!zadnja) console.warn('gopulse: analiza v 90 s ni dala vrednosti — povzetek ostaja prazen');
+            if (++poskusov > 30) {                 // 30 x 3 s = 90 s
+              if (!zadnja) console.warn('StakeScreener: analysis gave no value within 90 s — the summary stays empty');
               return;
             }
             setTimeout(tik, 3000);
@@ -1989,9 +1989,9 @@
         })();
         return;
       }
-      if (++poskusov > 40) {          // 40 × 250 ms = 10 s, enako kot ovoj sam
-        console.warn('gopulse: samodejne analize ni bilo mogoce pognati ' +
-                     '(go() ni ovit) — klikni Analyze');
+      if (++poskusov > 40) {          // 40 x 250 ms = 10 s, same as the wrapper itself
+        console.warn('StakeScreener: automatic analysis could not be started ' +
+                     '(go() is not wrapped) — click Analyze');
         return;
       }
       setTimeout(cakaj, 250);

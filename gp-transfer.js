@@ -1,9 +1,9 @@
-/* gp-transfer.js — StakeScreener (22. 11. 2026)
- * Uvoz shranjenih nastavitev s prejsnjega naslova strani. Brskalnik hrani localStorage
- * LOCENO za vsak naslov, zato stara stran ob obisku zapakira svoje kljuce v
- * #gp-prenos=… (del za # se NE poslje na streznik) in preusmeri sem.
- * Uvozimo samo znane kljuce in samo, ce tu se ne obstajajo (novejsih ne povozimo).
- * Nalozi se PRED app.js in wallets.js, da ti ze vidijo uvozene podatke.
+/* gp-transfer.js — StakeScreener (22 Nov 2026)
+ * Imports saved settings from the previous site address. The browser keeps localStorage
+ * SEPARATELY for each address, so on a visit the old site packs its keys into
+ * #gp-prenos=… (the part after # is NOT sent to the server) and redirects here.
+ * Only known keys are imported, and only if they do not exist here yet (newer ones are never overwritten).
+ * Loads BEFORE app.js and wallets.js so they already see the imported data.
  */
 (function () {
   var DOVOLJENI = ['gopulse_wallets', 'gopulse_labels', 'gopulse_custom_tokens',
@@ -25,7 +25,7 @@
     var ostanek = h.replace(/(?:^|&)gp-prenos=[A-Za-z0-9_-]+/, '').replace(/^&/, '');
     history.replaceState(null, '', location.pathname + location.search + (ostanek ? '#' + ostanek : ''));
     if (n) { try { localStorage.setItem('gopulse_podpora', 'prenos'); } catch (_) {} }
-    if (n && window.console) console.info('StakeScreener: uvozenih shranjenih nastavitev: ' + n);
+    if (n && window.console) console.info('StakeScreener: saved settings imported: ' + n);
   } catch (e) {
     try { history.replaceState(null, '', location.pathname + location.search); } catch (_) {}
   }

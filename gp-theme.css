@@ -1,10 +1,10 @@
-/* gp-theme.css — videz StakeScreener (31. 10. 2026)
+/* gp-theme.css — StakeScreener look (31 Oct 2026)
  *
- * SAMO videz. Nalozi se ZADNJI (za style.css in wallets.css) in prepise njune
- * barve, pisave in postavitev. app.js (izvorni HEX Stake Analyzer, GPL-3.0) in
- * logika wallets.js ostaneta nespremenjeni; vrstni red delov v #wbal-sec se
- * spremeni s CSS `order`, ne s premikanjem vozlisc.
- * Vrnitev: odstrani <link> na to datoteko, <header class="gp-hdr"> in <footer class="gp-noga"> v index.html.
+ * Appearance ONLY. Loads LAST (after style.css and wallets.css) and overrides their
+ * colours, fonts and layout. app.js (the original HEX Stake Analyzer, GPL-3.0) and
+ * the wallets.js logic stay unchanged; the order of the parts inside #wbal-sec is
+ * changed with CSS `order`, not by moving nodes.
+ * Rollback: remove the <link> to this file, <header class="gp-hdr"> and <footer class="gp-noga"> in index.html.
  */
 @font-face{font-family:"Raleway";src:url(fonts/raleway-300.ttf) format("truetype");font-weight:300;font-display:swap}
 @font-face{font-family:"Raleway";src:url(fonts/raleway-400.ttf) format("truetype");font-weight:400;font-display:swap}
@@ -20,7 +20,7 @@
 }
 html,body{background:var(--gp-bg)}
 
-/* ---------- glava ---------- */
+/* ---------- header ---------- */
 .gp-hdr{border-bottom:1px solid #1c1836;background:#07060c;font-family:var(--wb-sans)}
 .gp-hdr-in{max-width:1400px;margin:0 auto;padding:0 20px;display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:74px;flex-wrap:wrap}
 .gp-brand{display:flex;align-items:center;gap:12px;text-decoration:none;color:var(--gp-txt)}
@@ -33,14 +33,14 @@ html,body{background:var(--gp-bg)}
 .gp-nav a:hover{border-color:#4f86ff}
 .gp-nav a.pod{border-color:#6d28d9;color:#e9d5ff}
 
-/* ---------- vrstni red delov ---------- */
+/* ---------- order of parts ---------- */
 #wbal-sec.on{display:flex;flex-direction:column}
 #wbal-sec > *{order:10}
 #wbal-sec > .eko-trak{order:1}
 #wbal-sec > .pov-trak{order:2}
 #wbal-sec > .net-trak{order:3}
 
-/* ---------- cene: tanek trak ---------- */
+/* ---------- prices: thin strip ---------- */
 .eko-trak{display:flex;justify-content:space-between;gap:4px;overflow-x:auto;scrollbar-width:none;margin:0 -20px 0;padding:10px 20px;
   border-bottom:1px solid #1c1836;background:#09081280}
 .eko-trak::-webkit-scrollbar{display:none}
@@ -54,11 +54,11 @@ html,body{background:var(--gp-bg)}
 .eko-cena{font-size:12px;font-weight:500;letter-spacing:0;color:#e6e3f5;font-variant-numeric:tabular-nums}
 .eko-spr{margin:0;font-size:11.5px}
 .eko-spr.gor{color:#34d399}.eko-spr.dol{color:#f87171}
-/* povezava na trg pokrije celo kartico — klik kjerkoli na ceno odpre trg */
+/* the market link covers the whole card — a click anywhere on a price opens the market */
 .eko-card{position:relative;cursor:pointer}
 .eko-card > .eko-lnk{position:absolute;inset:0;width:auto;font-size:0;letter-spacing:0;border-radius:10px}
 
-/* ---------- povzetek: TOTAL kot naslovni del + tri kartice ---------- */
+/* ---------- summary: TOTAL as the headline + three cards ---------- */
 .pov-trak{position:relative;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin:0 0 18px;padding-top:6px}
 .pov-trak::before{content:"";position:absolute;right:-20px;top:-10px;width:62%;height:300px;
   background:url(img/chain-hero.jpg) right top/cover no-repeat;opacity:.34;pointer-events:none;
@@ -84,7 +84,7 @@ html,body{background:var(--gp-bg)}
 .pov-skupaj.prazna{opacity:1}.pov-skupaj.prazna .pov-val{opacity:.5}
 .pov-vir{order:20;font-family:var(--wb-sans);color:var(--gp-dim2)}
 
-/* ---------- stanje verige: manjse kartice ---------- */
+/* ---------- chain status: smaller cards ---------- */
 .net-trak{gap:18px}
 .net-card{background:#0d0b1b;border:1px solid #221c42;border-radius:16px;padding:16px 20px}
 .net-lbl{font-family:var(--wb-sans);font-size:11px;letter-spacing:2.4px;color:var(--gp-dim)}
@@ -102,7 +102,7 @@ html,body{background:var(--gp-bg)}
 .wbal-sum{font-family:var(--wb-sans);font-weight:800;font-size:19px}
 .wbal-total{font-family:var(--wb-sans);font-weight:800}
 
-/* ---------- noga (22. 11. 2026: na sredini, v slogu mojdelez.si) ---------- */
+/* ---------- footer (22 Nov 2026: centred, in the mojdelez.si style) ---------- */
 .gp-noga{margin-top:40px;font-family:var(--wb-sans);color:var(--gp-dim2);font-size:14px;text-align:center}
 .gp-noga-in{max-width:900px;margin:0 auto;padding:10px 20px 44px;display:block}
 .gp-noga p{margin:0 0 12px;line-height:1.6}
@@ -118,7 +118,7 @@ html,body{background:var(--gp-bg)}
 .gp-noga-copy a{white-space:nowrap}
 .gp-noga-lic{font-size:12px;color:#9a97b5}
 
-/* ---------- telefon ---------- */
+/* ---------- phone ---------- */
 @media (max-width:900px){
   .pov-trak{grid-template-columns:1fr}
   .pov-skupaj .pov-val{font-size:58px;letter-spacing:-1.5px}
@@ -130,14 +130,14 @@ html,body{background:var(--gp-bg)}
   .gp-hdr-in{padding:10px 16px}
 }
 
-/* ---------- tekoci trak cen (gp-chain.js) ---------- */
+/* ---------- scrolling price ticker (gp-chain.js) ---------- */
 .eko-trak.gp-tece{display:block;overflow:hidden;
   -webkit-mask-image:linear-gradient(90deg,transparent,#000 4%,#000 96%,transparent);
           mask-image:linear-gradient(90deg,transparent,#000 4%,#000 96%,transparent)}
 .gp-tir{display:flex;width:max-content;animation:gp-tek 50s linear infinite}
 .gp-tir > .eko-card{margin-right:30px}
-/* Ustavi samo pod miško. Na telefonu dotik pusti :hover "prilepljen" (in fokus na
-   povezavi), zato je pavza omejena na naprave, ki zares imajo miško. */
+/* Pause only under a mouse. On a phone a tap leaves :hover "stuck" (and focus on the
+   link), so the pause is limited to devices that really have a mouse. */
 @media (hover:hover) and (pointer:fine){.eko-trak.gp-tece:hover .gp-tir{animation-play-state:paused}}
 @keyframes gp-tek{from{transform:translateX(0)}to{transform:translateX(-50%)}}
 @media (prefers-reduced-motion:reduce){
@@ -146,13 +146,13 @@ html,body{background:var(--gp-bg)}
   .gp-tir > .gp-kopija{display:none}
 }
 
-/* ---------- HEX Stake Analyzer v slogu mojdelež.si (samo videz, app.js nespremenjen) ---------- */
+/* ---------- HEX Stake Analyzer in the mojdelež.si style (appearance only, app.js unchanged) ---------- */
 #app{--bg:#06050a;--s1:#110e22;--s2:#0d0b1b;--s3:#14112a;--bd:#2a2350;--tx:#f2f0fa;--mu:#9a94b8;--di:#3a3360}
-/* pisava: Raleway povsod, stevilke poravnane */
+/* font: Raleway everywhere, tabular figures */
 #app *:not(canvas){font-family:var(--wb-sans)!important}
 #app{font-variant-numeric:tabular-nums}
 
-/* naslov: HEX Stake Analyzer (pripis izvora ostane) */
+/* title: HEX Stake Analyzer (source attribution stays) */
 #app .topbar{margin-top:34px}
 #app .logo{align-items:baseline;gap:10px}
 #app .l-hex{font-weight:800;font-size:36px;letter-spacing:-.5px;
@@ -162,7 +162,7 @@ html,body{background:var(--gp-bg)}
 #app .subt{color:var(--gp-dim);font-size:13.5px}
 #app .donate-topbtn,#app .about-btn{border-radius:11px;font-weight:700}
 
-/* cene pHEX/eHEX in primerjava */
+/* pHEX/eHEX prices and comparison */
 #app .ticker{border-radius:20px;border:1px solid var(--gp-bd);background:var(--gp-card);overflow:hidden}
 #app .t-price-new{font-weight:800;letter-spacing:-1px}
 #app .t-chain-tag{border-radius:12px;font-weight:800;letter-spacing:1px}
@@ -174,7 +174,7 @@ html,body{background:var(--gp-bg)}
   font-weight:700!important;letter-spacing:2.4px;color:var(--gp-dim)!important;text-transform:uppercase;font-size:11px}
 #app .cmp-side-val,#app .cmp-item-val,#app .dex-total-val{font-weight:800}
 
-/* dan in iskanje */
+/* day and search */
 #app .daybar{border:0;background:transparent;padding-top:26px}
 #app .day-num{font-weight:800;letter-spacing:-.5px;background:var(--gp-grad);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
 #app .day-date{color:var(--gp-dim)}
@@ -186,14 +186,14 @@ html,body{background:var(--gp-bg)}
   background:linear-gradient(90deg,#4f86ff,#8b3cf6 55%,#d946ef)}
 #app .abtn:hover{filter:brightness(1.12)}
 
-/* kontrole */
+/* controls */
 #app .ctrl-bar{border-radius:16px;border:1px solid var(--gp-bd);background:#0d0b1b}
 #app .chain-toggle{border-radius:12px;border-color:var(--gp-bd)}
 #app .chain-tog-btn{border-radius:9px;font-weight:700}
 #app .chain-tog-btn.active{background:#1d1840;border-color:#6d28d9}
 #app .moon-btn{border-radius:11px;font-weight:700;border-color:#6d28d9;color:#e9d5ff;background:transparent;box-shadow:none}
 
-/* kartice povzetka */
+/* summary cards */
 #app .cards-frame{border:0;background:transparent}
 #app .cards{gap:18px;background:transparent;border:0}
 #app .card{position:relative;background:var(--gp-card)!important;border:1px solid var(--gp-bd)!important;border-radius:20px!important;
@@ -204,14 +204,14 @@ html,body{background:var(--gp-bg)}
 #app .pval,#app .cval2,#app .card-2nd-v{font-weight:800}
 #app .cdiv{border-color:#241e44}
 
-/* grafi in skatle */
+/* charts and boxes */
 #app .charts{gap:18px}
 #app .cbox,#app .sp-box{background:var(--gp-card);border:1px solid var(--gp-bd);border-radius:20px;box-shadow:none}
 #app .pie-pct-val{font-weight:800}
 #app .sp-bar-track{border-radius:6px}
 #app .chart-chain-pill{border-radius:8px}
 
-/* cakajoci staki, zavihki, tabele */
+/* pending stakes, tabs, tables */
 #app .pend-sec{background:#0d0b1b;border:1px solid var(--gp-bd);border-radius:20px}
 #app .stake-tabs{border-radius:16px;border:1px solid var(--gp-bd);background:#0d0b1b;overflow:hidden}
 #app .stake-tab{font-weight:800;letter-spacing:1.5px}
@@ -228,7 +228,7 @@ html,body{background:var(--gp-bg)}
 #app .copyright{color:var(--gp-dim2)}
 #app .copyright a{color:#cfe9ff}
 
-/* okna (About, Thanks, Moon Math) */
+/* dialogs (About, Thanks, Moon Math) */
 .about-modal,.moon-modal,.creature-modal{background:var(--gp-card)!important;border:1px solid var(--gp-bd)!important;border-radius:20px!important}
 .about-modal *,.moon-modal *,.creature-modal *{font-family:var(--wb-sans)!important}
 .moon-apply{background:linear-gradient(90deg,#4f86ff,#8b3cf6 55%,#d946ef)!important;color:#fff!important;border:0!important;border-radius:11px!important}
@@ -238,20 +238,20 @@ html,body{background:var(--gp-bg)}
   #app .cmp-item-lbl{letter-spacing:1px;font-size:10px}
   #app .cmp-side-val{font-size:14px}
   #app .cards{gap:12px}
-  /* izvorna napaka: inline min-width:280px zadnje kartice razbije mrezo na telefonu */
+  /* bug in the original: inline min-width:280px on the last card breaks the grid on phones */
   #app .cmp-items .cmp-item{min-width:0!important}
   #app .cmp-items .cmp-item:last-child{grid-column:1/-1}
 }
-/* oranzno in rumeno -> belo kot eHEX (31. 10. 2026) */
+/* orange and yellow -> white like eHEX (31 Oct 2026) */
 #app .t-price-new.pls{background:linear-gradient(90deg,#e8ecf5,#a8b3cc);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
 #app .dex-total-val{color:#e8ecf5}
 #app .donate-topbtn{color:#e8ecf5;border-color:#2d3a55}
 #app .donate-topbtn:hover{color:#fff;border-color:#4f86ff;background:transparent}
 
-/* logo cisto levo, glava cez vso sirino kot vsebina (1. 11. 2026) */
+/* logo at the far left, header as wide as the content (1 Nov 2026) */
 .gp-hdr-in{max-width:none}
 
-/* meni za telefon: logo levo, gumb desno, povezave pod glavo (1. 11. 2026, brez JS) */
+/* phone menu: logo left, button right, links below the header (1 Nov 2026, no JS) */
 .gp-meni-stikalo{position:absolute;opacity:0;width:1px;height:1px;pointer-events:none}
 .gp-meni-gumb{display:none}
 @media (max-width:900px){
@@ -267,10 +267,10 @@ html,body{background:var(--gp-bg)}
   .gp-nav a{display:block;text-align:center;padding:12px 10px !important;font-size:.9rem !important;border-radius:12px}
 }
 
-/* ---------- locila med odseki (22. 11. 2026: enaka crta z ikono kot v nogi) ----------
- * Samo CSS: psevdo-elementa #wbal-sec sta flex elementa, zato ju 'order' postavi
- * med povzetek (1-3) in Wallets (10) ter na konec odseka (pred HEX Stake Screener).
- * wallets.js in app.js ostaneta nespremenjena. */
+/* ---------- section dividers (22 Nov 2026: the same line with icon as in the footer) ----------
+ * CSS only: the #wbal-sec pseudo-elements are flex items, so 'order' places them
+ * between the summary (1-3) and Wallets (10) and at the end of the section (before HEX Stake Screener).
+ * wallets.js and app.js stay unchanged. */
 #wbal-sec{border-bottom:none!important}
 #wbal-sec::before,#wbal-sec::after{content:"";display:block;align-self:center;width:100%;max-width:820px;height:22px;
   background:url(./favicon.svg) center/22px 22px no-repeat,
@@ -279,7 +279,7 @@ html,body{background:var(--gp-bg)}
 #wbal-sec::before{order:5;margin:26px auto 22px}
 #wbal-sec::after{order:99;margin:30px auto 4px}
 
-/* ---------- enkratno okno "Support the project" (gp-support.js, 22. 11. 2026) ---------- */
+/* ---------- one-time "Support the project" note (gp-support.js, 22 Nov 2026) ---------- */
 .gp-podpora{position:fixed;right:20px;bottom:20px;z-index:9000;width:340px;max-width:calc(100vw - 24px);box-sizing:border-box;
   background:#0f0d1c;border:1px solid #2a2350;border-radius:14px;padding:18px 18px 16px;box-shadow:0 12px 40px rgba(0,0,0,.55);
   font-family:var(--wb-sans);color:#e6e6f0;opacity:0;transform:translateY(14px);transition:opacity .3s,transform .3s}
@@ -298,7 +298,7 @@ html,body{background:var(--gp-bg)}
 @media (max-width:600px){.gp-podpora{left:12px;right:12px;bottom:12px;width:auto;max-width:none}}
 @media (prefers-reduced-motion:reduce){.gp-podpora{transition:none}}
 
-/* ---------- VALIDATOR Screener (gp-validators.js, 22. 11. 2026) ---------- */
+/* ---------- VALIDATOR Screener (gp-validators.js, 22 Nov 2026) ---------- */
 .gp-loc{display:block;width:100%;max-width:820px;height:22px;margin:30px auto 4px;
   background:url(./favicon.svg) center/22px 22px no-repeat,
     linear-gradient(90deg,transparent,#5b2bd6 30%,#5b2bd6 70%,transparent) left center/calc(50% - 33px) 1px no-repeat,
@@ -354,7 +354,7 @@ html,body{background:var(--gp-bg)}
 .gpv-vouch .wbal-scroll .wbal-tbl{min-width:0!important}
 @media (max-width:600px){.gpv-vouch .wbal-tbl td,.gpv-vouch .wbal-tbl th{padding:6px 4px}}
 
-/* ---------- TOTAL brez denarnic: poziv "Add a wallet" (22. 11. 2026) ---------- */
+/* ---------- TOTAL without wallets: "Add a wallet" prompt (22 Nov 2026) ---------- */
 .pov-zacni{margin:14px 0 6px}
 .pov-zacni-h{font-family:var(--wb-sans);font-size:34px;font-weight:800;letter-spacing:-.5px;color:#f2f0fa;line-height:1.15}
 .pov-zacni-p{font-family:var(--wb-sans);font-size:16px;color:#cfcbe6;margin:8px 0 16px}
@@ -362,17 +362,17 @@ html,body{background:var(--gp-bg)}
 .pov-zacni-btn:hover{background:#6d3ff0}
 @media (max-width:600px){.pov-zacni-h{font-size:26px}.pov-zacni-p{font-size:14px}}
 
-/* ---------- veriga cez celo sirino (22. 11. 2026, owner) ---------- */
+/* ---------- chain across the full width (22 Nov 2026, owner) ---------- */
 .pov-trak::before{left:-20px;right:-20px;width:auto;top:-10px;height:430px;
   background:url(img/chain-hero.jpg) center top/100% auto no-repeat;opacity:.30;
   -webkit-mask-image:linear-gradient(0deg,transparent 0,#000 40%);-webkit-mask-composite:source-over;
   mask-image:linear-gradient(0deg,transparent 0,#000 40%)}
 @media (max-width:600px){.pov-trak::before{height:260px;background-size:auto 100%;background-position:left top}}
-/* 22. 11. 2026: visina sledi sirini (razmerje slike 2400x900), da je veriga cela tudi na sirokih zaslonih */
+/* 22 Nov 2026: height follows width (image ratio 2400x900), so the chain is whole on wide screens too */
 @media (min-width:601px){.pov-trak::before{height:calc((100vw + 20px) * .375);max-height:820px;
   -webkit-mask-image:linear-gradient(0deg,transparent 0,#000 35%);mask-image:linear-gradient(0deg,transparent 0,#000 35%)}}
 
-/* ---------- COMMUNIS Screener (gp-communis.js, 22. 11. 2026) ---------- */
+/* ---------- COMMUNIS Screener (gp-communis.js, 22 Nov 2026) ---------- */
 #gpc-sec{padding:0 20px 16px;margin:0 0 18px}
 .gpc-opoz:empty,.gpc-den:empty{display:none}
 .gpc-opoz{display:flex;flex-direction:column;gap:8px;margin:0 0 12px}
@@ -395,11 +395,11 @@ html,body{background:var(--gp-bg)}
 .gpc-den{grid-template-columns:repeat(auto-fill,minmax(300px,480px))}
 @media (max-width:600px){.gpc-den{grid-template-columns:1fr}}
 
-/* ---------- HEDRON Screener (gp-hedron.js, 22. 11. 2026) ---------- */
+/* ---------- HEDRON Screener (gp-hedron.js, 22 Nov 2026) ---------- */
 #gph-sec{padding:0 20px 16px;margin:0 0 18px}
 @media (max-width:600px){#gph-sec{padding:0 12px 12px}}
 
-/* ---------- ICOSA Screener (gp-icosa.js, 22. 11. 2026) ---------- */
+/* ---------- ICOSA Screener (gp-icosa.js, 22 Nov 2026) ---------- */
 #gpi-sec{padding:0 20px 16px;margin:0 0 18px}
 .gpi-pod{font-family:var(--wb-sans);font-size:12px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:#c9b8ff;margin:10px 0 2px;padding-top:8px;border-top:1px solid rgba(255,255,255,.08)}
 .gpc-opoz-vr b,.gpc-opoz-vr em{color:#f5c542}

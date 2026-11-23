@@ -128,5 +128,7 @@ Change log of the additions
             gp-total.*, gp-chain.js, gp-source.js, gp-transfer.js, gp-support.js,
             gp-validators.js, code.php, img/ (tokens, chain-hero.jpg). No change
             in behaviour; saved codes and local settings keep working.
+2026-11-23  Source comments, console messages and CSP-ENDPOINTS.txt in English
+            (code unchanged: verified token by token against the previous version).
 
 Contact: info@stakescreener.com

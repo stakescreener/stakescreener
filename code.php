@@ -60,7 +60,7 @@ $dir = store_dir();
 sweep($dir);
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $raw = file_get_contents('php://input', false, null, 0, 16384);   // 22. 11.: tudi javni kljuci validatorjev
+    $raw = file_get_contents('php://input', false, null, 0, 16384);   // 22 Nov: also validator public keys
     $in  = json_decode((string) $raw, true);
     if (!is_array($in) || !isset($in['addrs']) || !is_array($in['addrs'])) bail(400, 'bad request');
 
@@ -86,10 +86,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     /* Same set of addresses -> same code, so repeated saves do not litter. */
-    // stevilo validatorjev — potuje s kodo, da je vsota enaka v vseh brskalnikih
+    // validator count — travels with the code so the total is the same in every browser
     $val = 0;
     if (isset($in['val']) && is_numeric($in['val'])) $val = max(0, min(9999, (int) $in['val']));
-    // 22. 11. 2026: rocno dodani validatorji (stevilka ali javni kljuc) iz VALIDATOR Screenerja
+    // 22 Nov 2026: manually added validators (index or public key) from the VALIDATOR Screener
     $vids = [];
     if (isset($in['vids']) && is_array($in['vids'])) {
         foreach ($in['vids'] as $v) {

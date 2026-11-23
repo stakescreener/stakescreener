@@ -1,4 +1,4 @@
-/* gp-info.js — gumb Copy za naslov (StakeScreener, 22. 11. 2026) */
+/* gp-info.js — Copy button for the address (StakeScreener, 22 Nov 2026) */
 (function () {
   var b = document.getElementById('ii-kopiraj'), n = document.getElementById('ii-naslov');
   if (!b || !n) return;
@@ -10,7 +10,7 @@
   });
 })();
 
-/* Verify this site — primerja SHA-256 datotek, kot jih prejme brskalnik, z javnim zapisom na GitHubu (22. 11. 2026) */
+/* Verify this site — compares the SHA-256 of files as the browser receives them with the public record on GitHub (22 Nov 2026) */
 (function () {
   var gumb = document.getElementById('ii-preveri'), izid = document.getElementById('ii-izid');
   if (!gumb || !izid || !window.crypto || !crypto.subtle) return;

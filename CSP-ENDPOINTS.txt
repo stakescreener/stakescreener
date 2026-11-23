@@ -1,59 +1,65 @@
-HEX Stake Analyzer — zunanji naslovi in CSP
-===========================================
+StakeScreener — external addresses and CSP
+==========================================
 
-Lokalni viri
--------------
-Chart.js, Inter in Space Mono so vključeni lokalno. Za delovanje zato niso
-potrebni cdnjs.cloudflare.com, fonts.googleapis.com ali fonts.gstatic.com.
+Local resources
+---------------
+Chart.js, Inter, Raleway and Space Mono are included locally, so the site does
+not need cdnjs.cloudflare.com, fonts.googleapis.com or fonts.gstatic.com.
 
 connect-src
 -----------
 'self'
-  - ./app.js: preverjanje različice aplikacije
+  - ./app.js: application version check
+  - ./code.php: saved wallet codes
 
-Raziskovalnika dogodkov:
-https://eth.blockscout.com
-https://api.scan.pulsechain.com
+Explorers:
+https://scan.pulsefusion.io           FusionScan, primary PulseChain explorer (gp-source.js)
+https://api.scan.pulsechain.com       official PulseChain explorer, fallback
+https://eth.blockscout.com            Ethereum explorer
 
 PulseChain JSON-RPC:
 https://rpc.pulsechain.com
 https://pulsechain-rpc.publicnode.com
-https://rpc-pulsechain.g4mm4.io
+https://rpc.libertyswap.finance
 https://pulsechain.drpc.org
+
+PulseChain beacon (validators):
+https://pulsechain-beacon-api.publicnode.com
 
 Ethereum JSON-RPC:
 https://ethereum-rpc.publicnode.com
 https://eth.drpc.org
 https://eth.merkle.io
+https://gateway.tenderly.co
 https://0xrpc.io
 https://eth-mainnet.g.alchemy.com
 https://endpoints.omniatech.io
 
-Tržni podatki in HTT:
+Market data:
 https://graph.pulsechain.com
 https://api.coingecko.com
 https://api.dexscreener.com
 https://api.coinpaprika.com
 
-Pripravljena vrednost direktive:
-connect-src 'self' https://eth.blockscout.com https://api.scan.pulsechain.com https://rpc.pulsechain.com https://pulsechain-rpc.publicnode.com https://rpc-pulsechain.g4mm4.io https://pulsechain.drpc.org https://ethereum-rpc.publicnode.com https://eth.drpc.org https://eth.merkle.io https://0xrpc.io https://eth-mainnet.g.alchemy.com https://endpoints.omniatech.io https://graph.pulsechain.com https://api.coingecko.com https://api.dexscreener.com https://api.coinpaprika.com;
+Verify this site:
+https://raw.githubusercontent.com     SHA-256 fingerprints (stakescreener/stakescreener)
 
-Druge direktive
----------------
-script-src 'self';
-script-src-attr 'unsafe-inline';
-style-src 'self';
-style-src-attr 'unsafe-inline';
-font-src 'self';
-img-src 'self' data:;
+The active policy is set in .htaccess (Content-Security-Policy header).
 
-Pojasnila
----------
-- 'unsafe-inline' je pri atributih potreben zaradi izvornih onclick in style
-  atributov aplikacije. Glavna koda in slog sta sicer v lokalnih datotekah.
-- GitHub je samo povezava do izvora v nogi; ni connect-src omrežni klic.
-- V aplikaciji ni klicev do ChatGPT Sites, prijave, analitike, telemetrije,
-  WebSocketov, servisnih delavcev ali zunanjih pisav/CDN knjižnic.
-- CSP ne nadomesti dovoljenja CORS na posameznem RPC/API strežniku.
+Other directives
+----------------
+default-src 'self'; base-uri 'none'; object-src 'none'; form-action 'none';
+frame-ancestors 'self'; script-src 'self'; script-src-attr 'unsafe-inline';
+style-src 'self'; style-src-attr 'unsafe-inline'; font-src 'self';
+img-src 'self' data:; worker-src 'none'; frame-src 'none'; media-src 'none';
+manifest-src 'self'; upgrade-insecure-requests
 
-https://scan.pulsefusion.io  — glavni raziskovalec PulseChain (gp-source.js, 5.11.2026)
+Notes
+-----
+- 'unsafe-inline' for attributes is needed because of the original application's
+  onclick and style attributes. All scripts and styles are in local files.
+- GitHub source links in the footer are plain links, not connect-src calls
+  (raw.githubusercontent.com is used only by "Verify this site").
+- The site makes no calls for sign-in, analytics, telemetry, WebSockets,
+  service workers or external fonts/CDN libraries.
+- CSP does not replace CORS permission on each RPC/API server.

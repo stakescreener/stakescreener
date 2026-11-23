@@ -1,10 +1,10 @@
-/* gp-chain.js — tekoci trak cen (StakeScreener) (31. 10. 2026)
+/* gp-chain.js — scrolling price ticker (StakeScreener) (31 Oct 2026)
  *
- * SAMO videz. wallets.js izrise kartice cen v .eko-trak (ob vsakem izrisu
- * vsebino pocisti in narise znova). Ta skripta kartice zavije v .gp-tir in jih
- * enkrat podvoji, da trak tece brez preskoka (animacija do -50 %). Kopije so
- * aria-hidden in izven zaporedja tipke Tab. Ob novem izrisu se postopek ponovi.
- * Ce uporabnik v sistemu izklopi animacije (prefers-reduced-motion), trak stoji.
+ * Appearance ONLY. wallets.js draws the price cards in .eko-trak (on every render
+ * it clears the content and draws it again). This script wraps the cards in .gp-tir and
+ * duplicates them once so the ticker runs without a jump (animation to -50 %). The copies
+ * are aria-hidden and outside the Tab key order. On every new render this repeats.
+ * If the user turns animations off in the system (prefers-reduced-motion), the ticker stands still.
  */
 (function () {
   'use strict';
