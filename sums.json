@@ -1,6 +1,6 @@
 {
  "site": "https://stakescreener.com",
- "generated": "2026-11-24 15:20 UTC",
+ "generated": "2026-11-24 15:21 UTC",
  "files": {
   ".htaccess": "1eb4cbb2ddc9a8b008352b85dd46ee2f6ba0dce977b53466f05335795aad3352",
   ".htaccess.example": "49e478cd27e8fc36eff83237c32874f7982315ecd3db73abf846a0cff89008e6",
@@ -39,7 +39,7 @@
   "gp-info.js": "659506dff11e1560c7867ef621c651a228df6f17a841241f447f51990bb213fa",
   "gp-maskable-192.png": "93599dc9fe626321f76249e68d6e7160a5e223713d4c0fb0fadc7c30841a559a",
   "gp-maskable-512.png": "be08ba61111dc170390b47938496101eb18b7087f36cd9f7020d807daa1bef21",
-  "gp-maximus.js": "bd5a51c6d85c8ef11e9772b85eee5936e01416158e00ba3b1cc3f6dc0f671126",
+  "gp-maximus.js": "b3426482d67cee47beb59273cafce52421f3e5b46dba6f6489f89032ede3d7e8",
   "gp-source.js": "2655787fc4d224977ff12565a9185ef6ce6f771f0e1d4b7b2b4f100a5bb38b6c",
   "gp-support.js": "7390ffb7738683ea35cf26f793a706b43e402cb3f610140baf14655b6315d3b5",
   "gp-theme.css": "30b759897fbb0b13618a8dcba4f5ddf7391c5708cfa5e77b4d80d913e1db34bf",
@@ -56,7 +56,7 @@
   "img/tokens/pls.png": "5aaf03753f4155dfd3477e15ce1f4ccbf2c91f19cd8ae9462ad84c82b78badad",
   "img/tokens/plsx.png": "a23d87b74109cd55d15018f2ef07d06840c89b7c8f1b8ade57a08d79ed4133af",
   "img/tokens/prvx.png": "63136c3e21f541ab1a3679ea4f78b22d63b1ba2b524e4f4653466a9d3475bcad",
-  "index.html": "c6170a36ba99e7bb94b793ef078f6b8ef30e6eba66d0736b2a30ee68b9a4763f",
+  "index.html": "afbffe39a1c4609a421d32be595dd14a1b86fbfbfcd352c07b509c25bbae3bde",
   "info.html": "d1d5ead260606e89cea1e057f0d1a903fef15f7b0c8b3e47d7e946e6a7062b6c",
   "og.png": "61e3ca309b63339e1dae5f53a748fad5bd0c9b90e02f81a77a7098484e376803",
   "robots.txt": "2271f1829327a4e14d540e1dfd8387239eecf94f499569ea643c31c652a2f99c",

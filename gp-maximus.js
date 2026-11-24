@@ -19,7 +19,7 @@
  *    to the TEAM contract in the same transactions);
  *  - MAXI has no TEAM share; its HDRN is redeemable too (getHedronRedemptionRate).
  * During a reload phase the contract's own HEX_REDEMPTION_RATE is shown (redeemable now).
- * Shown only if a wallet holds one of these tokens. NOT added to TOTAL: the tokens are already
+ * Always shown: wallet cards for holders, plus an overview table of all pools. NOT added to TOTAL: the tokens are already
  * counted in the Wallets Screener at their DEX price. app.js and wallets.js unchanged.
  */
 (function () {
@@ -185,7 +185,7 @@
         hold.push(h);
       });
       var rabi = {};
-      hold.forEach(function (h) { POOLS.forEach(function (p) { if (h.t[p.t] > 0n) rabi[p.t] = 1; }); });
+      POOLS.forEach(function (p) { rabi[p.t] = 1; });   // all pools: the overview table is shown even without holdings
       // yield to date for the active stakes of the pools someone holds
       var k2 = [], ref = [];
       Object.keys(rabi).forEach(function (t, i) {
@@ -217,7 +217,7 @@
   /* ---------- display ---------- */
   var sec, statEl, vsebEl, tabEl, zadnji = null, tece = false;
   function zgradi() {
-    sec = el('div', null); sec.id = 'gpm-sec'; sec.hidden = true;
+    sec = el('div', null); sec.id = 'gpm-sec';
     var hdr = el('div', 'wbal-hdr gpv-hdr');
     hdr.appendChild(el('span', 'wbal-title', 'MAXIMUS'));
     hdr.appendChild(el('span', 'wbal-title2', 'Screener'));
@@ -306,10 +306,7 @@
     tabEl.textContent = '';
     var vrst = [];
     vsi.forEach(function (v) {
-      POOLS.forEach(function (p) {
-        if (!v.hold.some(function (h) { return h.t[p.t] > 0n; })) return;
-        vrst.push([v, v.pools[p.t], p]);
-      });
+      POOLS.forEach(function (p) { vrst.push([v, v.pools[p.t], p]); });
     });
     if (!vrst.length) return;
     var t = el('table', 'wbal-tbl gpv-tbl gpm-t'), th = el('tr');
@@ -337,7 +334,6 @@
     var wal = denarnice();
     zadnji = localStorage.getItem(K_WAL);
     vsebEl.textContent = ''; tabEl.textContent = '';
-    if (!wal.length) { sec.hidden = true; return; }
     tece = true;
     statEl.textContent = 'Reading Maximus pools\u2026';
     var vsi = [], napake = [];
@@ -355,17 +351,17 @@
             if (ima) z.push([h, v]);
           });
         });
-        if (!z.length && !napake.length) { sec.hidden = true; return; }
-        sec.hidden = false;
         var nA = {}, nC = {}; z.forEach(function (x) { nA[x[0].a] = 1; nC[x[0].chain] = 1; });
         var nW = Object.keys(nA).length, nCh = Object.keys(nC).length;
-        var st = [nW + ' wallet' + (nW === 1 ? '' : 's') + ' with Maximus tokens on ' + (nCh === 2 ? 'PulseChain and Ethereum' : IME[Object.keys(nC)[0]])];
+        var st = [!wal.length ? 'Add a wallet above to see your MAXI, BASE, TRIO, LUCKY, DECI and TEAM \u2014 pool overview below'
+          : !z.length ? 'No Maximus tokens in these wallets \u2014 pool overview below'
+          : nW + ' wallet' + (nW === 1 ? '' : 's') + ' with Maximus tokens on ' + (nCh === 2 ? 'PulseChain and Ethereum' : IME[Object.keys(nC)[0]])];
         if (napake.length) st.push('could not read: ' + napake.join('; '));
         statEl.textContent = st.join(' \u00b7 ');
         z.forEach(function (x) { vsebEl.appendChild(kartica(x[0], x[1])); });
         tabela(vsi);
       })
-      .catch(function (e) { sec.hidden = false; statEl.textContent = 'Could not read Maximus: ' + (e && e.message || e); })
+      .catch(function (e) { statEl.textContent = 'Could not read Maximus: ' + (e && e.message || e); })
       .then(function () { tece = false; });
   }
 
