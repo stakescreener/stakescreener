@@ -137,5 +137,8 @@ Change log of the additions
             holders and not added to the total.
 2026-11-24  Maximus Screener always visible, with an overview of all pools.
 2026-11-24  Maximus pool table fits phone screens (fewer columns below 700 px).
+2026-11-24  Token lists more reliable: at most 2 requests per chain at a time, one
+            retry; FusionScan 5xx/timeouts retried once; token lists never go to the
+            official explorer (it did not answer them).
 
 Contact: info@stakescreener.com

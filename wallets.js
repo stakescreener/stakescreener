@@ -1064,12 +1064,34 @@
   }
 
   // Blockscout lists every token the address holds, with decimals and symbol.
+  // 24 Nov 2026: at most 2 token-list requests per chain at a time, and one more try after 3 s.
+  // With 7 wallets requested at once FusionScan answered 503 to some of them, gp-source then moved
+  // everything to the official explorer, whose token-balances did not answer at all - so every
+  // wallet ended up "incomplete". The timeout is 30 s because gp-source may try FusionScan twice (12 s each).
+  var vrstaTok = {};
+  function vVrsti(chain, fn) {
+    var v = vrstaTok[chain] || (vrstaTok[chain] = { tece: 0, cakajo: [] });
+    return new Promise(function (ok, ne) {
+      function zazeni() {
+        v.tece++;
+        fn().then(ok, ne).then(function () { v.tece--; var n = v.cakajo.shift(); if (n) n(); });
+      }
+      if (v.tece < 2) zazeni(); else v.cakajo.push(zazeni);
+    });
+  }
   function tokenBalances(addr, chain) {
-    // 15 s (8 s until 22 Nov 2026; raised for very large wallets), not 25 s. Measured 8 Sep 2026: a normal answer takes 0.3-2.3 s, an occasional
+    return vVrsti(chain, function () { return tokenBalancesEnkrat(addr, chain); })
+      .catch(function () {
+        return new Promise(function (r) { setTimeout(r, 3000); })
+          .then(function () { return vVrsti(chain, function () { return tokenBalancesEnkrat(addr, chain); }); });
+      });
+  }
+  function tokenBalancesEnkrat(addr, chain) {
+    // 30 s since 24 Nov 2026 (two FusionScan tries, see above); 15 s until then, 8 s until 22 Nov 2026. Measured 8 Sep 2026: a normal answer takes 0.3-2.3 s, an occasional
     // straggler hung for 19.5 s. Waiting 25 s means waiting for the exception.
     // When the time runs out, this chain is marked as incomplete (the card says so and
     // the total gets a >= sign), which is better than half a minute of empty screen.
-    return timeoutFetch(BS[chain] + '/addresses/' + addr + '/token-balances', null, 15000)
+    return timeoutFetch(BS[chain] + '/addresses/' + addr + '/token-balances', null, 30000)
       .then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
