@@ -27,6 +27,7 @@ gp-validators.js               Validator Screener (PulseChain validators, Vouch 
 gp-communis.js                 Communis Screener (COM bonuses per HEX stake)
 gp-hedron.js                   Hedron Screener (mintable HDRN per HEX stake / HSI)
 gp-icosa.js                    Icosa Screener (HDRN and ICSA stakes, WAATSA NFTs)
+gp-maximus.js                  Maximus Screener (HEX backing of MAXI, BASE, TRIO, LUCKY, DECI; TEAM)
 gp-total.js / gp-total.css     Total HEX card and Total HEX column
 gp-chain.js                    scrolling price ticker
 gp-source.js                   FusionScan as primary PulseChain explorer, official
@@ -130,5 +131,9 @@ Change log of the additions
             in behaviour; saved codes and local settings keep working.
 2026-11-23  Source comments, console messages and CSP-ENDPOINTS.txt in English
             (code unchanged: verified token by token against the previous version).
+2026-11-24  Maximus Screener: HEX backing per token from the HEX and pool contracts
+            (yield and TEAM share verified 4/4 against StakeEnd events: difference
+            0 hearts), next redeem window, DEX price vs backing; shown only to
+            holders and not added to the total.
 
 Contact: info@stakescreener.com
