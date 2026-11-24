@@ -413,3 +413,15 @@ html,body{background:var(--gp-bg)}
 .gpm-t td,.gpm-t th{white-space:nowrap}
 @media (max-width:600px){#gpm-sec{padding:0 12px 12px}}
 #gpm-sec .gpv-opomba a{color:#5ee0ff;text-decoration:none}
+/* MAXIMUS table on phones (24 Nov 2026): fewer columns instead of overflowing the card */
+.gpm-t .gpm-kratko{display:none}
+@media (max-width:700px){
+  .gpm-t .gpm-skrij,.gpm-t .gpm-inc,.gpm-t .gpm-dolgo{display:none}
+  .gpm-t .gpm-kratko{display:inline}
+  .gpm-t td,.gpm-t th{position:static!important;left:auto!important;padding-left:6px;padding-right:6px;font-size:12px}
+  .gpm-tab{padding:6px 4px}
+  .gpm-tab .wbal-scroll{margin:0;padding:0}
+  .gpm-tab .wbal-scroll .wbal-tbl{min-width:0!important}
+  .gpm-t th{white-space:normal!important;letter-spacing:.4px;font-size:10px;line-height:1.3;vertical-align:bottom}
+  .gpm-t td:first-child,.gpm-t th:first-child{background:transparent!important}
+}

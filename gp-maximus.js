@@ -310,16 +310,18 @@
     });
     if (!vrst.length) return;
     var t = el('table', 'wbal-tbl gpv-tbl gpm-t'), th = el('tr');
-    ['Pool', 'Chain', 'Stake', 'HEX in stake', 'Supply', 'HEX per token', 'Next redeem'].forEach(function (s) { th.appendChild(el('th', null, s)); });
+    [['Pool'], ['Chain'], ['Stake', 'gpm-skrij'], ['HEX in stake'], ['Supply', 'gpm-skrij'], ['HEX per token'], ['Next redeem']].forEach(function (s) { th.appendChild(el('th', s[1] || null, s[0])); });
     var thead = el('thead'); thead.appendChild(th); t.appendChild(thead);
     var tb = el('tbody');
     vrst.forEach(function (z) {
       var v = z[0], x = z[1], p = z[2], r = el('tr');
       r.appendChild(el('td', null, p.t));
-      r.appendChild(el('td', null, IME[v.ch]));
-      r.appendChild(el('td', null, x.st ? x.st.days + ' days, since ' + datum(x.st.locked) : (x.odprto ? 'reload phase' : '\u2014')));
-      r.appendChild(el('td', null, x.st ? kompakt(t8(x.st.hearts + (x.donos || 0n))) + (x.donos ? ' (incl. ' + kompakt(t8(x.donos)) + ' yield)' : '') : '\u2014'));
-      r.appendChild(el('td', null, kompakt(t8(x.sup))));
+      var cv = el('td'); cv.appendChild(el('span', 'gpm-dolgo', IME[v.ch])); cv.appendChild(el('span', 'gpm-kratko', v.ch.toUpperCase())); r.appendChild(cv);
+      r.appendChild(el('td', 'gpm-skrij', x.st ? x.st.days + ' days, since ' + datum(x.st.locked) : (x.odprto ? 'reload phase' : '\u2014')));
+      var ch = el('td', null, x.st ? kompakt(t8(x.st.hearts + (x.donos || 0n))) : '\u2014');
+      if (x.st && x.donos) ch.appendChild(el('span', 'gpm-inc', ' (incl. ' + kompakt(t8(x.donos)) + ' yield)'));
+      r.appendChild(ch);
+      r.appendChild(el('td', 'gpm-skrij', kompakt(t8(x.sup))));
       r.appendChild(el('td', null, x.podloga != null ? t8(x.podloga).toFixed(4) : '\u2014'));
       var kon = x.maxi ? x.konec + 1n : (x.odprto ? x.relEnd : x.konec + 1n);
       r.appendChild(el('td', null, x.odprto && !x.maxi ? 'open until ' + datum(kon) : datum(kon)));
