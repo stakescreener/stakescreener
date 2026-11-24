@@ -135,5 +135,6 @@ Change log of the additions
             (yield and TEAM share verified 4/4 against StakeEnd events: difference
             0 hearts), next redeem window, DEX price vs backing; shown only to
             holders and not added to the total.
+2026-11-24  Maximus Screener always visible, with an overview of all pools.
 
 Contact: info@stakescreener.com

@@ -1,12 +1,12 @@
 {
  "site": "https://stakescreener.com",
- "generated": "2026-11-24 13:55 UTC",
+ "generated": "2026-11-24 15:20 UTC",
  "files": {
   ".htaccess": "1eb4cbb2ddc9a8b008352b85dd46ee2f6ba0dce977b53466f05335795aad3352",
   ".htaccess.example": "49e478cd27e8fc36eff83237c32874f7982315ecd3db73abf846a0cff89008e6",
   "CSP-ENDPOINTS.txt": "dce138ba84538e0d40b08b1bb741a7bb08b64922d8bd3d375d3d76719804a8ae",
   "LICENSE": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
-  "MODIFICATIONS.txt": "96a7ae2df7f327f2d58e1dcd3e3a3fd46b9484519bbb5d608d18edba77539c3e",
+  "MODIFICATIONS.txt": "914c47704c8bd412f31c81b961fd33029a52279fee8b65da94f0eeb70cf84d55",
   "THIRD-PARTY-NOTICES.txt": "cd34f7bc48492d747cf32487cbb604031e068ba4173decee8cc7c29a595165f9",
   "app.js": "3f1d9d53a7d5b92f6bf0195708f3eabf8a662574afd14bbd39bb468a6b16eb72",
   "apple-touch-icon.png": "a9dc2af0704702e64251e2cf5f619b46f718a8c677155e66dcb719f07435a8bb",
@@ -56,7 +56,7 @@
   "img/tokens/pls.png": "5aaf03753f4155dfd3477e15ce1f4ccbf2c91f19cd8ae9462ad84c82b78badad",
   "img/tokens/plsx.png": "a23d87b74109cd55d15018f2ef07d06840c89b7c8f1b8ade57a08d79ed4133af",
   "img/tokens/prvx.png": "63136c3e21f541ab1a3679ea4f78b22d63b1ba2b524e4f4653466a9d3475bcad",
-  "index.html": "1376599c4b0760ee61358ddb52b0277ac688b2ecf6e7ea9bc16741b46f1ca10a",
+  "index.html": "c6170a36ba99e7bb94b793ef078f6b8ef30e6eba66d0736b2a30ee68b9a4763f",
   "info.html": "d1d5ead260606e89cea1e057f0d1a903fef15f7b0c8b3e47d7e946e6a7062b6c",
   "og.png": "61e3ca309b63339e1dae5f53a748fad5bd0c9b90e02f81a77a7098484e376803",
   "robots.txt": "2271f1829327a4e14d540e1dfd8387239eecf94f499569ea643c31c652a2f99c",
