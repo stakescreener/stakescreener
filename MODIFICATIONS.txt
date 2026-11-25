@@ -140,5 +140,7 @@ Change log of the additions
 2026-11-24  Token lists more reliable: at most 2 requests per chain at a time, one
             retry; FusionScan 5xx/timeouts retried once; token lists never go to the
             official explorer (it did not answer them).
+2026-11-25  Token lists read from /tokens?type=ERC-20 (paged) instead of
+            /token-balances, which FusionScan refused for larger wallets.
 
 Contact: info@stakescreener.com

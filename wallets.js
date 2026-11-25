@@ -1091,15 +1091,32 @@
     // straggler hung for 19.5 s. Waiting 25 s means waiting for the exception.
     // When the time runs out, this chain is marked as incomplete (the card says so and
     // the total gets a >= sign), which is better than half a minute of empty screen.
-    return timeoutFetch(BS[chain] + '/addresses/' + addr + '/token-balances', null, 30000)
-      .then(function (r) {
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return r.json();
-      })
+    // 25 Nov 2026: /tokens?type=ERC-20 (paged, 50 per page) instead of /token-balances. For wallets with
+    // many tokens FusionScan answered /token-balances with 503 "query_budget" (its per-request limit) and the
+    // official explorer did not answer it at all, while /tokens came back in 0.1-0.3 s from both.
+    var vse = [], strani = 0;
+    function stran(param) {
+      var u = BS[chain] + '/addresses/' + addr + '/tokens?type=ERC-20' + (param ? '&' + param : '');
+      return timeoutFetch(u, null, 30000)
+        .then(function (r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        })
+        .then(function (j) {
+          var it = j && Array.isArray(j.items) ? j.items : (Array.isArray(j) ? j : null);
+          if (!it) throw new Error('unexpected answer');
+          vse = vse.concat(it);
+          var n = j.next_page_params;
+          if (n && typeof n === 'object' && ++strani < 20) {
+            return stran(Object.keys(n).map(function (k) { return encodeURIComponent(k) + '=' + encodeURIComponent(n[k]); }).join('&'));
+          }
+          return vse;
+        });
+    }
+    return stran('')
       .then(function (arr) {
-        if (!Array.isArray(arr)) return [];
         return arr.filter(function (t) {
-          return t && t.token && t.token.type === 'ERC-20' && t.value && t.value !== '0';
+          return t && t.token && (!t.token.type || t.token.type === 'ERC-20') && t.value && t.value !== '0';
         }).filter(function (t) {
           return (t.token.address || t.token.address_hash);
         }).map(function (t) {
