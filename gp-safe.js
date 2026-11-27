@@ -110,7 +110,7 @@
       det.appendChild(op);
       // link to the Safe Manager (/safe/), opens on the chain where the Safe exists
       var man = el('a', 'gp-safe-man', 'Manage this Safe \u2197');
-      man.href = '/safe/#' + a + (d.pls ? '' : '&eth');
+      man.href = 'https://safe.stakescreener.com/#' + a + (d.pls ? '' : '&eth');
       man.target = '_blank'; man.rel = 'noopener';
       det.appendChild(man);
       if (hdr.nextSibling) box.insertBefore(det, hdr.nextSibling); else box.appendChild(det);

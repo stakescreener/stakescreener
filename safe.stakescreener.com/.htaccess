@@ -1,0 +1,37 @@
+# safe.stakescreener.com - Safe Manager (27 Nov 2026). Separate origin from stakescreener.com, so a
+# wallet connection made here never applies to the read-only screener. https only, single host.
+RewriteEngine on
+RewriteCond %{HTTP_HOST} !^safe\.stakescreener\.com$ [NC,OR]
+RewriteCond %{HTTPS} off
+RewriteCond %{REQUEST_URI} !^/\.well-known/
+RewriteRule ^(.*)$ https://safe.stakescreener.com/$1 [R=301,L]
+
+Options -Indexes
+
+<IfModule mod_mime.c>
+  AddType font/ttf .ttf
+</IfModule>
+
+<IfModule mod_headers.c>
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set Referrer-Policy "no-referrer"
+  Header always set X-Frame-Options "DENY"
+  Header always set Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), hid=(), bluetooth=()"
+  Header always unset X-Powered-By
+  Header unset X-Powered-By
+  Header always set Content-Security-Policy "default-src 'none'; base-uri 'none'; object-src 'none'; form-action 'none'; frame-ancestors 'none'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; font-src 'self'; img-src 'self'; connect-src https://pulsechain-rpc.publicnode.com https://rpc.pulsechain.com https://ethereum-rpc.publicnode.com https://eth.drpc.org; manifest-src 'none'; worker-src 'none'; frame-src 'none'; media-src 'none'; upgrade-insecure-requests"
+  <FilesMatch "\.(html)$">
+    Header always set Cache-Control "no-cache, must-revalidate, max-age=0"
+  </FilesMatch>
+  <FilesMatch "\.(js|css|svg|ttf)$">
+    Header always set Cache-Control "public, max-age=31536000"
+  </FilesMatch>
+</IfModule>
+
+# backup copies are never served
+<FilesMatch "\.(pred-[A-Za-z0-9-]+|bak|v1|orig)$">
+  Require all denied
+</FilesMatch>
+
+AddDefaultCharset UTF-8
+AddCharset UTF-8 .txt .js .css .svg

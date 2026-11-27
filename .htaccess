@@ -5,6 +5,9 @@ RewriteCond %{HTTPS} off
 RewriteCond %{REQUEST_URI} !^/\.well-known/
 RewriteRule ^(.*)$ https://stakescreener.com/$1 [R=301,L]
 
+# 27 Nov 2026: Safe Manager has its own origin (wallet connections never apply to the screener)
+RewriteRule ^safe(/.*)?$ https://safe.stakescreener.com/ [R=301,L]
+
 # PWA (10. 11. 2026)
 AddType application/manifest+json .webmanifest
 Options -Indexes

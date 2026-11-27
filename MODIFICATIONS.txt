@@ -157,5 +157,8 @@ Change log of the additions
 2026-11-27  Safe badge: "Manage this Safe" link to the Safe Manager.
 2026-11-27  Safe Manager: "Works with Staker app smart accounts" subtitle and a
             note that StakeScreener is not affiliated with Staker app or Safe.
+2026-11-27  Safe Manager moved to its own address, https://safe.stakescreener.com
+            (strict CSP, only the four RPCs it needs). A wallet connected there is never
+            connected to stakescreener.com. /safe/ redirects to the new address.
 
 Contact: info@stakescreener.com

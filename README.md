@@ -4,6 +4,7 @@
 wallets, HEX stakes, validators, Communis (COM), Hedron (HDRN), Icosa (ICSA) and WAATSA.
 
 - **Read-only.** It never connects to a wallet and never asks you to sign anything.
+  (The separate Safe Manager below is the only part that can, on its own address.)
 - **No accounts, no tracking.** Addresses you add are kept in your own browser (localStorage).
   Only if you press *Save as code* is the list stored on the server under a random code (deleted after 180 days).
 - Prices and balances come from public sources (block explorers, public RPC and beacon nodes, DexScreener,
@@ -28,7 +29,27 @@ grep ' info.html$' SHA256SUMS.txt
 ```
 
 The two fingerprints must be identical. The same works for any file listed in `SHA256SUMS.txt`
-(server-side files `.htaccess` and `koda.php` are published for transparency but cannot be downloaded from the site).
+(server-side files `.htaccess` and `code.php` are published for transparency but cannot be downloaded from the site).
+
+## Safe Manager — safe.stakescreener.com
+
+**[safe.stakescreener.com](https://safe.stakescreener.com)** manages HEX stakes held in a Safe contract
+(Staker app smart accounts and any Safe with a threshold of 1): end stakes, mint HDRN and COM, send funds out.
+
+- It has **its own origin**, so a wallet connected there is never connected to stakescreener.com.
+- It uses only the wallet injected in your browser, and only after you click *Connect wallet*.
+- Every action is wrapped in the Safe's `execTransaction`, simulated with `eth_call` first and sent only
+  after you confirm it in your own wallet.
+- Strict CSP: no third-party scripts; network access only to four public RPC endpoints.
+- Its files are in the folder `safe.stakescreener.com/` of this repository and are listed in `SHA256SUMS.txt`
+  (`sums.json`: `safe_served`). Check them the same way:
+
+```sh
+curl -s https://safe.stakescreener.com/safe.js | sha256sum
+grep ' safe.stakescreener.com/safe.js$' SHA256SUMS.txt
+```
+
+Not affiliated with Staker app or Safe.
 
 ## Support
 
