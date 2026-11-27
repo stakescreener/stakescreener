@@ -28,6 +28,7 @@ gp-communis.js                 Communis Screener (COM bonuses per HEX stake)
 gp-hedron.js                   Hedron Screener (mintable HDRN per HEX stake / HSI)
 gp-icosa.js                    Icosa Screener (HDRN and ICSA stakes, WAATSA NFTs)
 gp-maximus.js                  Maximus Screener (HEX backing of MAXI, BASE, TRIO, LUCKY, DECI; TEAM)
+gp-safe.js                     Safe badge for smart accounts (Staker app): owners and threshold
 gp-total.js / gp-total.css     Total HEX card and Total HEX column
 gp-chain.js                    scrolling price ticker
 gp-source.js                   FusionScan as primary PulseChain explorer, official
@@ -142,5 +143,8 @@ Change log of the additions
             official explorer (it did not answer them).
 2026-11-25  Token lists read from /tokens?type=ERC-20 (paged) instead of
             /token-balances, which FusionScan refused for larger wallets.
+2026-11-27  Safe badge: addresses that are Safe contracts (e.g. Staker app smart
+            accounts) show owners and threshold per chain; owners that are not in
+            the wallet list are pointed out.
 
 Contact: info@stakescreener.com

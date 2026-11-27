@@ -425,3 +425,13 @@ html,body{background:var(--gp-bg)}
   .gpm-t th{white-space:normal!important;letter-spacing:.4px;font-size:10px;line-height:1.3;vertical-align:bottom}
   .gpm-t td:first-child,.gpm-t th:first-child{background:transparent!important}
 }
+/* ---------- Safe badge (gp-safe.js, 27 Nov 2026) ---------- */
+.gp-safe{margin-left:8px;background:#0f2a24;color:#5eead4;border:1px solid #1f5b4f;border-radius:999px;padding:3px 10px;font:700 11px/1.4 var(--wb-mono,monospace);letter-spacing:.6px;cursor:pointer}
+.gp-safe:hover{border-color:#2dd4bf}
+.gp-safe.gp-safe-tuj{background:#2a2110;color:#f5c26b;border-color:#5b4a1f}
+.gp-safe-det{margin:4px 0 10px;padding:10px 14px;border:1px solid #241e44;border-radius:12px;font-size:12.5px;line-height:1.7;color:#b9b6d3}
+.gp-safe-det b{color:#f2f0fa}
+.gp-safe-o{font-family:var(--wb-mono,monospace);color:#f2f0fa}
+.gp-safe-o-tuj{color:#f5c26b}
+.gp-safe-op{margin-top:6px;color:#7d7a96;font-size:12px}
+@media (max-width:600px){.gp-safe{margin:6px 0 0;display:inline-block}}
