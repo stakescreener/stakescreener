@@ -165,5 +165,10 @@ Change log of the additions
 2026-11-27  Verify this site reads the record from the latest GitHub commit
             (api.github.com), so it is correct right after a publish; the branch
             URL on raw.githubusercontent.com can be up to 5 minutes old.
+2026-11-27  Liquid Loans Screener (PulseChain): vaults (collateral, debt, collateral
+            ratio, liquidation price, Recovery Mode price, place in the redemption
+            queue), Stability Pool deposits and LOAN staking per wallet, plus a system
+            overview. Read from the contracts; collateral ratio verified 91/91 and TCR
+            against VaultManager. Not added to the total.
 
 Contact: info@stakescreener.com

@@ -437,3 +437,14 @@ html,body{background:var(--gp-bg)}
 @media (max-width:600px){.gp-safe{margin:6px 0 0;display:inline-block}}
 .gp-safe-man{display:inline-block;margin-top:8px;color:#5ee0ff;font-weight:600;text-decoration:none}
 .gp-safe-man:hover{text-decoration:underline}
+/* ---------- LIQUID LOANS Screener (gp-liquidloans.js, 27 Nov 2026) ---------- */
+#gpl-sec{padding:0 20px 16px;margin:0 0 18px}
+#gpl-sec .gpv-opomba a{color:#5ee0ff;text-decoration:none}
+.gpl-sys{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+.gpv-k.gpl-pazi .gpv-k-val,.gpc-vr.gpl-pazi b{color:#f5c542}
+.gpv-k.gpl-slabo .gpv-k-val,.gpc-vr.gpl-slabo b{color:#ff6b81}
+.gpc-vr.gpl-dobro b{color:#3ef0a0}
+.gpv-k.gpl-pazi .gpv-k-sub{color:#d9a35a}
+.gpv-k.gpl-slabo .gpv-k-sub{color:#ff8fa3}
+@media (max-width:600px){#gpl-sec{padding:0 12px 12px}}
+@media (max-width:600px){.gpl-sys{grid-template-columns:1fr 1fr}}
