@@ -155,5 +155,7 @@ Change log of the additions
             pre-validated owner signature (threshold 1), simulated first, and sent
             only after confirmation in the wallet. The screener itself stays read-only.
 2026-11-27  Safe badge: "Manage this Safe" link to the Safe Manager.
+2026-11-27  Safe Manager: "Works with Staker app smart accounts" subtitle and a
+            note that StakeScreener is not affiliated with Staker app or Safe.
 
 Contact: info@stakescreener.com
