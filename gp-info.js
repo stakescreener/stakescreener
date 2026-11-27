@@ -15,11 +15,24 @@
   var gumb = document.getElementById('ii-preveri'), izid = document.getElementById('ii-izid');
   if (!gumb || !izid || !window.crypto || !crypto.subtle) return;
   var ZAPIS = 'https://raw.githubusercontent.com/stakescreener/stakescreener/main/sums.json';
+  // 27 Nov 2026: raw.githubusercontent.com caches a branch URL for up to 5 minutes and ignores ?t=,
+  // so right after a publish the record could be stale. Ask the GitHub API for the latest commit
+  // and read sums.json from that exact commit (immutable URL); fall back to the branch URL.
+  var COMMIT = 'https://api.github.com/repos/stakescreener/stakescreener/commits/main';
+  function zapisSvez() {
+    return fetch(COMMIT, { cache: 'no-store', headers: { Accept: 'application/vnd.github.sha' } }).then(function (r) {
+      if (!r.ok) throw new Error('API ' + r.status); return r.text();
+    }).then(function (sha) {
+      sha = sha.trim(); if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error('bad sha');
+      return fetch('https://raw.githubusercontent.com/stakescreener/stakescreener/' + sha + '/sums.json', { cache: 'no-store' });
+    }).then(function (r) { if (!r.ok) throw new Error('GitHub HTTP ' + r.status); return r; })
+      .catch(function () { return fetch(ZAPIS + '?t=' + Date.now(), { cache: 'no-store' }); });
+  }
   function el(t, c, x) { var e = document.createElement(t); if (c) e.className = c; if (x != null) e.textContent = x; return e; }
   function hexOf(buf) { return Array.prototype.map.call(new Uint8Array(buf), function (b) { return ('0' + b.toString(16)).slice(-2); }).join(''); }
   gumb.addEventListener('click', function () {
     gumb.disabled = true; izid.textContent = 'Downloading the published record…';
-    fetch(ZAPIS + '?t=' + Date.now(), { cache: 'no-store' }).then(function (r) {
+    zapisSvez().then(function (r) {
       if (!r.ok) throw new Error('GitHub HTTP ' + r.status); return r.json();
     }).then(function (zapis) {
       var poti = Object.keys(zapis.files || {}).filter(function (p) { return (zapis.served || []).indexOf(p) >= 0; });

@@ -162,5 +162,8 @@ Change log of the additions
             connected to stakescreener.com. /safe/ redirects to the new address.
 2026-11-27  Safe Manager: own Disclaimer and Privacy section (signing, final
             transactions, EES penalty, simulation limits, threshold-1 risk).
+2026-11-27  Verify this site reads the record from the latest GitHub commit
+            (api.github.com), so it is correct right after a publish; the branch
+            URL on raw.githubusercontent.com can be up to 5 minutes old.
 
 Contact: info@stakescreener.com

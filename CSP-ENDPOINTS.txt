@@ -43,6 +43,7 @@ https://api.coinpaprika.com
 
 Verify this site:
 https://raw.githubusercontent.com     SHA-256 fingerprints (stakescreener/stakescreener)
+https://api.github.com               latest commit id, so the record is read from that exact commit
 
 The active policy is set in .htaccess (Content-Security-Policy header).
 
@@ -59,7 +60,7 @@ Notes
 - 'unsafe-inline' for attributes is needed because of the original application's
   onclick and style attributes. All scripts and styles are in local files.
 - GitHub source links in the footer are plain links, not connect-src calls
-  (raw.githubusercontent.com is used only by "Verify this site").
+  (raw.githubusercontent.com and api.github.com are used only by "Verify this site").
 - The site makes no calls for sign-in, analytics, telemetry, WebSockets,
   service workers or external fonts/CDN libraries.
 - CSP does not replace CORS permission on each RPC/API server.
