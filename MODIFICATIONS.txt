@@ -146,5 +146,14 @@ Change log of the additions
 2026-11-27  Safe badge: addresses that are Safe contracts (e.g. Staker app smart
             accounts) show owners and threshold per chain; owners that are not in
             the wallet list are pointed out.
+2026-11-27  Safe Manager (/safe/): for HEX stakes held in a Safe contract (e.g. Staker
+            app smart accounts). Shows stakes with value now and the exact early-end
+            penalty (HEX contract formula, verified 8/8 against real early ends);
+            End stake / Emergency end, Mint HDRN, Mint COM bonuses and sending from
+            the Safe. Uses only the wallet injected in the browser, and only after
+            "Connect wallet"; each action is wrapped in Safe execTransaction with a
+            pre-validated owner signature (threshold 1), simulated first, and sent
+            only after confirmation in the wallet. The screener itself stays read-only.
+2026-11-27  Safe badge: "Manage this Safe" link to the Safe Manager.
 
 Contact: info@stakescreener.com

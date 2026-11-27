@@ -17,7 +17,7 @@
   <section id="disclaimer" class="ii-card">
     <h1>Disclaimer</h1>
     <ul>
-      <li>StakeScreener is an <b>informational, read-only tool</b>. It never connects to your wallet and cannot move funds.</li>
+      <li>StakeScreener is an <b>informational, read-only tool</b>. The screener never connects to your wallet and cannot move funds. The separate <a href="/safe/">Safe Manager</a> connects to the wallet in your browser only when you click &ldquo;Connect wallet&rdquo;; every transaction there is simulated first and sent only after you confirm it in your own wallet.</li>
       <li>Nothing on this site is financial, investment, tax or legal advice.</li>
       <li>Prices, values and totals come from third-party sources (DexScreener, CoinGecko, PulseX subgraph, FusionScan, public RPC and beacon nodes). They can be <b>wrong, delayed or missing</b>. Tokens whose value exceeds their trading pool are shown as “not counted”, but other errors are possible.</li>
       <li>Crypto assets and HEX stakes can lose value, including all of it. Ending a stake early carries penalties defined by the HEX contract, not by this site.</li>
@@ -53,7 +53,7 @@
 
   <section id="verify" class="ii-card">
     <h1>Verify this site</h1>
-    <p>StakeScreener never asks you to connect a wallet or sign anything. The real risk for a site like this is a compromised server: someone could swap the support address, change a link or add a tracking script. So the exact files of this site are <b>published on GitHub with their SHA-256 fingerprints</b> &mdash; a record that does not live on our server.</p>
+    <p>The screener never asks you to connect a wallet or sign anything (only the Safe Manager does, and only when you click &ldquo;Connect wallet&rdquo;). The real risk for a site like this is a compromised server: someone could swap the support address, change a link or add a tracking script. So the exact files of this site are <b>published on GitHub with their SHA-256 fingerprints</b> &mdash; a record that does not live on our server.</p>
     <p><b>Verify now</b> downloads each file of this site as your browser receives it, computes its SHA-256 fingerprint and compares it with the published record. If all match, the site is exactly the published source, including the support address above.</p>
     <div class="ii-ver">
       <button type="button" id="ii-preveri">Verify now</button>

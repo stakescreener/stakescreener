@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Safe Manager · StakeScreener</title>
+<meta name="description" content="Manage HEX stakes held in a Safe (Staker app smart account) on PulseChain and Ethereum: end stakes, mint HDRN and COM, send funds out. Open source, no third-party wallet SDK.">
+<meta name="referrer" content="no-referrer">
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../fonts/fonts.css">
+<link rel="stylesheet" href="./safe.css?v=20261127a">
+</head>
+<body>
+<header class="sm-hdr">
+  <a class="sm-brand" href="/"><img src="../favicon.svg" alt="" width="34" height="34"><span><b>Stake</b>Screener <em>Safe Manager</em></span></a>
+  <div class="sm-con">
+    <span id="sm-acc" class="sm-acc"></span>
+    <button id="sm-connect" class="sm-btn sm-btn-p" type="button">Connect wallet</button>
+  </div>
+</header>
+
+<main class="sm-main">
+  <h1 class="sm-h1"><span class="sm-grad">SAFE</span> Manager</h1>
+  <p class="sm-lead">For HEX stakes held in a Safe contract, such as a Staker app smart account. You can end stakes, mint HDRN and COM, and send funds out of the Safe. Every action is simulated first, and nothing is sent until you confirm it in your own wallet.</p>
+
+  <section class="sm-card">
+    <div class="sm-row">
+      <input id="sm-addr" class="sm-in" type="text" spellcheck="false" autocomplete="off" placeholder="Safe address 0x…">
+      <div class="sm-chains" role="tablist">
+        <button type="button" class="sm-ch on" data-ch="pls">PulseChain</button>
+        <button type="button" class="sm-ch" data-ch="eth">Ethereum</button>
+      </div>
+      <button id="sm-load" class="sm-btn sm-btn-p" type="button">Load</button>
+    </div>
+    <div id="sm-stat" class="sm-stat"></div>
+  </section>
+
+  <section id="sm-info" class="sm-card" hidden></section>
+  <section id="sm-stakes" class="sm-card" hidden></section>
+  <section id="sm-send" class="sm-card" hidden></section>
+  <section id="sm-log" class="sm-card sm-logc" hidden><div class="sm-lbl">Activity</div><div id="sm-logi"></div></section>
+
+  <section class="sm-note">
+    <p><b>How it works.</b> A Safe is a contract wallet. With a threshold of 1, any single owner can execute a transaction for it. This page builds the call (for example <code>stakeEnd</code> on the HEX contract) and wraps it in the Safe's <code>execTransaction</code>, signed by your connection as an owner. It then simulates the transaction and only after that asks your wallet to send it. Safes that need more than one signature are shown read-only. For those, use Safe{Wallet}.</p>
+    <p><b>Emergency end (EES)</b> ends a stake before its end date. HEX takes a penalty, and the page shows the exact amount first. That calculation follows the HEX contract and was verified to the last heart against 8 real early ends. <b>Ending on time</b> has no penalty. Ending more than 14 days late does have one.</p>
+    <p>Read-only parts use public RPCs. There is no tracking and no WalletConnect or other third-party wallet SDK, only the wallet in your browser (MetaMask, Rabby, OKX; a Ledger works through them). The source code is public and covered by <a href="/info.html#verify">Verify this site</a>. Use at your own risk. Informational tool, not financial advice.</p>
+  </section>
+</main>
+<footer class="sm-foot"><a href="/">← back to StakeScreener</a> · <a href="/info.html#disclaimer">Disclaimer</a> · <a href="/info.html#verify">Verify</a></footer>
+<script src="./safe.js?v=20261127a"></script>
+</body>
+</html>

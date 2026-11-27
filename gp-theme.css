@@ -435,3 +435,5 @@ html,body{background:var(--gp-bg)}
 .gp-safe-o-tuj{color:#f5c26b}
 .gp-safe-op{margin-top:6px;color:#7d7a96;font-size:12px}
 @media (max-width:600px){.gp-safe{margin:6px 0 0;display:inline-block}}
+.gp-safe-man{display:inline-block;margin-top:8px;color:#5ee0ff;font-weight:600;text-decoration:none}
+.gp-safe-man:hover{text-decoration:underline}
