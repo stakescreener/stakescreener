@@ -160,5 +160,7 @@ Change log of the additions
 2026-11-27  Safe Manager moved to its own address, https://safe.stakescreener.com
             (strict CSP, only the four RPCs it needs). A wallet connected there is never
             connected to stakescreener.com. /safe/ redirects to the new address.
+2026-11-27  Safe Manager: own Disclaimer and Privacy section (signing, final
+            transactions, EES penalty, simulation limits, threshold-1 risk).
 
 Contact: info@stakescreener.com

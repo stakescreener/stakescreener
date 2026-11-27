@@ -9,7 +9,7 @@
 <link rel="canonical" href="https://safe.stakescreener.com/">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="fonts/fonts.css">
-<link rel="stylesheet" href="./safe.css?v=20261127c">
+<link rel="stylesheet" href="./safe.css?v=20261127d">
 </head>
 <body>
 <header class="sm-hdr">
@@ -48,8 +48,28 @@
     <p>Read-only parts use public RPCs. There is no tracking and no WalletConnect or other third-party wallet SDK, only the wallet in your browser (MetaMask, Rabby, OKX; a Ledger works through them). The source code is public and covered by <a href="https://stakescreener.com/info.html#verify">Verify this site</a>. Use at your own risk. Informational tool, not financial advice.</p>
     <p>StakeScreener and this page are <b>not affiliated</b> with Staker app or Safe. The names are used only to say which accounts the tool works with.</p>
   </section>
+
+  <section id="disclaimer" class="sm-card sm-disc">
+    <div class="sm-lbl">Disclaimer</div>
+    <ul>
+      <li><b>You sign every transaction yourself.</b> This page never holds keys or funds and cannot move anything on its own. It only prepares a transaction and hands it to the wallet in your browser; nothing happens until you confirm it there.</li>
+      <li><b>Transactions are final.</b> An ended stake cannot be restarted and a transfer cannot be reversed. Check the action, the amount and the recipient before you confirm, also on your hardware wallet's screen.</li>
+      <li><b>Emergency end (EES)</b> ends a stake before its end date, and the HEX contract takes a penalty that can be a large part of the stake or all of the yield. The amount shown is calculated from the HEX data up to now; the contract applies the exact rules on the day the transaction is mined.</li>
+      <li><b>A simulation is not a guarantee.</b> Each action is checked with <code>eth_call</code> before sending, but the blockchain can change between the simulation and the moment your transaction is mined.</li>
+      <li><b>Safes with a threshold of 1:</b> any single owner can end stakes and move everything the Safe holds. Make sure you know and control every owner listed.</li>
+      <li>Values, balances and HDRN / COM amounts are read from public RPC nodes and can be <b>wrong, delayed or missing</b>. Hedron and Communis are third-party protocols; their contracts decide what is minted.</li>
+      <li>StakeScreener is <b>not affiliated</b> with Staker app, Safe, HEX, Hedron or Communis.</li>
+      <li>Nothing on this site is financial, investment, tax or legal advice. The tool is open source and provided <b>&ldquo;as is&rdquo;, without any warranty</b>. Use it at your own risk.</li>
+    </ul>
+    <div class="sm-lbl sm-lbl-gap">Privacy</div>
+    <ul>
+      <li>No accounts, no cookies, no analytics, and nothing is stored in your browser. The Safe address stays in the page address (after #), which is never sent to our server.</li>
+      <li>To read the Safe, your browser contacts public RPC nodes directly (PublicNode, PulseChain, dRPC). They see your IP address and the addresses you look up, under their own privacy policies.</li>
+      <li>Your wallet address becomes visible to this page only after you click &ldquo;Connect wallet&rdquo;. You can disconnect the site in your wallet at any time.</li>
+    </ul>
+  </section>
 </main>
-<footer class="sm-foot"><a href="https://stakescreener.com/">← StakeScreener</a> · <a href="https://stakescreener.com/info.html#disclaimer">Disclaimer</a> · <a href="https://stakescreener.com/info.html#verify">Verify</a></footer>
+<footer class="sm-foot"><a href="https://stakescreener.com/">← StakeScreener</a> · <a href="#disclaimer">Disclaimer</a> · <a href="https://stakescreener.com/info.html#verify">Verify</a></footer>
 <script src="./safe.js?v=20261127c"></script>
 </body>
 </html>
